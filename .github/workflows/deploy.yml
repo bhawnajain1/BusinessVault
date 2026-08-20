@@ -38,10 +38,15 @@ jobs:
           # on the hosted site until we switch to true PKCE.
           VITE_GOOGLE_CLIENT_ID: ''
           VITE_GOOGLE_CLIENT_SECRET: ''
-          # Feedback button mailto: target. Kept in a GitHub Actions secret so
-          # the address isn't in git history / source (scrapes -> spam). When
-          # the secret is unset the Feedback button hides itself at runtime.
-          VITE_FEEDBACK_EMAIL: ${{ secrets.FEEDBACK_EMAIL }}
+          # Feedback path is now a modal form that POSTs a repository_dispatch
+          # to trigger .github/workflows/feedback.yml. The token is a
+          # fine-grained PAT scoped to only repository_dispatch on this repo;
+          # it IS visible in the client bundle (Pages is static), so the worst
+          # case if leaked is someone spamming the feedback workflow. Rotate
+          # if abused. When the secret is unset the button hides itself.
+          # FEEDBACK_EMAIL / SMTP_* secrets live server-side in feedback.yml.
+          VITE_FEEDBACK_DISPATCH_TOKEN: ${{ secrets.FEEDBACK_DISPATCH_TOKEN }}
+          VITE_FEEDBACK_DISPATCH_REPO: ${{ github.repository }}
         run: npm run build
 
       - name: Setup SSH deploy key

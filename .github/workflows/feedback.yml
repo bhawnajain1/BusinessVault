@@ -1,0 +1,68 @@
+name: User feedback
+
+on:
+  repository_dispatch:
+    types: [user_feedback]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  handle:
+    runs-on: ubuntu-latest
+    env:
+      # Route untrusted client_payload through env so it never enters a shell
+      # or gets string-interpolated into action inputs. Referenced as
+      # process.env.* / $VAR downstream.
+      FEEDBACK_TEXT: ${{ github.event.client_payload.text }}
+      FEEDBACK_URL: ${{ github.event.client_payload.url }}
+      FEEDBACK_UA: ${{ github.event.client_payload.user_agent }}
+      FEEDBACK_AT: ${{ github.event.client_payload.submitted_at }}
+      # Presence flag for the email step (can't reference secrets.* in `if:`).
+      HAS_SMTP: ${{ (secrets.SMTP_HOST != '' && secrets.FEEDBACK_EMAIL != '') && 'yes' || 'no' }}
+    steps:
+      - name: Create issue with feedback
+        id: create-issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const text = process.env.FEEDBACK_TEXT || '(empty)';
+            const body = [
+              text,
+              '',
+              '---',
+              `URL: ${process.env.FEEDBACK_URL || ''}`,
+              `User agent: ${process.env.FEEDBACK_UA || ''}`,
+              `Submitted at: ${process.env.FEEDBACK_AT || ''}`,
+            ].join('\n');
+            const firstLine = text.split('\n')[0].slice(0, 60);
+            const title = 'User feedback: ' + (firstLine || '(no text)');
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['feedback'],
+            });
+            core.setOutput('issue_url', issue.data.html_url);
+            core.setOutput('issue_number', String(issue.data.number));
+            core.exportVariable('ISSUE_URL', issue.data.html_url);
+            core.exportVariable('ISSUE_TITLE', title);
+            core.exportVariable('ISSUE_BODY', body);
+
+      - name: Send email
+        if: env.HAS_SMTP == 'yes'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_HOST }}
+          server_port: ${{ secrets.SMTP_PORT || 587 }}
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASS }}
+          from: BusinessVault Feedback <${{ secrets.SMTP_USER }}>
+          to: ${{ secrets.FEEDBACK_EMAIL }}
+          subject: ${{ env.ISSUE_TITLE }}
+          body: |
+            ${{ env.ISSUE_BODY }}
+
+            Issue: ${{ env.ISSUE_URL }}
