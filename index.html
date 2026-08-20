@@ -8,6 +8,18 @@
     <meta name="theme-color" content="#0f172a" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <title>BusinessVault</title>
+    <script>
+      // Pair with public/404.html — restores the deep-link path stored in ?p=/... .
+      (function () {
+        var q = window.location.search;
+        if (q && q.slice(1).indexOf('p=/') === 0) {
+          var p = q.slice(3).split('&q=');
+          var path = p[0].replace(/~and~/g, '&');
+          var query = p[1] ? '?' + p[1].replace(/~and~/g, '&') : '';
+          window.history.replaceState(null, '', window.location.pathname.replace(/\/$/, '') + path + query + window.location.hash);
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -36,6 +36,10 @@ function browserLogSink(): Plugin {
 }
 
 export default defineConfig({
+  // GitHub Pages serves this repo at /BusinessVault/. Vite bakes BASE_URL into
+  // asset paths, and React-Router's basename picks it up in main.tsx. Override
+  // with BV_BASE=/ for a root-hosted deploy (e.g. custom domain).
+  base: process.env.BV_BASE ?? '/BusinessVault/',
   plugins: [react(), browserLogSink()],
   resolve: {
     alias: {
