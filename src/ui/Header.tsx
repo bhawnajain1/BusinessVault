@@ -2,6 +2,25 @@ import { Link } from 'react-router-dom';
 import CloudIndicator from './CloudIndicator';
 import ThemeToggle from './theme/ThemeToggle';
 
+// Baked in at build time from the FEEDBACK_EMAIL GitHub Actions secret. Kept
+// out of source so scrapers on the public Pages build don't harvest the
+// address. Empty in local dev unless a `.env.local` sets VITE_FEEDBACK_EMAIL —
+// in that case the Feedback button hides itself.
+const FEEDBACK_EMAIL = (import.meta.env.VITE_FEEDBACK_EMAIL as string | undefined) ?? '';
+
+function buildFeedbackHref(): string {
+  const subject = `BusinessVault feedback`;
+  const body = [
+    'Please describe what you saw and what you expected:',
+    '',
+    '',
+    '---',
+    `App URL: ${window.location.href}`,
+    `User agent: ${navigator.userAgent}`,
+  ].join('\n');
+  return `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 export default function Header() {
   return (
     <header className="flex items-center justify-between border-b border-border bg-surface px-4 h-12">
@@ -19,6 +38,15 @@ export default function Header() {
         <span>BusinessVault</span>
       </Link>
       <div className="flex items-center gap-2">
+        {FEEDBACK_EMAIL && (
+          <a
+            href={buildFeedbackHref()}
+            className="text-xs border border-border rounded px-2.5 py-1 text-fg-muted hover:bg-surface-hover hover:text-fg"
+            aria-label="Send feedback"
+          >
+            Feedback
+          </a>
+        )}
         <CloudIndicator />
         <ThemeToggle />
       </div>

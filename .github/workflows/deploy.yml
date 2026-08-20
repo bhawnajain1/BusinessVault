@@ -38,6 +38,10 @@ jobs:
           # on the hosted site until we switch to true PKCE.
           VITE_GOOGLE_CLIENT_ID: ''
           VITE_GOOGLE_CLIENT_SECRET: ''
+          # Feedback button mailto: target. Kept in a GitHub Actions secret so
+          # the address isn't in git history / source (scrapes -> spam). When
+          # the secret is unset the Feedback button hides itself at runtime.
+          VITE_FEEDBACK_EMAIL: ${{ secrets.FEEDBACK_EMAIL }}
         run: npm run build
 
       - name: Setup SSH deploy key
