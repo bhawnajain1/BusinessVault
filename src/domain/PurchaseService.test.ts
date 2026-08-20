@@ -72,7 +72,9 @@ describe('PurchaseService', () => {
     expect(stock).toBeDefined();
     expect(stock!.qty_micros).toBe(10_000_000);
 
-    // Events: purchase.created, purchase_line.created, stock_movement.movement, journal_entry.posted
+    // Events: purchase.created, purchase_line.created, stock_movement.movement,
+    // journal_entry.posted, journal_line.created (one per JE line — 4 for
+    // intrastate: Dr Purchases + Dr CGST + Dr SGST + Cr AP).
     const events = (await db.sync_events.toArray()) as unknown as Array<
       Record<string, unknown>
     >;
@@ -80,6 +82,10 @@ describe('PurchaseService', () => {
     expect(kinds).toEqual(
       [
         'journal_entry.posted',
+        'journal_line.created',
+        'journal_line.created',
+        'journal_line.created',
+        'journal_line.created',
         'purchase.created',
         'purchase_line.created',
         'stock_movement.movement',

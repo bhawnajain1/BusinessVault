@@ -44,7 +44,14 @@ describe('ExpenseService', () => {
       Record<string, unknown>
     >;
     const kinds = events.map((ev) => `${ev['entity_type']}.${ev['operation']}`).sort();
-    expect(kinds).toEqual(['expense.created', 'journal_entry.posted'].sort());
+    expect(kinds).toEqual(
+      [
+        'expense.created',
+        'journal_entry.posted',
+        'journal_line.created',
+        'journal_line.created',
+      ].sort(),
+    );
   });
 
   it('retries with same idempotencyKey return the same expense (regression)', async () => {

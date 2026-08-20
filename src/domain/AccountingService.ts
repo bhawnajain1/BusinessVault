@@ -119,6 +119,11 @@ export async function postJournal(
       businessId: input.business_id,
       idempotencyKey: input.idempotency_key,
     });
+    for (const l of lines) {
+      await emit('journal_line', 'created', l.id, l, {
+        businessId: input.business_id,
+      });
+    }
   }
 
   return entry;

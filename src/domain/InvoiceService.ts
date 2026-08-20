@@ -1,3 +1,4 @@
+import Dexie from 'dexie';
 import { ulid } from 'ulid';
 import { db as defaultDb, type BusinessVaultDB } from '../db';
 import type {
@@ -270,8 +271,21 @@ export class InvoiceService {
         // 1. invoices row
         await this.db.invoices.add(invoice);
 
-        // 2. invoice_lines rows
+        // 2. invoice_lines rows + one sync event per line so restore can
+        //    rehydrate the ledger. Handlers live at eventHandlers.ts.
         await this.db.invoice_lines.bulkAdd(invoiceLines);
+        for (const line of invoiceLines) {
+          await writeEventInTx(this.db, {
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'invoice_line',
+            entity_id: line.id,
+            operation: 'create' as SyncEvent['operation'],
+            entity_version: 1,
+            timestamp: now,
+            payload: line,
+          });
+        }
 
         // 3. inventory reduction — stock_movements + item_stock decrement
         // Accumulate COGS across all inventory-tracked lines so we can post a
@@ -286,6 +300,7 @@ export class InvoiceService {
             const { cogsPaise } = await reduceStock(
               this.db,
               input.business_id,
+              input.device_id,
               line.item_id,
               line.warehouse_id,
               line.qty_micros,
@@ -349,6 +364,31 @@ export class InvoiceService {
         await this.db.journal_entries.add(journalEntry);
         await this.db.journal_lines.bulkAdd(linesToPost);
         assertBalanced(linesToPost);
+
+        // 5b. sync events for journal_entry + each journal_line so restore
+        //     rebuilds the ledger, not just the invoice header.
+        await writeEventInTx(this.db, {
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'journal_entry',
+          entity_id: journalEntry.id,
+          operation: 'posted' as SyncEvent['operation'],
+          entity_version: 1,
+          timestamp: now,
+          payload: journalEntry,
+        });
+        for (const jl of linesToPost) {
+          await writeEventInTx(this.db, {
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'journal_line',
+            entity_id: jl.id,
+            operation: 'create' as SyncEvent['operation'],
+            entity_version: 1,
+            timestamp: now,
+            payload: jl,
+          });
+        }
 
         // 6. sync event — atomically written in the same tx.
         // Hash chain: previous_hash = the latest event's payload_hash for this business.
@@ -509,6 +549,18 @@ export class InvoiceService {
           line_total_paise: -l.line_total_paise,
         }));
         await this.db.invoice_lines.bulkAdd(creditNoteLines);
+        for (const cnl of creditNoteLines) {
+          await writeEventInTx(this.db, {
+            business_id: original.business_id,
+            device_id: 'system',
+            entity_type: 'invoice_line',
+            entity_id: cnl.id,
+            operation: 'create' as SyncEvent['operation'],
+            entity_version: 1,
+            timestamp: now,
+            payload: cnl,
+          });
+        }
 
         // Reverse stock: return goods to inventory as sale_return.
         for (const line of originalInvoiceLines) {
@@ -517,6 +569,7 @@ export class InvoiceService {
             await returnStock(
               this.db,
               original.business_id,
+              'system',
               line.item_id,
               line.warehouse_id,
               line.qty_micros,
@@ -530,6 +583,28 @@ export class InvoiceService {
         await this.db.journal_entries.add(reversalJournal);
         await this.db.journal_lines.bulkAdd(reversalLines);
         assertBalanced(reversalLines);
+        await writeEventInTx(this.db, {
+          business_id: original.business_id,
+          device_id: 'system',
+          entity_type: 'journal_entry',
+          entity_id: reversalJournal.id,
+          operation: 'posted' as SyncEvent['operation'],
+          entity_version: 1,
+          timestamp: now,
+          payload: reversalJournal,
+        });
+        for (const rl of reversalLines) {
+          await writeEventInTx(this.db, {
+            business_id: original.business_id,
+            device_id: 'system',
+            entity_type: 'journal_line',
+            entity_id: rl.id,
+            operation: 'create' as SyncEvent['operation'],
+            entity_version: 1,
+            timestamp: now,
+            payload: rl,
+          });
+        }
 
         // Sync events for both the void and the credit note.
         await writeEventInTx(this.db, {
@@ -811,6 +886,7 @@ async function requireAccount(
 async function reduceStock(
   db: BusinessVaultDB,
   businessId: string,
+  deviceId: string,
   itemId: string,
   warehouseId: string,
   qtyMicros: number,
@@ -837,10 +913,6 @@ async function reduceStock(
       updated_at: now,
     });
   } else {
-    // Create a stock row on the fly if none exists; qty goes negative (backorder).
-    // Real business logic may reject this — here we permit it to preserve the
-    // append-only accounting invariant. Callers should validate stock before
-    // creating the invoice.
     const newStock: ItemStock = {
       id: ulid(),
       business_id: businessId,
@@ -867,12 +939,23 @@ async function reduceStock(
     notes: '',
   };
   await db.stock_movements.add(movement);
+  await writeEventInTx(db, {
+    business_id: businessId,
+    device_id: deviceId,
+    entity_type: 'stock_movement',
+    entity_id: movement.id,
+    operation: 'movement' as SyncEvent['operation'],
+    entity_version: 1,
+    timestamp: invoiceDate,
+    payload: movement,
+  });
   return { unitCostPaise, cogsPaise };
 }
 
 async function returnStock(
   db: BusinessVaultDB,
   businessId: string,
+  deviceId: string,
   itemId: string,
   warehouseId: string,
   qtyMicros: number,
@@ -905,6 +988,16 @@ async function returnStock(
     notes: '',
   };
   await db.stock_movements.add(movement);
+  await writeEventInTx(db, {
+    business_id: businessId,
+    device_id: deviceId,
+    entity_type: 'stock_movement',
+    entity_id: movement.id,
+    operation: 'movement' as SyncEvent['operation'],
+    entity_version: 1,
+    timestamp: entryDate,
+    payload: movement,
+  });
 }
 
 interface WriteEventInput {
@@ -916,13 +1009,14 @@ interface WriteEventInput {
   entity_version: number;
   timestamp: string;
   payload: unknown;
-  payload_hash: string;
+  // Optional pre-computed hash. If absent, we hash inside the tx via
+  // Dexie.waitFor so SubtleCrypto's non-Dexie promise doesn't break the tx zone.
+  payload_hash?: string;
 }
 
 /**
- * Writes a sync event inside an already-open Dexie transaction. Callers MUST
- * pre-compute payload_hash (SubtleCrypto is async and awaiting it inside a
- * Dexie tx triggers PrematureCommitError).
+ * Writes a sync event inside an already-open Dexie transaction. Callers may
+ * pre-compute payload_hash; otherwise we hash inline via Dexie.waitFor.
  */
 async function writeEventInTx(
   db: BusinessVaultDB,
@@ -936,6 +1030,10 @@ async function writeEventInTx(
     .first();
   const previousHash = tail ? tail.payload_hash : GENESIS_HASH;
 
+  const payloadHash =
+    input.payload_hash ??
+    (await Dexie.waitFor(sha256Hex(canonicalJson(input.payload))));
+
   const evt: SyncEvent = {
     event_id: ulid(),
     business_id: input.business_id,
@@ -946,7 +1044,7 @@ async function writeEventInTx(
     entity_version: input.entity_version,
     timestamp: input.timestamp,
     payload: input.payload,
-    payload_hash: input.payload_hash,
+    payload_hash: payloadHash,
     previous_hash: previousHash,
     sync_status: 'LOCAL_ONLY',
     sync_attempts: 0,

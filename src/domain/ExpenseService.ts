@@ -180,6 +180,17 @@ export class ExpenseService {
           payload: journal,
           timestamp: now,
         });
+        for (const l of journalLines) {
+          await appendSyncEvent(db, {
+            businessId: input.businessId,
+            deviceId: input.deviceId,
+            entityType: 'journal_line',
+            entityId: l.id,
+            operation: 'created',
+            payload: l,
+            timestamp: now,
+          });
+        }
         return expense;
       },
     );

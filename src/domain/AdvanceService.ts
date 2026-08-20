@@ -1,3 +1,4 @@
+import Dexie from 'dexie';
 import { ulid } from 'ulid';
 import { db as defaultDb, type BusinessVaultDB } from '../db';
 import type {
@@ -204,6 +205,28 @@ export class AdvanceService {
           payload_hash: createdHash,
           timestamp: now,
         });
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'journal_entry',
+          entity_id: entry.id,
+          operation: 'posted',
+          entity_version: 1,
+          payload: entry,
+          timestamp: now,
+        });
+        for (const l of lines) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'journal_line',
+            entity_id: l.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: l,
+            timestamp: now,
+          });
+        }
 
         return advance;
       },
@@ -420,6 +443,28 @@ export class AdvanceService {
           payload_hash: appliedHash,
           timestamp: now,
         });
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'journal_entry',
+          entity_id: entry.id,
+          operation: 'posted',
+          entity_version: 1,
+          payload: entry,
+          timestamp: now,
+        });
+        for (const l of lines) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'journal_line',
+            entity_id: l.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: l,
+            timestamp: now,
+          });
+        }
 
         return updatedAdvance;
       },
@@ -448,7 +493,7 @@ export class AdvanceService {
     operation: string;
     entity_version: number;
     payload: unknown;
-    payload_hash: string;
+    payload_hash?: string;
     timestamp: string;
   }): Promise<void> {
     const tail = await this.db.sync_events
@@ -463,6 +508,9 @@ export class AdvanceService {
       .limit(1)
       .toArray();
     const previous_hash = tail[0]?.payload_hash ?? GENESIS_HASH;
+    const payload_hash =
+      input.payload_hash ??
+      (await Dexie.waitFor(sha256Hex(canonicalJson(input.payload))));
     const evt: SyncEvent = {
       event_id: ulid(),
       business_id: input.business_id,
@@ -473,7 +521,7 @@ export class AdvanceService {
       entity_version: input.entity_version,
       timestamp: input.timestamp,
       payload: input.payload,
-      payload_hash: input.payload_hash,
+      payload_hash,
       previous_hash,
       sync_status: 'LOCAL_ONLY',
       sync_attempts: 0,

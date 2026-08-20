@@ -1,3 +1,4 @@
+import Dexie from 'dexie';
 import { ulid } from 'ulid';
 import { db as defaultDb, type BusinessVaultDB } from '../db';
 import type {
@@ -161,6 +162,28 @@ export class PaymentService {
           payload_hash: createdHash,
           timestamp: now,
         });
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'journal_entry',
+          entity_id: journal.entry.id,
+          operation: 'posted',
+          entity_version: 1,
+          payload: journal.entry,
+          timestamp: now,
+        });
+        for (const jl of journal.lines) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'journal_line',
+            entity_id: jl.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: jl,
+            timestamp: now,
+          });
+        }
 
         if (allocationsPreview.length > 0) {
           await this.writeEventPrehashed({
@@ -326,6 +349,28 @@ export class PaymentService {
           payload_hash: refundCreatedHash,
           timestamp: now,
         });
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'journal_entry',
+          entity_id: reversalEntry.id,
+          operation: 'posted',
+          entity_version: 1,
+          payload: reversalEntry,
+          timestamp: now,
+        });
+        for (const jl of reversalLines) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'journal_line',
+            entity_id: jl.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: jl,
+            timestamp: now,
+          });
+        }
 
         await this.writeEventPrehashed({
           business_id: input.business_id,
@@ -523,7 +568,11 @@ export class PaymentService {
     operation: string;
     entity_version: number;
     payload: unknown;
-    payload_hash: string;
+    // Optional pre-computed hash. If absent we hash inside the tx via
+    // Dexie.waitFor. Callers pre-hash for hot header events (payment, refund)
+    // where the payload is already known outside the tx, and let helpers below
+    // hash inside for sub-entity events (journal_line) whose ids are minted here.
+    payload_hash?: string;
     timestamp: string;
   }): Promise<void> {
     const tail = await this.db.sync_events
@@ -538,6 +587,9 @@ export class PaymentService {
       .limit(1)
       .toArray();
     const previous_hash = tail[0]?.payload_hash ?? GENESIS_HASH;
+    const payload_hash =
+      input.payload_hash ??
+      (await Dexie.waitFor(sha256Hex(canonicalJson(input.payload))));
     const evt: SyncEvent = {
       event_id: ulid(),
       business_id: input.business_id,
@@ -548,7 +600,7 @@ export class PaymentService {
       entity_version: input.entity_version,
       timestamp: input.timestamp,
       payload: input.payload,
-      payload_hash: input.payload_hash,
+      payload_hash,
       previous_hash,
       sync_status: 'LOCAL_ONLY',
       sync_attempts: 0,

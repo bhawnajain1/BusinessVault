@@ -486,6 +486,17 @@ export class PurchaseService {
           payload: journal,
           timestamp: now,
         });
+        for (const l of journalLines) {
+          await appendSyncEvent(db, {
+            businessId: input.businessId,
+            deviceId: input.deviceId,
+            entityType: 'journal_line',
+            entityId: l.id,
+            operation: 'created',
+            payload: l,
+            timestamp: now,
+          });
+        }
 
         return purchase;
       },
@@ -563,6 +574,7 @@ export class PurchaseService {
         db.sync_events,
       ],
       async () => {
+        const reversalMovements: StockMovement[] = [];
         for (const m of originalMovements) {
           const reversalMovement: StockMovement = {
             id: ulid(),
@@ -577,6 +589,7 @@ export class PurchaseService {
             occurred_at: now,
             notes: `Reversal of purchase ${original.bill_number}`,
           };
+          reversalMovements.push(reversalMovement);
           await db.stock_movements.add(reversalMovement);
           const stockKey = `${m.business_id}:${m.item_id}:${m.warehouse_id}`;
           const stock = await db.item_stock.get(stockKey);
@@ -629,6 +642,28 @@ export class PurchaseService {
           payload: reversalJournal,
           timestamp: now,
         });
+        for (const l of reversalLines) {
+          await appendSyncEvent(db, {
+            businessId: original.business_id,
+            deviceId,
+            entityType: 'journal_line',
+            entityId: l.id,
+            operation: 'created',
+            payload: l,
+            timestamp: now,
+          });
+        }
+        for (const m of reversalMovements) {
+          await appendSyncEvent(db, {
+            businessId: original.business_id,
+            deviceId,
+            entityType: 'stock_movement',
+            entityId: m.id,
+            operation: 'movement',
+            payload: m,
+            timestamp: now,
+          });
+        }
 
         const updated = await db.purchases.get(purchaseId);
         return updated as Purchase;

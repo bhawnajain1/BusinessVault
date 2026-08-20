@@ -7,6 +7,7 @@ import type {
   PurchaseLine,
   Expense,
   JournalEntry,
+  JournalLine,
   Customer,
   Supplier,
   Item,
@@ -101,6 +102,12 @@ export interface JournalPostedEvent {
   payload: JournalEntry;
 }
 
+export interface JournalLineCreatedEvent {
+  entityType: 'journal_line';
+  operation: 'created';
+  payload: JournalLine;
+}
+
 export interface CustomerCreatedEvent {
   entityType: 'customer';
   operation: 'created';
@@ -150,6 +157,7 @@ export type BusinessEvent =
   | StockMovementEvent
   | ExpenseCreatedEvent
   | JournalPostedEvent
+  | JournalLineCreatedEvent
   | CustomerCreatedEvent
   | CustomerUpdatedEvent
   | SupplierCreatedEvent

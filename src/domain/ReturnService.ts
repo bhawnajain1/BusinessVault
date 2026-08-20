@@ -287,6 +287,28 @@ export class ReturnService {
           payload: reverseJe,
           timestamp: now,
         });
+        for (const l of returnLines) {
+          await appendSyncEvent(db, {
+            businessId: input.businessId,
+            deviceId: input.deviceId,
+            entityType: 'invoice_line',
+            entityId: l.id,
+            operation: 'created',
+            payload: l,
+            timestamp: now,
+          });
+        }
+        for (const l of reverseJeLines) {
+          await appendSyncEvent(db, {
+            businessId: input.businessId,
+            deviceId: input.deviceId,
+            entityType: 'journal_line',
+            entityId: l.id,
+            operation: 'created',
+            payload: l,
+            timestamp: now,
+          });
+        }
 
         return creditNote;
       },
@@ -516,6 +538,28 @@ export class ReturnService {
           payload: reverseJe,
           timestamp: now,
         });
+        for (const l of returnLines) {
+          await appendSyncEvent(db, {
+            businessId: input.businessId,
+            deviceId: input.deviceId,
+            entityType: 'purchase_line',
+            entityId: l.id,
+            operation: 'created',
+            payload: l,
+            timestamp: now,
+          });
+        }
+        for (const l of reverseJeLines) {
+          await appendSyncEvent(db, {
+            businessId: input.businessId,
+            deviceId: input.deviceId,
+            entityType: 'journal_line',
+            entityId: l.id,
+            operation: 'created',
+            payload: l,
+            timestamp: now,
+          });
+        }
 
         return debitNote;
       },
