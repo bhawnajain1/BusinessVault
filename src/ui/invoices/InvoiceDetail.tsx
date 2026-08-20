@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { db } from '../../db';
 import { InvoiceService } from '../../domain/InvoiceService';
 import type {
@@ -25,10 +25,12 @@ interface Loaded {
 
 export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [voiding, setVoiding] = useState(false);
   const [voidReason, setVoidReason] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   async function load() {
     if (!id) return;
@@ -77,6 +79,23 @@ export default function InvoiceDetail() {
     }
   }
 
+  async function deleteInvoice() {
+    if (!data) return;
+    const ok = window.confirm(
+      `Delete invoice ${data.invoice.invoice_number}?\n\nIt will move to Recycle Bin (Invoices → Deleted) and can be restored later.`,
+    );
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      const svc = new InvoiceService();
+      await svc.deleteInvoice(data.invoice.id, 'deleted from detail');
+      navigate('/invoices');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setDeleting(false);
+    }
+  }
+
   if (error) return <div className="p-6 text-rose-600">{error}</div>;
   if (!data) return <div className="p-6 text-slate-500">Loading...</div>;
   const { invoice, lines, customer, items, journal, journalLines } = data;
@@ -114,6 +133,14 @@ export default function InvoiceDetail() {
           >
             Print / PDF
           </Link>
+          <button
+            type="button"
+            onClick={deleteInvoice}
+            disabled={deleting}
+            className="text-sm border border-rose-300 text-rose-700 rounded px-3 py-1.5 hover:bg-rose-50 disabled:opacity-50"
+          >
+            {deleting ? 'Deleting...' : 'Delete'}
+          </button>
         </div>
       </div>
 

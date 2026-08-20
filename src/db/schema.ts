@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const DB_NAME = 'businessvault';
 
@@ -94,4 +94,14 @@ export const STORES_V2: Record<string, string> = {
 export const STORES_V3: Record<string, string> = {
   ...STORES_V2,
   debug_logs: '++id, ts, level, [level+ts]',
+};
+
+// v4: add [business_id+deleted_at] index on invoices so the default list can
+// exclude soft-deleted rows and the Recycle Bin can enumerate them cheaply.
+// Dexie treats added indexes as a compatible upgrade; existing rows keep
+// deleted_at = undefined (indexed as "missing", filtered out of both views).
+export const STORES_V4: Record<string, string> = {
+  ...STORES_V3,
+  invoices:
+    'id, business_id, [business_id+invoice_number], [business_id+customer_id], [business_id+invoice_date], [business_id+status], [business_id+financial_year], [business_id+deleted_at], updated_at',
 };

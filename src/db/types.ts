@@ -268,6 +268,13 @@ export interface Invoice {
   terms: string;
   pdf_attachment_id: string | null;
   journal_entry_id: string;
+  // Soft-delete "recycle bin" fields. When set, the invoice is hidden from the
+  // main list and its linked payments/advance applications are cascade-hidden
+  // (via `deleted_at` on those rows). Restore is a straight nullification of
+  // these fields on all cascaded rows. The invoice itself, its lines, and its
+  // journal entry are NEVER removed from IndexedDB — audit chain intact.
+  deleted_at?: string | null;
+  deleted_reason?: string | null;
   created_at: string;
   updated_at: string;
   entity_version: number;
@@ -368,6 +375,10 @@ export interface Payment {
   notes: string;
   allocations: PaymentAllocation[];
   journal_entry_id: string;
+  // Cascade soft-delete: set when the sole invoice this payment is allocated
+  // against is deleted via InvoiceService.deleteInvoice. Restore clears it.
+  deleted_at?: string | null;
+  deleted_reason?: string | null;
   created_at: string;
   updated_at: string;
   entity_version: number;
@@ -401,6 +412,10 @@ export interface Advance {
   notes: string;
   applications: AdvanceApplication[];
   journal_entry_id: string; // the receipt/payment JE
+  // Cascade soft-delete: set when the sole invoice this advance was applied to
+  // is deleted via InvoiceService.deleteInvoice. Restore clears it.
+  deleted_at?: string | null;
+  deleted_reason?: string | null;
   created_at: string;
   updated_at: string;
   entity_version: number;

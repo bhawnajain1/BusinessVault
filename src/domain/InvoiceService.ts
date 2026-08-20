@@ -566,6 +566,176 @@ export class InvoiceService {
   }
 
   /**
+   * Soft-delete an invoice into the Recycle Bin. Journal entries and hash chain
+   * stay intact (audit-preserving); only `deleted_at` + `deleted_reason` are set
+   * on the invoice, its linked payments, and any advances applied to it. Restore
+   * clears the same fields. Idempotent — deleting an already-deleted invoice is
+   * a no-op.
+   *
+   * Notes on cascade: payments/advances with allocations spanning multiple
+   * invoices are only soft-deleted when the deleted invoice is their SOLE
+   * remaining allocation target — otherwise they'd disappear from party ledgers
+   * where they still legitimately apply.
+   */
+  async deleteInvoice(invoiceId: string, reason: string): Promise<void> {
+    const invoice = await this.db.invoices.get(invoiceId);
+    if (!invoice) throw new Error(`Invoice not found: ${invoiceId}`);
+    if (invoice.deleted_at) return; // idempotent
+
+    const now = new Date().toISOString();
+    const trimmedReason = (reason ?? '').trim() || 'deleted';
+
+    // Find linked payments (allocation touches this invoice). Dexie has no
+    // index on allocation contents, so we scan the business's payments — small
+    // volume in practice.
+    const allPayments = await this.db.payments
+      .where('business_id')
+      .equals(invoice.business_id)
+      .toArray();
+    const paymentsToHide = allPayments.filter((p) => {
+      if (p.deleted_at) return false;
+      const targets = p.allocations ?? [];
+      if (targets.length === 0) return false;
+      // Only cascade if every remaining (non-deleted) allocation targets this invoice.
+      return targets.every((a) => a.invoice_id === invoiceId);
+    });
+
+    const allAdvances = await this.db.advances
+      .where('business_id')
+      .equals(invoice.business_id)
+      .toArray();
+    const advancesToHide = allAdvances.filter((a) => {
+      if (a.deleted_at) return false;
+      const apps = a.applications ?? [];
+      if (apps.length === 0) return false;
+      return apps.every((app) => app.invoice_id === invoiceId);
+    });
+
+    const payload = {
+      invoice_id: invoiceId,
+      deleted_at: now,
+      reason: trimmedReason,
+      cascaded_payment_ids: paymentsToHide.map((p) => p.id),
+      cascaded_advance_ids: advancesToHide.map((a) => a.id),
+    };
+    const payloadHash = await sha256Hex(canonicalJson(payload));
+
+    await this.db.transaction(
+      'rw',
+      [this.db.invoices, this.db.payments, this.db.advances, this.db.sync_events],
+      async () => {
+        await this.db.invoices.update(invoiceId, {
+          deleted_at: now,
+          deleted_reason: trimmedReason,
+          updated_at: now,
+          entity_version: invoice.entity_version + 1,
+        });
+        for (const p of paymentsToHide) {
+          await this.db.payments.update(p.id, {
+            deleted_at: now,
+            deleted_reason: `cascade:${invoiceId}`,
+            updated_at: now,
+            entity_version: p.entity_version + 1,
+          });
+        }
+        for (const a of advancesToHide) {
+          await this.db.advances.update(a.id, {
+            deleted_at: now,
+            deleted_reason: `cascade:${invoiceId}`,
+            updated_at: now,
+            entity_version: a.entity_version + 1,
+          });
+        }
+        await writeEventInTx(this.db, {
+          business_id: invoice.business_id,
+          device_id: 'system',
+          entity_type: 'invoice',
+          entity_id: invoiceId,
+          operation: 'deleted',
+          entity_version: invoice.entity_version + 1,
+          timestamp: now,
+          payload,
+          payload_hash: payloadHash,
+        });
+      },
+    );
+  }
+
+  /**
+   * Restore a soft-deleted invoice from the Recycle Bin. Also clears the
+   * cascade flag on any payment/advance we marked with `cascade:${invoiceId}`.
+   * Idempotent — restoring a non-deleted invoice is a no-op.
+   */
+  async restoreInvoice(invoiceId: string): Promise<void> {
+    const invoice = await this.db.invoices.get(invoiceId);
+    if (!invoice) throw new Error(`Invoice not found: ${invoiceId}`);
+    if (!invoice.deleted_at) return; // idempotent
+
+    const now = new Date().toISOString();
+    const cascadeTag = `cascade:${invoiceId}`;
+
+    const allPayments = await this.db.payments
+      .where('business_id')
+      .equals(invoice.business_id)
+      .toArray();
+    const paymentsToRestore = allPayments.filter((p) => p.deleted_reason === cascadeTag);
+
+    const allAdvances = await this.db.advances
+      .where('business_id')
+      .equals(invoice.business_id)
+      .toArray();
+    const advancesToRestore = allAdvances.filter((a) => a.deleted_reason === cascadeTag);
+
+    const payload = {
+      invoice_id: invoiceId,
+      restored_at: now,
+      restored_payment_ids: paymentsToRestore.map((p) => p.id),
+      restored_advance_ids: advancesToRestore.map((a) => a.id),
+    };
+    const payloadHash = await sha256Hex(canonicalJson(payload));
+
+    await this.db.transaction(
+      'rw',
+      [this.db.invoices, this.db.payments, this.db.advances, this.db.sync_events],
+      async () => {
+        await this.db.invoices.update(invoiceId, {
+          deleted_at: null,
+          deleted_reason: null,
+          updated_at: now,
+          entity_version: invoice.entity_version + 1,
+        });
+        for (const p of paymentsToRestore) {
+          await this.db.payments.update(p.id, {
+            deleted_at: null,
+            deleted_reason: null,
+            updated_at: now,
+            entity_version: p.entity_version + 1,
+          });
+        }
+        for (const a of advancesToRestore) {
+          await this.db.advances.update(a.id, {
+            deleted_at: null,
+            deleted_reason: null,
+            updated_at: now,
+            entity_version: a.entity_version + 1,
+          });
+        }
+        await writeEventInTx(this.db, {
+          business_id: invoice.business_id,
+          device_id: 'system',
+          entity_type: 'invoice',
+          entity_id: invoiceId,
+          operation: 'updated',
+          entity_version: invoice.entity_version + 1,
+          timestamp: now,
+          payload,
+          payload_hash: payloadHash,
+        });
+      },
+    );
+  }
+
+  /**
    * Spec §24: append-only accounting. Once posted, invoices are NEVER mutated
    * destructively. Draft-status invoices in a brief grace window may be edited;
    * everything else must go through voidInvoice + reissue.

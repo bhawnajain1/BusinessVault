@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { Customer, Invoice, InvoiceStatus } from '../../db/types';
+import { InvoiceService } from '../../domain/InvoiceService';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
@@ -18,6 +19,9 @@ export default function InvoicesPage() {
   const [showVoided, setShowVoided] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customerById, setCustomerById] = useState<Map<string, Customer>>(new Map());
+  const [reloadTick, setReloadTick] = useState(0);
+  const serviceRef = useRef<InvoiceService | null>(null);
+  if (serviceRef.current === null) serviceRef.current = new InvoiceService();
 
   useEffect(() => {
     if (!businessId) return;
@@ -60,6 +64,12 @@ export default function InvoicesPage() {
         }
         c = c.reverse();
         c = c.filter((inv) => {
+          // Recycle-bin: soft-deleted invoices never appear on the main list.
+          // They live at /invoices/deleted and can be restored from there.
+          if (inv.deleted_at) return false;
+          // Credit notes are audit rows created by voiding/editing; hiding
+          // them keeps the list showing one entry per real invoice number.
+          if (!showVoided && inv.reverses_invoice_id) return false;
           if (!showVoided && inv.reversed_by_invoice_id) return false;
           if (
             search &&
@@ -127,21 +137,44 @@ export default function InvoicesPage() {
     {
       key: 'edit',
       header: '',
-      render: (r) =>
-        r.reversed_by_invoice_id ? (
-          <span className="text-xs text-slate-400">voided</span>
-        ) : r.status === 'cancelled' ? (
-          <span className="text-xs text-slate-400">cancelled</span>
-        ) : (
-          <Link
-            to={`/invoices/${r.id}/edit`}
-            className="text-xs text-blue-700 hover:underline"
+      render: (r) => (
+        <div className="flex items-center gap-3 justify-end">
+          {r.reversed_by_invoice_id ? (
+            <span className="text-xs text-slate-400">voided</span>
+          ) : r.status === 'cancelled' ? (
+            <span className="text-xs text-slate-400">cancelled</span>
+          ) : (
+            <Link
+              to={`/invoices/${r.id}/edit`}
+              className="text-xs text-blue-700 hover:underline"
+            >
+              Edit
+            </Link>
+          )}
+          <button
+            type="button"
+            onClick={() => handleDelete(r)}
+            className="text-xs text-rose-700 hover:underline"
           >
-            Edit
-          </Link>
-        ),
+            Delete
+          </button>
+        </div>
+      ),
     },
   ];
+
+  async function handleDelete(inv: Invoice) {
+    const ok = window.confirm(
+      `Delete invoice ${inv.invoice_number}?\n\nIt will move to Recycle Bin (Invoices → Deleted) and can be restored later.`,
+    );
+    if (!ok) return;
+    try {
+      await serviceRef.current!.deleteInvoice(inv.id, 'deleted from list');
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function exportCsv({
     search,
@@ -200,12 +233,20 @@ export default function InvoicesPage() {
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Invoices</h1>
-        <Link
-          to="/invoices/new"
-          className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
-        >
-          New Invoice
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            to="/invoices/deleted"
+            className="text-sm text-slate-600 hover:underline"
+          >
+            Recycle Bin
+          </Link>
+          <Link
+            to="/invoices/new"
+            className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
+          >
+            New Invoice
+          </Link>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -253,7 +294,7 @@ export default function InvoicesPage() {
       <DataTable<Invoice>
         columns={columns}
         fetchPage={fetchPage}
-        fetchPageDeps={[statusFilter, customerFilter, fyFilter, showVoided]}
+        fetchPageDeps={[statusFilter, customerFilter, fyFilter, showVoided, reloadTick]}
         rowKey={(r) => r.id}
         searchPlaceholder="Search invoice # / customer / notes"
         onExport={exportCsv}

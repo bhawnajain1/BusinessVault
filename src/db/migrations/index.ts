@@ -49,10 +49,35 @@ const migration_v2_to_v3: Migration = {
   },
 };
 
+// v3 → v4: adds `deleted_at` + `deleted_reason` soft-delete fields on invoices,
+// payments, and advances. Older snapshots don't have the columns; when restored
+// we set them to null so the recycle-bin filter treats them as "live". No table
+// additions; index changes are applied by Dexie on open.
+const migration_v3_to_v4: Migration = {
+  from: 3,
+  to: 4,
+  describe: 'v3 → v4: adds soft-delete fields to invoices/payments/advances',
+  apply(tables) {
+    const backfill = (rows: Record<string, unknown>[] | undefined) =>
+      (rows ?? []).map((r) => ({
+        ...r,
+        deleted_at: r.deleted_at ?? null,
+        deleted_reason: r.deleted_reason ?? null,
+      }));
+    return {
+      ...tables,
+      invoices: backfill(tables.invoices),
+      payments: backfill(tables.payments),
+      advances: backfill(tables.advances),
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
   migration_v2_to_v3,
+  migration_v3_to_v4,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

@@ -17,6 +17,7 @@ const PurchaseDetail = lazy(() => import('./ui/purchases/PurchaseDetail'));
 const InvoiceDetail = lazy(() => import('./ui/invoices/InvoiceDetail'));
 const InvoicePrint = lazy(() => import('./ui/invoices/InvoicePrint'));
 const InvoiceForm = lazy(() => import('./ui/invoices/InvoiceForm'));
+const DeletedInvoices = lazy(() => import('./ui/invoices/DeletedInvoicesPage'));
 const Payments = lazy(() => import('./ui/pages/Payments'));
 const Advances = lazy(() => import('./ui/pages/Advances'));
 const PartyLedger = lazy(() => import('./ui/parties/PartyLedgerPage'));
@@ -45,6 +46,7 @@ export default function App() {
           <Route path="/invoices" element={<Invoices />} />
           <Route path="/invoices/new" element={<InvoiceForm />} />
           <Route path="/invoices/quick" element={<InvoiceEditor />} />
+          <Route path="/invoices/deleted" element={<DeletedInvoices />} />
           <Route path="/invoices/:id" element={<InvoiceDetail />} />
           <Route path="/invoices/:id/edit" element={<InvoiceForm />} />
           <Route path="/invoices/:id/print" element={<InvoicePrint />} />

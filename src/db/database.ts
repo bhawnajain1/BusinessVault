@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie';
-import { DB_NAME, STORES_V1, STORES_V2, STORES_V3 } from './schema';
+import { DB_NAME, STORES_V1, STORES_V2, STORES_V3, STORES_V4 } from './schema';
 import { pokeSyncWorker } from '../sync/pokeChannel';
 import type {
   Account,
@@ -67,6 +67,7 @@ export class BusinessVaultDB extends Dexie {
     this.version(1).stores(STORES_V1);
     this.version(2).stores(STORES_V2);
     this.version(3).stores(STORES_V3);
+    this.version(4).stores(STORES_V4);
 
     // After any sync_event insert commits, kick the sync worker so the write
     // lands in the local backup folder within a few hundred ms instead of

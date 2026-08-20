@@ -632,3 +632,74 @@ describe('InvoiceService.updateInvoice', () => {
     ).rejects.toThrow(/already-voided/);
   });
 });
+
+describe('InvoiceService.deleteInvoice / restoreInvoice', () => {
+  it('soft-deletes an invoice and restores it (idempotent both ways)', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-DEL-1',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    await service.deleteInvoice(inv.id, 'wrong entry');
+    let row = await db.invoices.get(inv.id);
+    expect(row?.deleted_at).toBeTruthy();
+    expect(row?.deleted_reason).toBe('wrong entry');
+
+    // Idempotent — a second delete is a no-op (no throw, no double-stamp change).
+    const firstDeletedAt = row!.deleted_at;
+    await service.deleteInvoice(inv.id, 'again');
+    row = await db.invoices.get(inv.id);
+    expect(row?.deleted_at).toBe(firstDeletedAt);
+    expect(row?.deleted_reason).toBe('wrong entry');
+
+    // Journal entry + lines are NOT removed — audit chain intact.
+    const je = await db.journal_entries.get(inv.journal_entry_id);
+    expect(je).toBeDefined();
+    const jLines = await db.journal_lines
+      .where('entry_id')
+      .equals(inv.journal_entry_id)
+      .toArray();
+    expect(jLines.length).toBeGreaterThan(0);
+
+    // Restore clears the flag.
+    await service.restoreInvoice(inv.id);
+    row = await db.invoices.get(inv.id);
+    expect(row?.deleted_at).toBeNull();
+    expect(row?.deleted_reason).toBeNull();
+
+    // Restoring an already-live invoice is a no-op.
+    await service.restoreInvoice(inv.id);
+    row = await db.invoices.get(inv.id);
+    expect(row?.deleted_at).toBeNull();
+  });
+
+  it('writes a "deleted" sync event so the change is journaled', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-DEL-EVT',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await service.deleteInvoice(inv.id, 'test');
+
+    const events = await db.sync_events
+      .where('[business_id+entity_type+entity_id]')
+      .equals([businessId, 'invoice', inv.id])
+      .toArray();
+    expect(events.some((e) => e.operation === 'deleted')).toBe(true);
+  });
+});

@@ -17,6 +17,7 @@ const SECTIONS: NavSection[] = [
     items: [
       { to: '/pos', label: 'POS' },
       { to: '/invoices', label: 'Invoices' },
+      { to: '/invoices/deleted', label: 'Recycle Bin' },
       { to: '/payments', label: 'Payments' },
       { to: '/advances', label: 'Advances' },
       { to: '/returns', label: 'Returns' },
