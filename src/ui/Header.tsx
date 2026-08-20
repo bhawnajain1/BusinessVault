@@ -11,7 +11,7 @@ export default function Header() {
         aria-label="BusinessVault home"
       >
         <img
-          src="/logo.png"
+          src={`${import.meta.env.BASE_URL}logo.png`}
           alt=""
           aria-hidden="true"
           className="h-9 w-9 object-contain"
