@@ -1,4 +1,4 @@
-name: Deploy to GitHub Pages
+name: Build and publish to public build repo
 
 on:
   push:
@@ -7,46 +7,68 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: publish-to-build-repo
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
-      - run: npm ci
+      - name: Install
+        run: npm ci
 
-      - run: npm run build
+      - name: Build
         env:
-          # Client-side PWA on the public site runs WITHOUT Drive sync.
-          # Baking VITE_GOOGLE_CLIENT_SECRET into a public bundle would leak it.
-          # Local dev with your own .env is unaffected.
+          # Public build repo is served at /businessvault-app/. Override the
+          # default /BusinessVault/ base so asset paths match the new URL.
+          BV_BASE: /businessvault-app/
+          # Drive OAuth: empty on the public build so the client secret can't
+          # leak. Local dev with .env is unaffected; sync just stays disabled
+          # on the hosted site until we switch to true PKCE.
           VITE_GOOGLE_CLIENT_ID: ''
           VITE_GOOGLE_CLIENT_SECRET: ''
+        run: npm run build
 
-      - uses: actions/configure-pages@v5
+      - name: Setup SSH deploy key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
 
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./dist
+      - name: Publish dist/ to build repo
+        env:
+          GIT_AUTHOR_NAME: businessvault-deploy
+          GIT_AUTHOR_EMAIL: businessvault-deploy@users.noreply.github.com
+          GIT_COMMITTER_NAME: businessvault-deploy
+          GIT_COMMITTER_EMAIL: businessvault-deploy@users.noreply.github.com
+        run: |
+          set -e
+          SRC_SHA="${GITHUB_SHA}"
+          SRC_SHORT="${SRC_SHA:0:7}"
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          cd dist
+          # SPA fallback for GitHub Pages — a copy of index.html served as 404.
+          # (public/404.html has its own redirect; this fallback matches it.)
+          touch .nojekyll  # tell Pages not to run Jekyll on this tree
+
+          git init -q -b main
+          git remote add origin git@github.com:bhawnajain1/businessvault-app.git
+          git add -A
+          git commit -q -m "Deploy build from bhawnajain1/BusinessVault@${SRC_SHORT}"
+          # Force push: the build repo is a pure output mirror, history has no value.
+          # Nothing on the build repo is ever hand-authored.
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519 -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            git push --force origin main
