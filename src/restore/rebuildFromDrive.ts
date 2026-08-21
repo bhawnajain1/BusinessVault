@@ -84,6 +84,15 @@ export interface RebuildOptions {
   preConnectedProvider?: CustomerStorageProvider;
   /** Called with the current step description for UI progress. */
   onProgress?: (step: string, pct?: number) => void;
+  /**
+   * Opt-in to wipe unshipped local events. When Restore finds sync_events with
+   * sync_status != 'SYNCED' for the selected business, it means work was done
+   * on this device that never made it to the backup folder. Wiping the DB
+   * would destroy that work. Default behaviour: throw UnshippedEventsError so
+   * the UI can surface a confirmation. Pass true only after the user has
+   * acknowledged the loss.
+   */
+  confirmDataLoss?: boolean;
 }
 
 export interface RestoreReport {
@@ -110,6 +119,26 @@ export class BackupIntegrityError extends Error {
   ) {
     super(message);
     this.name = 'BackupIntegrityError';
+  }
+}
+
+export interface UnshippedEventsSummary {
+  businessId: string;
+  businessName: string;
+  total: number;
+  byStatus: Record<string, number>;
+  byEntityType: Record<string, number>;
+}
+
+// Thrown when Restore would wipe local events that have not yet been synced
+// to the backup folder. The UI catches this, shows the counts, and only
+// re-runs rebuildFromDrive with confirmDataLoss=true after the user OKs it.
+export class UnshippedEventsError extends Error {
+  constructor(public readonly summary: UnshippedEventsSummary) {
+    super(
+      `Restore would discard ${summary.total} unshipped event(s) for '${summary.businessName}' that are not on the backup folder. Reconnect the folder and let sync finish, or pass confirmDataLoss=true to overwrite.`,
+    );
+    this.name = 'UnshippedEventsError';
   }
 }
 
@@ -171,6 +200,19 @@ export async function rebuildFromDrive(
       'Backup integrity verification failed',
       integrity.issues,
     );
+  }
+
+  // 4a. Guard against destroying unshipped local work. Any sync_events row for
+  // this business whose sync_status != 'SYNCED' represents user work that
+  // exists on this device but has NOT yet reached the backup folder — the
+  // sync worker either never ran or has been failing (folder permission
+  // revoked, handle stale, offline). rebuildFromDrive is destructive: step 5
+  // calls table.clear() on every domain table and sync_events. Wiping that
+  // without warning is data-loss. See "restore-from-backup shows empty data"
+  // regression from bhawna business (folder had only the 51 seed events).
+  const unshipped = await summarizeUnshipped(opts.db, selected.businessId, selected.businessName);
+  if (unshipped.total > 0 && !opts.confirmDataLoss) {
+    throw new UnshippedEventsError(unshipped);
   }
 
   // 5. pick + load the latest verified snapshot
@@ -723,6 +765,27 @@ async function gstReconciliation(
     ok: mismatches.length === 0,
     detail: { mismatches: mismatches.slice(0, 20), total: mismatches.length },
   };
+}
+
+async function summarizeUnshipped(
+  db: BusinessVaultDB,
+  businessId: string,
+  businessName: string,
+): Promise<UnshippedEventsSummary> {
+  const rows = await db.sync_events
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+  const byStatus: Record<string, number> = {};
+  const byEntityType: Record<string, number> = {};
+  let total = 0;
+  for (const r of rows) {
+    if (r.sync_status === 'SYNCED') continue;
+    total++;
+    byStatus[r.sync_status] = (byStatus[r.sync_status] ?? 0) + 1;
+    byEntityType[r.entity_type] = (byEntityType[r.entity_type] ?? 0) + 1;
+  }
+  return { businessId, businessName, total, byStatus, byEntityType };
 }
 
 async function countTables(

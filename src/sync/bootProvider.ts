@@ -93,7 +93,16 @@ export async function tryBootLocalFolderProvider(): Promise<boolean> {
  *  showDirectoryPicker (no saved handle) or requestPermission (saved handle,
  *  permission expired) can succeed. */
 export async function reconnectWithUserGesture(): Promise<boolean> {
-  if (workerHandle) return true;
+  // If a worker is already running but the user is clicking Reconnect, it's
+  // because sync is failing (e.g. businessId mismatch after creating a new
+  // business, or a stale handle mid-session). Tear down the stale worker so
+  // we can start fresh with a new provider bound to the active business.
+  if (workerHandle) {
+    log.info('boot', 'stopping stale worker before reconnect');
+    workerHandle.stop();
+    workerHandle = null;
+    setActiveProvider(null);
+  }
   const business = await getActiveBusiness();
   if (!business) {
     emit({ status: 'idle', error: null });
@@ -159,15 +168,30 @@ async function bootWithHandle(
 }
 
 /** Register an already-connected provider (used by Onboarding, which connects
- *  the provider itself inside the user click). */
+ *  the provider itself inside the user click). If a worker is already running
+ *  bound to a different business, stop it first so the new provider takes
+ *  over. Without this, creating a second business on the same device leaves
+ *  the worker flushing new events against the previous business's folder
+ *  handle and every job fails with `businessId mismatch`. */
 export function adoptConnectedProvider(provider: LocalFolderStorageProvider): void {
-  if (workerHandle) return;
+  const newBusinessId = provider.getBoundBusinessId();
+  if (workerHandle) {
+    const active = getActiveProvider() as LocalFolderStorageProvider | null;
+    const currentBusinessId = active?.getBoundBusinessId?.() ?? null;
+    if (currentBusinessId === newBusinessId) return;
+    log.info('boot', 'stopping worker before adopting new business', {
+      from: currentBusinessId,
+      to: newBusinessId,
+    });
+    workerHandle.stop();
+    workerHandle = null;
+  }
   setActiveProvider(provider);
   workerHandle = startSyncWorker({
     provider,
     onStateChange: (h) => emit({ health: h }),
   });
-  log.info('boot', 'sync worker started via adopt');
+  log.info('boot', 'sync worker started via adopt', { business: newBusinessId });
   emit({ status: 'running', error: null });
 }
 

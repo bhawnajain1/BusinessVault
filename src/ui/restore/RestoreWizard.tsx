@@ -8,8 +8,10 @@ import type {
 import {
   rebuildFromDrive,
   renderDiagnosticReport,
+  UnshippedEventsError,
   type DiscoveredBusiness,
   type RestoreReport,
+  type UnshippedEventsSummary,
 } from '../../restore/rebuildFromDrive';
 
 type Step =
@@ -17,6 +19,7 @@ type Step =
   | 'connecting'
   | 'picking'
   | 'restoring'
+  | 'confirm-data-loss'
   | 'done'
   | 'error';
 
@@ -49,7 +52,12 @@ export default function RestoreWizard(props: RestoreWizardProps) {
   const [driveClientId, setDriveClientId] = useState('');
   const [driveClientSecret, setDriveClientSecret] = useState('');
   const [driveRedirectUri, setDriveRedirectUri] = useState(
-    typeof window !== 'undefined' ? `${window.location.origin}/oauth/callback` : '',
+    typeof window !== 'undefined'
+      ? `${window.location.origin}${import.meta.env.BASE_URL || '/'}oauth/callback`.replace(
+          /\/+oauth\/callback$/,
+          '/oauth/callback',
+        )
+      : '',
   );
 
   const [step, setStep] = useState<Step>('idle');
@@ -62,6 +70,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
   const [report, setReport] = useState<RestoreReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
+  const [unshipped, setUnshipped] = useState<UnshippedEventsSummary | null>(null);
 
   const db = props.db ?? defaultDb;
 
@@ -114,66 +123,87 @@ export default function RestoreWizard(props: RestoreWizardProps) {
     appendLog('Cleared saved folder handle.');
   }, [appendLog]);
 
-  const onStart = useCallback(async () => {
-    if (!providerConfig) return;
-    if (providerKind === 'local-folder' && !pickedHandle) {
-      setError('Choose a folder first.');
-      return;
-    }
+  const runRestore = useCallback(
+    async (confirmDataLoss: boolean) => {
+      if (!providerConfig) return;
+      if (providerKind === 'local-folder' && !pickedHandle) {
+        setError('Choose a folder first.');
+        return;
+      }
 
-    setStep('connecting');
-    setError(null);
-    setReport(null);
-    setProgressPct(0);
-    setStatusMessage('Connecting...');
-    setLog([]);
-    appendLog('Restore started.');
+      setStep('connecting');
+      setError(null);
+      setReport(null);
+      setUnshipped(null);
+      setProgressPct(0);
+      setStatusMessage('Connecting...');
+      if (!confirmDataLoss) setLog([]);
+      appendLog(confirmDataLoss ? 'Restore restarted with data-loss confirmed.' : 'Restore started.');
 
-    const provider =
-      props.provider ??
-      (providerKind === 'local-folder'
-        ? new LocalFolderStorageProvider()
-        : null);
+      const provider =
+        props.provider ??
+        (providerKind === 'local-folder'
+          ? new LocalFolderStorageProvider()
+          : null);
 
-    if (!provider) {
-      setStep('error');
-      setError('Google Drive provider is not wired in yet in this build.');
-      return;
-    }
+      if (!provider) {
+        setStep('error');
+        setError('Google Drive provider is not wired in yet in this build.');
+        return;
+      }
 
-    if (providerKind === 'local-folder' && pickedHandle) {
-      (provider as LocalFolderStorageProvider).setDirectoryHandle(pickedHandle);
-      appendLog(`Using handle: ${pickedHandle.name}`);
-    }
+      if (providerKind === 'local-folder' && pickedHandle) {
+        (provider as LocalFolderStorageProvider).setDirectoryHandle(pickedHandle);
+        appendLog(`Using handle: ${pickedHandle.name}`);
+      }
 
-    try {
-      const result = await rebuildFromDrive(provider, {
-        db,
-        providerConfig,
-        onProgress: (msg, pct) => {
-          setStatusMessage(msg);
-          appendLog(`Progress: ${msg}${pct != null ? ` (${pct}%)` : ''}`);
-          if (pct != null) setProgressPct(pct);
-        },
-        pickBusiness: async (ctx) => {
-          appendLog(`Found ${ctx.businesses.length} businesses: ${ctx.businesses.map((b) => b.businessName).join(', ')}`);
-          setBusinesses(ctx.businesses);
-          setStep('picking');
-          return await new Promise<DiscoveredBusiness>((resolve) => {
-            setPickerResolve(() => resolve);
-          });
-        },
-      });
-      appendLog(`Restore complete. Events replayed: ${result.eventsReplayed}.`);
-      setReport(result);
-      setStep('done');
-    } catch (err) {
-      const msg = (err as Error).message;
-      appendLog(`Failed: ${msg}`);
-      setError(msg);
-      setStep('error');
-    }
-  }, [db, providerConfig, providerKind, props.provider, pickedHandle, appendLog]);
+      try {
+        const result = await rebuildFromDrive(provider, {
+          db,
+          providerConfig,
+          confirmDataLoss,
+          onProgress: (msg, pct) => {
+            setStatusMessage(msg);
+            appendLog(`Progress: ${msg}${pct != null ? ` (${pct}%)` : ''}`);
+            if (pct != null) setProgressPct(pct);
+          },
+          pickBusiness: async (ctx) => {
+            appendLog(`Found ${ctx.businesses.length} businesses: ${ctx.businesses.map((b) => b.businessName).join(', ')}`);
+            setBusinesses(ctx.businesses);
+            setStep('picking');
+            return await new Promise<DiscoveredBusiness>((resolve) => {
+              setPickerResolve(() => resolve);
+            });
+          },
+        });
+        appendLog(`Restore complete. Events replayed: ${result.eventsReplayed}.`);
+        setReport(result);
+        setStep('done');
+      } catch (err) {
+        if (err instanceof UnshippedEventsError) {
+          appendLog(
+            `Refused to overwrite: ${err.summary.total} unshipped event(s) on this device would be lost.`,
+          );
+          setUnshipped(err.summary);
+          setStep('confirm-data-loss');
+          return;
+        }
+        const msg = (err as Error).message;
+        appendLog(`Failed: ${msg}`);
+        setError(msg);
+        setStep('error');
+      }
+    },
+    [db, providerConfig, providerKind, props.provider, pickedHandle, appendLog],
+  );
+
+  const onStart = useCallback(() => runRestore(false), [runRestore]);
+  const onConfirmDataLoss = useCallback(() => runRestore(true), [runRestore]);
+  const onCancelDataLoss = useCallback(() => {
+    setStep('idle');
+    setUnshipped(null);
+    appendLog('Restore cancelled. Local unshipped data preserved.');
+  }, [appendLog]);
 
   const onPick = (b: DiscoveredBusiness) => {
     if (pickerResolve) {
@@ -312,6 +342,92 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           </div>
           <div className="text-xs text-slate-500">
             Do not close this tab. Restore runs entirely on your device.
+          </div>
+        </section>
+      )}
+
+      {step === 'confirm-data-loss' && unshipped && (
+        <section className="border-2 border-red-400 rounded-lg p-4 bg-red-50 space-y-4">
+          <h2 className="text-lg font-semibold text-red-900">
+            Stop — this restore would erase local work
+          </h2>
+          <p className="text-sm text-red-900">
+            <strong>{unshipped.total}</strong> event
+            {unshipped.total === 1 ? '' : 's'} for{' '}
+            <strong>{unshipped.businessName}</strong> exist on this device but
+            have not been backed up to the folder yet. If you continue, they
+            will be permanently deleted.
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="bg-white border border-red-200 rounded p-3">
+              <div className="text-xs uppercase tracking-wide text-red-700 mb-2">
+                By sync status
+              </div>
+              <table className="w-full text-sm">
+                <tbody>
+                  {Object.entries(unshipped.byStatus).map(([k, v]) => (
+                    <tr key={k}>
+                      <td className="font-mono text-slate-700">{k}</td>
+                      <td className="text-right text-slate-900">{v}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="bg-white border border-red-200 rounded p-3">
+              <div className="text-xs uppercase tracking-wide text-red-700 mb-2">
+                By entity type
+              </div>
+              <table className="w-full text-sm">
+                <tbody>
+                  {Object.entries(unshipped.byEntityType).map(([k, v]) => (
+                    <tr key={k}>
+                      <td className="font-mono text-slate-700">{k}</td>
+                      <td className="text-right text-slate-900">{v}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="text-sm text-red-900 space-y-1">
+            <div className="font-semibold">Recommended:</div>
+            <ol className="list-decimal ml-5 space-y-1">
+              <li>
+                Cancel this restore.
+              </li>
+              <li>
+                Open Settings → Backup and make sure the backup folder is
+                connected and the sync worker shows "Healthy".
+              </li>
+              <li>
+                Wait until pending events reach zero, so the folder catches
+                up with this device.
+              </li>
+              <li>
+                Then run Restore again — it will find nothing unshipped and
+                proceed safely.
+              </li>
+            </ol>
+          </div>
+
+          <div className="flex items-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onCancelDataLoss}
+              className="bg-slate-900 text-white rounded px-4 py-2 hover:bg-slate-800"
+            >
+              Cancel restore (keep local data)
+            </button>
+            <button
+              type="button"
+              onClick={onConfirmDataLoss}
+              className="bg-red-600 text-white rounded px-4 py-2 hover:bg-red-700"
+            >
+              I understand — overwrite anyway
+            </button>
           </div>
         </section>
       )}

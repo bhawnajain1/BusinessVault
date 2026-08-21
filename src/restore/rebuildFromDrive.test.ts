@@ -6,7 +6,7 @@ import { Blob as NodeBlob } from 'node:buffer';
 import { LocalFolderStorageProvider } from '../storage/LocalFolderStorageProvider';
 import type { SyncEvent } from '../storage/CustomerStorageProvider';
 import { BusinessVaultDB } from '../db/database';
-import { rebuildFromDrive } from './rebuildFromDrive';
+import { rebuildFromDrive, UnshippedEventsError } from './rebuildFromDrive';
 import { writeCsv } from '../csv/csvCodec';
 import { TABLE_SPECS } from './tableSchema';
 
@@ -612,6 +612,105 @@ describe('rebuildFromDrive', () => {
     expect(await db.customers.count()).toBe(cust);
     expect(await db.invoices.count()).toBe(inv);
     expect(await db.journal_entries.count()).toBe(je);
+  });
+
+  it('refuses to run when the target DB has unshipped local events', async () => {
+    // Seed one unshipped sync_event for this business into the target DB.
+    // Restore must throw UnshippedEventsError instead of wiping.
+    await db.sync_events.add({
+      event_id: 'evt_unshipped_1',
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: 'invoice',
+      entity_id: 'inv_local',
+      operation: 'created',
+      entity_version: 1,
+      timestamp: '2026-08-21T09:00:00.000Z',
+      payload: { note: 'never synced' },
+      payload_hash: 'unshipped1',
+      previous_hash: 'genesis',
+      sync_status: 'LOCAL_ONLY',
+      sync_attempts: 0,
+      last_error: null,
+      synced_at: null,
+      journal_file: null,
+    });
+    // Also seed a "customer" row so we can verify tables were NOT cleared.
+    await db.customers.add({
+      id: 'cust_local_only',
+      business_id: BID,
+      name: 'Local Only Cust',
+      phone: '',
+      email: '',
+      gstin: null,
+      billing_address: '',
+      shipping_address: '',
+      state: '',
+      state_code: '',
+      opening_balance_paise: 0,
+      credit_limit_paise: 0,
+      notes: '',
+      active: 1,
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    });
+
+    let thrown: unknown = null;
+    try {
+      await rebuildFromDrive(provider, {
+        db,
+        providerConfig: { kind: 'local-folder', rootPath: root },
+      });
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(UnshippedEventsError);
+    const err = thrown as UnshippedEventsError;
+    expect(err.summary.total).toBe(1);
+    expect(err.summary.byStatus.LOCAL_ONLY).toBe(1);
+    expect(err.summary.byEntityType.invoice).toBe(1);
+    expect(err.summary.businessId).toBe(BID);
+
+    // Nothing on the local DB was touched — the pre-existing seed row survives.
+    expect(await db.customers.get('cust_local_only')).toBeDefined();
+    expect(await db.sync_events.get('evt_unshipped_1')).toBeDefined();
+    // And nothing from the backup snapshot was imported.
+    expect(await db.customers.count()).toBe(1);
+    expect(await db.invoices.count()).toBe(0);
+  });
+
+  it('proceeds when confirmDataLoss=true is passed', async () => {
+    // Same setup as the refusal test — one unshipped event + one local row.
+    await db.sync_events.add({
+      event_id: 'evt_unshipped_2',
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: 'invoice',
+      entity_id: 'inv_local_2',
+      operation: 'created',
+      entity_version: 1,
+      timestamp: '2026-08-21T09:00:00.000Z',
+      payload: { note: 'never synced' },
+      payload_hash: 'unshipped2',
+      previous_hash: 'genesis',
+      sync_status: 'LOCAL_ONLY',
+      sync_attempts: 0,
+      last_error: null,
+      synced_at: null,
+      journal_file: null,
+    });
+
+    const report = await rebuildFromDrive(provider, {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+      confirmDataLoss: true,
+    });
+
+    // Restore ran to completion — unshipped event is gone; snapshot data landed.
+    expect(report.counts.customers).toBe(2);
+    expect(await db.sync_events.get('evt_unshipped_2')).toBeUndefined();
   });
 
   it('aborts with "Backup integrity verification failed" on checksum mismatch', async () => {
