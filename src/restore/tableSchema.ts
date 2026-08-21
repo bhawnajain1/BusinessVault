@@ -225,6 +225,8 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'terms', type: 'string' },
       { name: 'pdf_attachment_id', type: 'string_or_null' },
       { name: 'journal_entry_id', type: 'string' },
+      { name: 'deleted_at', type: 'string_or_null' },
+      { name: 'deleted_reason', type: 'string_or_null' },
       ...COMMON_AUDIT,
     ],
   },
@@ -331,6 +333,8 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'notes', type: 'string' },
       { name: 'allocations_json', type: 'json' },
       { name: 'journal_entry_id', type: 'string' },
+      { name: 'deleted_at', type: 'string_or_null' },
+      { name: 'deleted_reason', type: 'string_or_null' },
       ...COMMON_AUDIT,
     ],
   },
@@ -428,6 +432,30 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'description', type: 'string' },
     ],
   },
+  {
+    file: 'advances.csv',
+    store: 'advances',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' },
+      { name: 'business_id', type: 'string' },
+      { name: 'advance_number', type: 'string' },
+      { name: 'advance_date', type: 'string' },
+      { name: 'party_type', type: 'string' },
+      { name: 'party_id', type: 'string' },
+      { name: 'method', type: 'string' },
+      { name: 'account_id', type: 'string' },
+      { name: 'amount_paise', type: 'number' },
+      { name: 'remaining_paise', type: 'number' },
+      { name: 'reference', type: 'string' },
+      { name: 'notes', type: 'string' },
+      { name: 'applications_json', type: 'json' },
+      { name: 'journal_entry_id', type: 'string' },
+      { name: 'deleted_at', type: 'string_or_null' },
+      { name: 'deleted_reason', type: 'string_or_null' },
+      ...COMMON_AUDIT,
+    ],
+  },
 ];
 
 export function findTableSpecByFile(file: string): TableSpec | undefined {
@@ -492,10 +520,18 @@ export function coerceRow(
         break;
       }
       case 'json': {
-        // Handle the payment allocations mapping onto the `allocations` field.
-        const target = col.name === 'allocations_json' ? 'allocations' : col.name;
+        // Handle the payment allocations mapping onto the `allocations` field
+        // and the advance applications mapping onto the `applications` field.
+        // Both are serialized to CSV as JSON columns with a `_json` suffix so
+        // the on-disk shape stays flat.
+        const target =
+          col.name === 'allocations_json'
+            ? 'allocations'
+            : col.name === 'applications_json'
+              ? 'applications'
+              : col.name;
         if (v === '') {
-          out[target] = target === 'allocations' ? [] : null;
+          out[target] = target === 'allocations' || target === 'applications' ? [] : null;
         } else {
           try {
             out[target] = JSON.parse(v);

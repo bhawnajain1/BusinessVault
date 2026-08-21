@@ -118,7 +118,7 @@ async function saveHealth(h: BackupHealth): Promise<void> {
   await db.kv.put({ key: HEALTH_KV_KEY, value: h, updated_at: h.updatedAt });
 }
 
-function toProviderEvent(e: SyncEvent): ProviderSyncEvent {
+export function toProviderEvent(e: SyncEvent): ProviderSyncEvent {
   return {
     event_id: e.event_id,
     business_id: e.business_id,

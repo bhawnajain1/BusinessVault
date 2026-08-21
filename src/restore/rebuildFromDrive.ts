@@ -422,6 +422,7 @@ function tableNames(): string[] {
     'accounts',
     'journal_entries',
     'journal_lines',
+    'advances',
     'sync_events',
   ];
 }
@@ -652,12 +653,40 @@ async function rebuildInvoicePaidBalance(
     .where('business_id')
     .equals(businessId)
     .toArray();
+  const advances = await db.advances
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
 
+  // Sum ALL payment allocations that touch invoices, regardless of direction.
+  // refundPayment creates a new payment row with direction='out' and NEGATIVE
+  // allocation amounts against the same invoice — so summing across both the
+  // original and its refund correctly reduces paid_paise. Filtering by
+  // direction='in' would silently drop the refund and leave the invoice
+  // appearing fully paid after restore.
+  // Skip soft-deleted payments so a deleted payment doesn't zero out the
+  // ledger; invoice:delete cascades already mark those.
   const paidByInvoice = new Map<string, number>();
   for (const p of payments) {
-    if (p.direction !== 'in') continue;
+    if (p.deleted_at) continue;
     const allocs = Array.isArray(p.allocations) ? p.allocations : [];
     for (const a of allocs) {
+      if (!a.invoice_id) continue;
+      paidByInvoice.set(
+        a.invoice_id,
+        (paidByInvoice.get(a.invoice_id) ?? 0) + a.amount_paise,
+      );
+    }
+  }
+  // Advance applications also count against invoice paid_paise.
+  // AdvanceService.applyAdvance mutates invoice.paid_paise/balance_paise
+  // /status in-DB but only emits an advance:updated event — no invoice
+  // event carrying the post-apply state. Without this pass the restored
+  // invoice ends up as if the advance never landed (silent data loss).
+  for (const adv of advances) {
+    if (adv.deleted_at) continue;
+    const apps = Array.isArray(adv.applications) ? adv.applications : [];
+    for (const a of apps) {
       if (!a.invoice_id) continue;
       paidByInvoice.set(
         a.invoice_id,
