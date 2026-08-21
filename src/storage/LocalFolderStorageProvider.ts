@@ -221,19 +221,59 @@ function makeFsApiBackend(root: DirHandle): FsBackend {
       return out;
     },
     async rename(from, to) {
-      // FSA has no rename. Copy + delete.
-      const bytes = await (async () => {
+      // FSA has no rename. Detect whether `from` is a file or a directory
+      // (writeSnapshot renames whole staging dirs; other callers rename
+      // single files) and copy-then-delete accordingly.
+      const { dir: fromDir, name: fromName } = splitParent(from);
+      const fromParent = await resolveDir(fromDir, false);
+      let isDir = false;
+      try {
+        await fromParent.getDirectoryHandle(fromName);
+        isDir = true;
+      } catch {
+        // Fall through: treat as file.
+      }
+
+      if (!isDir) {
         const fh = await getFile(from, false);
         const f = await fh.getFile();
-        return new Uint8Array(await f.arrayBuffer());
-      })();
-      const toFh = await getFile(to, true);
-      const w = await toFh.createWritable({ keepExistingData: false });
-      await w.write(bytes);
-      await w.close();
-      const { dir, name } = splitParent(from);
-      const d = await resolveDir(dir, false);
-      await d.removeEntry(name);
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const toFh = await getFile(to, true);
+        const w = await toFh.createWritable({ keepExistingData: false });
+        await w.write(bytes.slice().buffer as ArrayBuffer);
+        await w.close();
+        await fromParent.removeEntry(fromName);
+        return;
+      }
+
+      // Directory rename: copy every entry (recursively) into a freshly
+      // created destination, then remove the source. mkdirp both roots so
+      // the copy starts against a clean, existing directory on either end.
+      async function copyDir(srcPath: string, dstPath: string): Promise<void> {
+        await resolveDir(dstPath, true);
+        const src = await resolveDir(srcPath, false);
+        const anyS = src as unknown as {
+          entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
+        };
+        for await (const [name, handle] of anyS.entries()) {
+          const childSrc = srcPath ? `${srcPath}/${name}` : name;
+          const childDst = dstPath ? `${dstPath}/${name}` : name;
+          if (handle.kind === 'directory') {
+            await copyDir(childSrc, childDst);
+          } else {
+            const fh = handle as FileSystemFileHandle;
+            const f = await fh.getFile();
+            const bytes = new Uint8Array(await f.arrayBuffer());
+            const toFh = await getFile(childDst, true);
+            const w = await toFh.createWritable({ keepExistingData: false });
+            await w.write(bytes.slice().buffer as ArrayBuffer);
+            await w.close();
+          }
+        }
+      }
+
+      await copyDir(from, to);
+      await fromParent.removeEntry(fromName, { recursive: true });
     },
     async remove(p) {
       const { dir, name } = splitParent(p);
