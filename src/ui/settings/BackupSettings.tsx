@@ -4,6 +4,8 @@ import { useBackupHealth } from '../BackupHealthContext';
 import type { BackupHealthStatus } from '../../sync/syncWorker';
 import { getActiveProvider } from '../../sync/providerRegistry';
 import { enqueue } from '../../sync/syncQueue';
+import { buildSnapshotInput } from '../../sync/buildSnapshotInput';
+import { pokeSyncWorker } from '../../sync/syncWorker';
 import type {
   ConnectionStatus,
   IntegrityReport,
@@ -121,21 +123,24 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     clearMessages();
     setBusy('snapshot');
     try {
-      // We enqueue a snapshot job — the sync worker's snapshotScheduler owns
-      // building the WriteSnapshotInput. From the UI we just request one.
-      // §19 atomicity is enforced by the provider.
+      if (!business) {
+        throw new Error('Business is still loading.');
+      }
+      const asOf = new Date().toISOString().slice(0, 10);
+      const input = await buildSnapshotInput(db, businessId, business.name, 'ondemand', asOf);
       await enqueue({
         businessId,
         kind: 'snapshot',
-        payload: { businessId, requestedAt: new Date().toISOString(), kind: 'ondemand' },
+        payload: { input },
       });
+      pokeSyncWorker();
       setMessage('Snapshot queued. It will run in the background.');
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(null);
     }
-  }, [businessId]);
+  }, [businessId, business]);
 
   const onVerifyNow = useCallback(async (): Promise<void> => {
     clearMessages();

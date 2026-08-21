@@ -260,6 +260,19 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
         });
       } else if (job.kind === 'snapshot') {
         const p = job.payload as SnapshotPayload;
+        if (!p || !p.input || typeof p.input.businessId !== 'string') {
+          // Malformed payload — was queued by a broken caller. Fail dead so
+          // the queue doesn't spin forever burning quota.
+          await markFailure({
+            id: job.id,
+            error: 'snapshot job has malformed payload (missing p.input.businessId)',
+            attempts: job.max_attempts,
+            nextAttemptAt: clock(),
+            now: clock(),
+            dead: true,
+          });
+          return;
+        }
         const handle = await deps.provider.writeSnapshot(p.input);
         await markDone(job.id, clock());
         emit({
