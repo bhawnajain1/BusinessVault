@@ -8,6 +8,7 @@ import { seedDefaultMasters } from '../../domain/defaults';
 import { appendSyncEvent } from '../../domain/syncEventLog';
 import { getDeviceId } from '../../lib/device';
 import type { CustomerStorageProvider } from '../../storage/CustomerStorageProvider';
+import { GoogleDriveStorageProvider } from '../../drive/GoogleDriveStorageProvider';
 import { LocalFolderStorageProvider } from '../../storage/LocalFolderStorageProvider';
 import { adoptConnectedProvider } from '../../sync/bootProvider';
 import StepBusinessDetails from './StepBusinessDetails';
@@ -141,6 +142,19 @@ export default function Onboarding() {
         );
 
         const deviceId = await getDeviceId();
+
+        // Rebind Drive tokens BEFORE persisting the business row: if a rebind
+        // failure aborted this after commit, we'd leave a business row whose
+        // drive_folder_id is set but has no tokens keyed to its id — the next
+        // boot would routes to Drive and land in needs-permission. Doing it
+        // first means either both succeed, or neither is visible on disk.
+        // (drive_tokens lives in a separate IndexedDB so we can't include it
+        // in the transaction below.)
+        if (choice === 'google-drive' && provider instanceof GoogleDriveStorageProvider) {
+          const { rebindDriveTokensToBusiness } = await import('./driveGlue');
+          await rebindDriveTokensToBusiness(businessId);
+        }
+
         // Business row + system CoA + default masters must land atomically.
         // A crash between them leaves an unusable business row on disk.
         // seedChartOfAccounts/seedDefaultMasters open their own inner
@@ -175,10 +189,12 @@ export default function Onboarding() {
 
         // Register the connected provider and start the sync worker so that
         // items/invoices/etc. created in this session actually flush to the
-        // customer's folder (journal/*.jsonl, current/*.csv). Only wire this
-        // for local-folder; drive provider integration is handled elsewhere.
+        // customer's storage (journal/*.jsonl, current/*.csv). Drive tokens
+        // were rebound above; here we just adopt the connected provider.
         if (choice === 'local-folder' && provider instanceof LocalFolderStorageProvider) {
-          adoptConnectedProvider(provider);
+          adoptConnectedProvider(provider, businessId);
+        } else if (choice === 'google-drive' && provider instanceof GoogleDriveStorageProvider) {
+          adoptConnectedProvider(provider, businessId);
         }
 
         setConnecting({

@@ -6,6 +6,7 @@ import {
   peekSavedHandle,
   queryHandlePermission,
 } from '../storage/LocalFolderStorageProvider';
+import type { CustomerStorageProvider } from '../storage/CustomerStorageProvider';
 import { currentBusinessId, NotOnboardedError } from '../lib/business';
 import type { Business } from '../db/types';
 import { log } from '../lib/log';
@@ -18,15 +19,19 @@ type BootStatus =
   | 'no-folder'
   | 'error';
 
+type BootKind = 'local-folder' | 'google-drive';
+
 interface BootState {
   status: BootStatus;
   error: string | null;
   health: BackupHealth | null;
+  kind: BootKind | null;
 }
 
 type Listener = (s: BootState) => void;
 
-let state: BootState = { status: 'idle', error: null, health: null };
+let state: BootState = { status: 'idle', error: null, health: null, kind: null };
+let activeBusinessIdBound: string | null = null;
 const listeners = new Set<Listener>();
 let workerHandle: StopHandle | null = null;
 
@@ -57,41 +62,98 @@ async function getActiveBusiness(): Promise<Business | null> {
   }
 }
 
-/** Silent probe on app load. Never opens a picker or calls requestPermission
- *  (both need a user gesture). Only actually starts the worker if a saved
- *  handle exists AND its permission is already 'granted'. Otherwise sets
- *  status to 'needs-permission' (saved handle but Chrome revoked read-write)
- *  or 'no-folder' (no saved handle at all — new install or user cleared it)
- *  so the banner shows a Reconnect / Choose Folder button. */
-export async function tryBootLocalFolderProvider(): Promise<boolean> {
+function pickKind(business: Business): BootKind {
+  return business.drive_folder_id ? 'google-drive' : 'local-folder';
+}
+
+/** Silent probe on app load. Routes to the right backend based on how the
+ *  business was onboarded (drive_folder_id present ⇒ google-drive, else
+ *  local-folder). Never opens a picker or Google consent popup — those need
+ *  a user gesture, so on any credential gap we emit `needs-permission` /
+ *  `no-folder` and let the banner offer Reconnect. */
+export async function tryBootProvider(): Promise<boolean> {
   if (workerHandle) return true;
   const business = await getActiveBusiness();
   if (!business) {
-    emit({ status: 'idle', error: null });
+    emit({ status: 'idle', error: null, kind: null });
     return true;
   }
-  log.info('boot', 'trying local-folder provider', { business: business.name });
+  const kind = pickKind(business);
+  log.info('boot', 'trying provider', { business: business.name, kind });
+  return kind === 'google-drive'
+    ? tryBootDrive(business)
+    : tryBootLocalFolder(business);
+}
 
+async function tryBootLocalFolder(business: Business): Promise<boolean> {
   const saved = await peekSavedHandle();
   if (!saved) {
     log.info('boot', 'no saved folder handle — awaiting user reconnect');
-    emit({ status: 'no-folder', error: null });
+    emit({ status: 'no-folder', error: null, kind: 'local-folder' });
     return false;
   }
 
   const perm = await queryHandlePermission(saved);
   if (perm !== 'granted') {
     log.info('boot', 'saved handle needs permission grant', { perm });
-    emit({ status: 'needs-permission', error: null });
+    emit({ status: 'needs-permission', error: null, kind: 'local-folder' });
     return false;
   }
 
   return await bootWithHandle(saved, business);
 }
 
+async function tryBootDrive(business: Business): Promise<boolean> {
+  // Cheap "have we ever connected?" gate. If tokens are stale but present,
+  // the DriveApiClient's silent refresh handles it inside connect() below;
+  // if refresh fails we surface needs-permission for the banner.
+  const { isDriveConnected } = await import('../drive/connectDrive');
+  const connected = await isDriveConnected(business.id).catch(() => false);
+  if (!connected) {
+    log.info('boot', 'drive not connected — awaiting user reconnect', {
+      business: business.id,
+    });
+    emit({ status: 'needs-permission', error: null, kind: 'google-drive' });
+    return false;
+  }
+
+  emit({ status: 'starting', error: null, kind: 'google-drive' });
+  try {
+    const { buildDriveProvider } = await import('../ui/onboarding/driveGlue');
+    const provider = await buildDriveProvider(business.id);
+    await provider.initializeBusiness({
+      businessId: business.id,
+      businessName: business.name,
+    });
+    activeBusinessIdBound = business.id;
+    setActiveProvider(provider);
+    workerHandle = startSyncWorker({
+      provider,
+      onStateChange: (h) => emit({ health: h }),
+    });
+    log.info('boot', 'drive sync worker started', { business: business.name });
+    emit({ status: 'running', error: null, kind: 'google-drive' });
+    return true;
+  } catch (err) {
+    const msg = (err as Error).message ?? String(err);
+    log.error('boot', 'drive boot failed', { error: msg });
+    const { DriveNeedsReconnectError } = await import(
+      '../drive/GoogleDriveStorageProvider'
+    );
+    const needsAuth = err instanceof DriveNeedsReconnectError;
+    emit({
+      status: needsAuth ? 'needs-permission' : 'error',
+      error: needsAuth ? null : msg,
+      kind: 'google-drive',
+    });
+    return false;
+  }
+}
+
 /** Called from a Reconnect banner click. Runs inside a user gesture so
  *  showDirectoryPicker (no saved handle) or requestPermission (saved handle,
- *  permission expired) can succeed. */
+ *  permission expired) can succeed. For Drive-backed businesses this opens
+ *  the GIS popup instead. */
 export async function reconnectWithUserGesture(): Promise<boolean> {
   // If a worker is already running but the user is clicking Reconnect, it's
   // because sync is failing (e.g. businessId mismatch after creating a new
@@ -102,13 +164,54 @@ export async function reconnectWithUserGesture(): Promise<boolean> {
     workerHandle.stop();
     workerHandle = null;
     setActiveProvider(null);
+    activeBusinessIdBound = null;
   }
   const business = await getActiveBusiness();
   if (!business) {
-    emit({ status: 'idle', error: null });
+    emit({ status: 'idle', error: null, kind: null });
     return true;
   }
-  emit({ status: 'starting', error: null });
+  const kind = pickKind(business);
+  emit({ status: 'starting', error: null, kind });
+
+  if (kind === 'google-drive') {
+    try {
+      const { connectDrive } = await import('../drive/connectDrive');
+      // Popup — needs the user gesture we're already inside of. `consent`
+      // re-prompts so a revoked token / expired session doesn't silently
+      // fall through to the "not connected" branch.
+      await connectDrive({ businessId: business.id, prompt: 'consent' });
+      const { buildDriveProvider } = await import('../ui/onboarding/driveGlue');
+      const provider = await buildDriveProvider(business.id);
+      await provider.initializeBusiness({
+        businessId: business.id,
+        businessName: business.name,
+      });
+      activeBusinessIdBound = business.id;
+      setActiveProvider(provider);
+      workerHandle = startSyncWorker({
+        provider,
+        onStateChange: (h) => emit({ health: h }),
+      });
+      emit({ status: 'running', error: null, kind: 'google-drive' });
+      return true;
+    } catch (err) {
+      const msg = (err as Error).message ?? String(err);
+      log.error('boot', 'drive reconnect failed', { error: msg });
+      // GIS popup dismissed / user cancelled → stay actionable, don't red-flag.
+      const cancelled =
+        msg.includes('popup_closed_by_user') ||
+        msg.includes('access_denied') ||
+        msg.toLowerCase().includes('cancelled by user');
+      emit({
+        status: cancelled ? 'needs-permission' : 'error',
+        error: cancelled ? null : msg,
+        kind: 'google-drive',
+      });
+      return false;
+    }
+  }
+
   const provider = new LocalFolderStorageProvider();
   try {
     // connect() handles: (a) prompt via showDirectoryPicker if no saved
@@ -119,21 +222,22 @@ export async function reconnectWithUserGesture(): Promise<boolean> {
       businessId: business.id,
       businessName: business.name,
     });
+    activeBusinessIdBound = business.id;
     setActiveProvider(provider);
     workerHandle = startSyncWorker({
       provider,
       onStateChange: (h) => emit({ health: h }),
     });
-    emit({ status: 'running', error: null });
+    emit({ status: 'running', error: null, kind: 'local-folder' });
     return true;
   } catch (err) {
     const msg = (err as Error).message ?? String(err);
     if (msg.toLowerCase().includes('abort')) {
       // User cancelled the picker — revert to whatever state we were in
       // before so the banner remains actionable.
-      emit({ status: 'no-folder', error: null });
+      emit({ status: 'no-folder', error: null, kind: 'local-folder' });
     } else {
-      emit({ status: 'error', error: msg });
+      emit({ status: 'error', error: msg, kind: 'local-folder' });
     }
     return false;
   }
@@ -143,7 +247,7 @@ async function bootWithHandle(
   handle: FileSystemDirectoryHandle,
   business: Business,
 ): Promise<boolean> {
-  emit({ status: 'starting', error: null });
+  emit({ status: 'starting', error: null, kind: 'local-folder' });
   const provider = new LocalFolderStorageProvider();
   provider.setDirectoryHandle(handle);
   try {
@@ -152,17 +256,22 @@ async function bootWithHandle(
       businessId: business.id,
       businessName: business.name,
     });
+    activeBusinessIdBound = business.id;
     setActiveProvider(provider);
     workerHandle = startSyncWorker({
       provider,
       onStateChange: (h) => emit({ health: h }),
     });
     log.info('boot', 'sync worker started', { business: business.name });
-    emit({ status: 'running', error: null });
+    emit({ status: 'running', error: null, kind: 'local-folder' });
     return true;
   } catch (err) {
     log.error('boot', 'bootWithHandle failed', { error: err });
-    emit({ status: 'error', error: (err as Error).message ?? String(err) });
+    emit({
+      status: 'error',
+      error: (err as Error).message ?? String(err),
+      kind: 'local-folder',
+    });
     return false;
   }
 }
@@ -172,27 +281,35 @@ async function bootWithHandle(
  *  bound to a different business, stop it first so the new provider takes
  *  over. Without this, creating a second business on the same device leaves
  *  the worker flushing new events against the previous business's folder
- *  handle and every job fails with `businessId mismatch`. */
-export function adoptConnectedProvider(provider: LocalFolderStorageProvider): void {
-  const newBusinessId = provider.getBoundBusinessId();
+ *  handle and every job fails with `businessId mismatch`.
+ *
+ *  `boundBusinessId` is passed explicitly so this works for both LocalFolder
+ *  (which stores it internally via setBusiness) and Drive (which doesn't
+ *  expose the same accessor). */
+export function adoptConnectedProvider(
+  provider: CustomerStorageProvider,
+  boundBusinessId: string,
+): void {
   if (workerHandle) {
-    const active = getActiveProvider() as LocalFolderStorageProvider | null;
-    const currentBusinessId = active?.getBoundBusinessId?.() ?? null;
-    if (currentBusinessId === newBusinessId) return;
+    if (activeBusinessIdBound === boundBusinessId) return;
     log.info('boot', 'stopping worker before adopting new business', {
-      from: currentBusinessId,
-      to: newBusinessId,
+      from: activeBusinessIdBound,
+      to: boundBusinessId,
     });
     workerHandle.stop();
     workerHandle = null;
   }
+  activeBusinessIdBound = boundBusinessId;
+  const kind: BootKind = provider instanceof LocalFolderStorageProvider
+    ? 'local-folder'
+    : 'google-drive';
   setActiveProvider(provider);
   workerHandle = startSyncWorker({
     provider,
     onStateChange: (h) => emit({ health: h }),
   });
-  log.info('boot', 'sync worker started via adopt', { business: newBusinessId });
-  emit({ status: 'running', error: null });
+  log.info('boot', 'sync worker started via adopt', { business: boundBusinessId, kind });
+  emit({ status: 'running', error: null, kind });
 }
 
 export function stopSyncWorker(): void {
@@ -200,8 +317,9 @@ export function stopSyncWorker(): void {
     workerHandle.stop();
     workerHandle = null;
   }
+  activeBusinessIdBound = null;
   setActiveProvider(null);
-  emit({ status: 'idle', error: null });
+  emit({ status: 'idle', error: null, kind: null });
 }
 
 export function isRunning(): boolean {

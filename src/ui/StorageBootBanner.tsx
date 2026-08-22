@@ -3,7 +3,7 @@ import {
   getBootState,
   reconnectWithUserGesture,
   subscribeBoot,
-  tryBootLocalFolderProvider,
+  tryBootProvider,
 } from '../sync/bootProvider';
 import { useBackupHealth } from './BackupHealthContext';
 
@@ -26,9 +26,11 @@ export default function StorageBootBanner() {
 
   useEffect(() => {
     const unsub = subscribeBoot(setState);
-    // Silent boot on first mount. This will land in 'running' if the saved
-    // handle still has readwrite permission, or 'needs-permission' if not.
-    void tryBootLocalFolderProvider();
+    // Silent boot on first mount. Routes to the right backend based on the
+    // active business — local-folder tries the saved handle, google-drive
+    // tries the stored token (with silent refresh). If either has no live
+    // credential the banner surfaces Reconnect.
+    void tryBootProvider();
     return unsub;
   }, []);
 
@@ -41,8 +43,17 @@ export default function StorageBootBanner() {
     }
   };
 
+  const isDrive = state.kind === 'google-drive';
+  const target = isDrive ? 'Google Drive' : 'folder';
+
   const buttonLabel = (isNoFolder: boolean) =>
-    busy ? 'Working…' : isNoFolder ? 'Choose Folder…' : 'Reconnect';
+    busy
+      ? 'Working…'
+      : isNoFolder
+        ? 'Choose Folder…'
+        : isDrive
+          ? 'Reconnect Google Drive'
+          : 'Reconnect';
 
   // Boot-phase banner: no folder yet, needs permission, or bootWithHandle
   // outright failed. Yellow (needs-permission / no-folder) or red (error).
@@ -50,10 +61,12 @@ export default function StorageBootBanner() {
     const isError = state.status === 'error';
     const isNoFolder = state.status === 'no-folder';
     const message = isError
-      ? `Backup folder error: ${state.error ?? 'unknown'}`
+      ? `Backup ${target} error: ${state.error ?? 'unknown'}`
       : isNoFolder
         ? 'Backup folder not chosen yet. Pick a folder so new entries flush to disk.'
-        : 'Backup folder needs permission. Click Reconnect and re-grant access so new entries flush to disk.';
+        : isDrive
+          ? 'Google Drive needs to reconnect. Click Reconnect to sign in again so new entries upload.'
+          : 'Backup folder needs permission. Click Reconnect and re-grant access so new entries flush to disk.';
     return (
       <div
         className={
@@ -81,9 +94,12 @@ export default function StorageBootBanner() {
   // fixes the businessId-mismatch loop that stalls after a new business is
   // created on top of a running worker).
   if (health.status === 'ERROR' || health.status === 'DISCONNECTED') {
+    const errWhere = isDrive ? 'Google Drive' : 'folder';
     const message = health.lastError
-      ? `Backup is not saving to your folder: ${health.lastError}`
-      : 'Backup is not saving to your folder. Click Reconnect to re-select the folder for this business.';
+      ? `Backup is not saving to your ${errWhere}: ${health.lastError}`
+      : isDrive
+        ? 'Backup is not saving to Google Drive. Click Reconnect to sign in again.'
+        : 'Backup is not saving to your folder. Click Reconnect to re-select the folder for this business.';
     return (
       <div
         className="px-4 py-2 text-sm flex items-center gap-3 border-b bg-rose-50 border-rose-200 text-rose-900"

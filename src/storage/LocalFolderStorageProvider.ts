@@ -465,16 +465,6 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
     this.injectedHandle = handle;
   }
 
-  /** Which business this provider is currently bound to after
-   *  initializeBusiness(). Null before initializeBusiness runs, and null again
-   *  after disconnect(). Used by bootProvider to detect when the active
-   *  business has changed and the running sync worker must be restarted
-   *  against a fresh provider — otherwise every flush fails with a
-   *  businessId mismatch (see W-restore-data-loss note). */
-  getBoundBusinessId(): string | null {
-    return this.business?.businessId ?? null;
-  }
-
   async connect(config: ProviderConfig): Promise<void> {
     if (config.kind !== 'local-folder') {
       throw new Error(
