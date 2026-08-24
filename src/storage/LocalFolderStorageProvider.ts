@@ -22,6 +22,7 @@ import type {
   ChangesPage,
   ConnectionStatus,
   CustomerStorageProvider,
+  DiscoveredBusinessOnProvider,
   DownloadAttachmentInput,
   ExternalChange,
   InitResult,
@@ -1117,6 +1118,51 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       attachmentIndex,
       generatedAt: new Date().toISOString(),
     };
+  }
+
+  // Enumerate BusinessVault/<name>/ folders. Supports two shapes:
+  //   (a) user picked the PARENT of BusinessVault — entries live under BusinessVault/<name>
+  //   (b) user picked BusinessVault itself — entries live under <name>
+  // Try (a) first (canonical), fall back to (b). This mirrors what the
+  // Restore flow used to do inline via `_fsForTests`, moved here so it works
+  // for real Drive providers too via the same interface.
+  async listBusinesses(): Promise<DiscoveredBusinessOnProvider[]> {
+    const fs = this.requireFs();
+    const candidates: Array<{
+      base: string;
+      entries: Array<{ name: string; kind: 'file' | 'directory' }>;
+    }> = [];
+    if (await fs.exists('BusinessVault')) {
+      candidates.push({ base: 'BusinessVault', entries: await fs.list('BusinessVault') });
+    }
+    candidates.push({ base: '', entries: await fs.list('') });
+
+    const out: DiscoveredBusinessOnProvider[] = [];
+    const seen = new Set<string>();
+    for (const cand of candidates) {
+      for (const e of cand.entries) {
+        if (e.kind !== 'directory') continue;
+        const folderPath = cand.base ? `${cand.base}/${e.name}` : e.name;
+        if (seen.has(folderPath)) continue;
+        const manifestPath = `${folderPath}/metadata/manifest.json`;
+        if (!(await fs.exists(manifestPath))) continue;
+        let manifest: Record<string, unknown>;
+        try {
+          manifest = JSON.parse(await fs.readFileText(manifestPath));
+        } catch {
+          continue;
+        }
+        seen.add(folderPath);
+        out.push({
+          businessId: String(manifest.businessId ?? e.name),
+          businessName: String(manifest.businessName ?? e.name),
+          folderPath,
+          manifest,
+        });
+      }
+      if (out.length > 0) return out;
+    }
+    return out;
   }
 
   // -------------------------------------------------------------------------

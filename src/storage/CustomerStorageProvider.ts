@@ -277,12 +277,37 @@ export interface RestoreDescriptor {
 // The interface itself
 // ---------------------------------------------------------------------------
 
+// One entry per business folder found under BusinessVault/. Populated by
+// listBusinesses() and consumed by the Restore flow to let the user pick
+// which business to restore (and to read journalCheckpoint / schemaVersion
+// off the manifest without a second round-trip).
+export interface DiscoveredBusinessOnProvider {
+  businessId: string;
+  businessName: string;
+  /** e.g. 'BusinessVault/Acme Traders'. */
+  folderPath: string;
+  /** Parsed metadata/manifest.json — the ManifestShape restore expects. */
+  manifest: Readonly<{
+    businessId?: string;
+    businessName?: string;
+    schemaVersion?: number;
+    journalCheckpoint?: string;
+    [k: string]: unknown;
+  }>;
+}
+
 export interface CustomerStorageProvider {
   connect(config: ProviderConfig): Promise<void>;
   disconnect(): Promise<void>;
   connectionStatus(): Promise<ConnectionStatus>;
 
   initializeBusiness(input: InitializeBusinessInput): Promise<InitResult>;
+
+  // Enumerate every business folder under BusinessVault/ on this provider.
+  // Optional: FakeProviders in the test suite don't implement it. Real
+  // providers (LocalFolder, GoogleDrive) do, and the Restore flow requires
+  // it to work — without it, Restore has nothing to enumerate.
+  listBusinesses?(): Promise<DiscoveredBusinessOnProvider[]>;
 
   writeJournalEvents(events: SyncEvent[]): Promise<WriteResult>;
   readJournalEvents(opts: ReadJournalOpts): Promise<SyncEvent[]>;

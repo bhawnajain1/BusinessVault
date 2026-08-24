@@ -24,6 +24,7 @@ import type {
   ChangesPage,
   ConnectionStatus,
   CustomerStorageProvider,
+  DiscoveredBusinessOnProvider,
   DownloadAttachmentInput,
   ExternalChange,
   IntegrityIssue,
@@ -468,6 +469,42 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       reused,
       createdAt: nowIso(),
     };
+  }
+
+  // Enumerate every business folder under BusinessVault/ on Drive. Reads
+  // each candidate's metadata/manifest.json inline so the caller doesn't
+  // need a second round-trip. Called by the Restore flow — without this,
+  // Restore has nothing to pick from.
+  async listBusinesses(): Promise<DiscoveredBusinessOnProvider[]> {
+    if (!this.connected) throw new Error('provider not connected');
+    const root = await this.api.rootFolderId();
+    const vault = await this.api.findChildByName(root, ROOT_FOLDER_NAME);
+    if (!vault || vault.mimeType !== MIME_FOLDER) return [];
+    const children = await this.api.listChildren(vault.id);
+    const out: DiscoveredBusinessOnProvider[] = [];
+    for (const c of children) {
+      if (c.mimeType !== MIME_FOLDER) continue;
+      // Read <biz>/metadata/manifest.json. Missing / unparseable → skip; a
+      // corrupt sibling shouldn't block the user from restoring others.
+      const metadataFolder = await this.api.findChildByName(c.id, 'metadata');
+      if (!metadataFolder || metadataFolder.mimeType !== MIME_FOLDER) continue;
+      const manifestRef = await this.api.findChildByName(metadataFolder.id, 'manifest.json');
+      if (!manifestRef || manifestRef.mimeType === MIME_FOLDER) continue;
+      let manifest: Record<string, unknown>;
+      try {
+        const text = await blobText(await this.api.getFileContents(manifestRef.id));
+        manifest = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      out.push({
+        businessId: String(manifest.businessId ?? c.name),
+        businessName: String(manifest.businessName ?? c.name),
+        folderPath: `${ROOT_FOLDER_NAME}/${c.name}`,
+        manifest,
+      });
+    }
+    return out;
   }
 
   private initialReadme(businessName: string): string {

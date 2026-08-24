@@ -475,36 +475,20 @@ interface ManifestShape {
   [k: string]: unknown;
 }
 
+// Cache of the manifest that discoverBusinesses already parsed, so
+// readManifest doesn't do a second fetch. Keyed by folderPath, which is
+// unique across the picker context. Populated once per rebuildFromDrive call.
+const manifestCache = new WeakMap<DiscoveredBusiness, ManifestShape>();
+
 async function readManifest(
-  provider: CustomerStorageProvider,
+  _provider: CustomerStorageProvider,
   business: DiscoveredBusiness,
 ): Promise<ManifestShape> {
-  // The provider interface doesn't expose an arbitrary-file read (by design —
-  // it should not resemble a filesystem). Use the LocalFolderStorageProvider
-  // escape hatch when available; for real providers, snapshot manifests carry
-  // the same info so we fall back to that.
-  const anyProvider = provider as unknown as {
-    _fsForTests?: () => {
-      readFileText(p: string): Promise<string>;
-      exists(p: string): Promise<boolean>;
-    };
-  };
-  if (typeof anyProvider._fsForTests === 'function') {
-    const fs = anyProvider._fsForTests();
-    const p = `${business.folderPath}/metadata/manifest.json`;
-    if (await fs.exists(p)) {
-      try {
-        return JSON.parse(await fs.readFileText(p)) as ManifestShape;
-      } catch (err) {
-        throw new BackupIntegrityError(
-          'Backup integrity verification failed',
-          { where: 'manifest.json', message: (err as Error).message },
-        );
-      }
-    }
-  }
-  // Fallback: rely on discovery-time schemaVersion. journalCheckpoint left
-  // undefined → replay from the very first event.
+  const cached = manifestCache.get(business);
+  if (cached) return cached;
+  // No manifest was cached at discovery time — fall back to the discovery
+  // metadata. journalCheckpoint left undefined → replay from the very first
+  // event, which is correct for a first-time restore.
   return {
     businessId: business.businessId,
     businessName: business.businessName,
@@ -515,53 +499,21 @@ async function readManifest(
 async function discoverBusinesses(
   provider: CustomerStorageProvider,
 ): Promise<DiscoveredBusiness[]> {
-  // For LocalFolderStorageProvider we can read BusinessVault/ directly.
-  // For real Drive providers, a real implementation would use provider.listBusinesses
-  // (not yet in the interface; §32 stub). In the current milestone we support
-  // LocalFolder + a single-business fast path where the provider already knows
-  // its business via prior initializeBusiness.
-  const anyProvider = provider as unknown as {
-    _fsForTests?: () => {
-      list(p: string): Promise<Array<{ name: string; kind: 'file' | 'directory' }>>;
-      readFileText(p: string): Promise<string>;
-      exists(p: string): Promise<boolean>;
-    };
-  };
-  if (typeof anyProvider._fsForTests === 'function') {
-    const fs = anyProvider._fsForTests();
-    // Support two folder shapes:
-    //   (a) user picked the PARENT of BusinessVault — entries live under BusinessVault/<name>
-    //   (b) user picked BusinessVault itself — entries live under <name>
-    // Try (a) first (canonical), fall back to (b).
-    const candidates: Array<{ base: string; entries: Array<{ name: string; kind: 'file' | 'directory' }> }> = [];
-    if (await fs.exists('BusinessVault')) {
-      candidates.push({ base: 'BusinessVault', entries: await fs.list('BusinessVault') });
-    }
-    candidates.push({ base: '', entries: await fs.list('') });
-    const out: DiscoveredBusiness[] = [];
-    const seen = new Set<string>();
-    for (const cand of candidates) {
-      for (const e of cand.entries) {
-        if (e.kind !== 'directory') continue;
-        const folderPath = cand.base ? `${cand.base}/${e.name}` : e.name;
-        if (seen.has(folderPath)) continue;
-        const manifestPath = `${folderPath}/metadata/manifest.json`;
-        if (!(await fs.exists(manifestPath))) continue;
-        let manifest: ManifestShape;
-        try {
-          manifest = JSON.parse(await fs.readFileText(manifestPath));
-        } catch {
-          continue;
-        }
-        seen.add(folderPath);
-        out.push({
-          businessId: String(manifest.businessId ?? e.name),
-          businessName: String(manifest.businessName ?? e.name),
-          folderPath,
-          schemaVersion: Number(manifest.schemaVersion ?? 1),
-        });
-      }
-      if (out.length > 0) return out;
+  // Every real provider (LocalFolder, GoogleDrive) implements listBusinesses.
+  // Test-only FakeProviders don't — for them, fall back to the "already bound
+  // to a single business" path via connectionStatus.
+  if (typeof provider.listBusinesses === 'function') {
+    const rows = await provider.listBusinesses();
+    const out: DiscoveredBusiness[] = rows.map((r) => ({
+      businessId: r.businessId,
+      businessName: r.businessName,
+      folderPath: r.folderPath,
+      schemaVersion: Number(r.manifest.schemaVersion ?? 1),
+    }));
+    // Wire each DiscoveredBusiness -> full manifest so readManifest can serve
+    // it without a second Drive round-trip.
+    for (let i = 0; i < out.length; i++) {
+      manifestCache.set(out[i], rows[i].manifest as ManifestShape);
     }
     return out;
   }

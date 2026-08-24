@@ -381,6 +381,57 @@ describe('GoogleDriveStorageProvider — initializeBusiness', () => {
   });
 });
 
+describe('GoogleDriveStorageProvider — listBusinesses', () => {
+  it('returns empty when no BusinessVault folder exists', async () => {
+    const drive = new FakeDrive();
+    drive.seedTokens();
+    const provider = new GoogleDriveStorageProvider({ driveApi: drive });
+    await provider.connect(config);
+    const rows = await provider.listBusinesses();
+    expect(rows).toEqual([]);
+  });
+
+  it('enumerates every business under BusinessVault/ with parsed manifest', async () => {
+    // Seed two businesses so we exercise the multi-result path — this is the
+    // Restore-picker case, which was silently broken before because the old
+    // discoverBusinesses fallback only ever returned the currently-bound one.
+    const drive = new FakeDrive();
+    drive.seedTokens();
+    const provider = new GoogleDriveStorageProvider({ driveApi: drive });
+    await provider.connect(config);
+    await provider.initializeBusiness({ businessId: 'BIZ1', businessName: 'Acme' });
+    // Re-initialize with a different business to get a second folder under
+    // BusinessVault/. Real users get here by onboarding a second business on
+    // the same Drive account.
+    await provider.initializeBusiness({ businessId: 'BIZ2', businessName: 'Beta' });
+
+    const rows = await provider.listBusinesses();
+    const names = rows.map((r) => r.businessName).sort();
+    expect(names).toEqual(['Acme', 'Beta']);
+    const acme = rows.find((r) => r.businessName === 'Acme')!;
+    expect(acme.folderPath).toBe('BusinessVault/Acme');
+    expect(acme.manifest.businessId).toBe('BIZ1');
+    expect(acme.manifest.schemaVersion).toBeGreaterThanOrEqual(1);
+  });
+
+  it('skips business folders whose manifest.json is missing or unparseable', async () => {
+    const drive = new FakeDrive();
+    drive.seedTokens();
+    const provider = new GoogleDriveStorageProvider({ driveApi: drive });
+    await provider.connect(config);
+    await provider.initializeBusiness({ businessId: 'BIZ1', businessName: 'Acme' });
+
+    // Corrupt Acme's manifest — a partial write / external edit.
+    const manifest = [...drive.nodes.values()].find(
+      (n) => n.name === 'manifest.json' && drive.pathTo(n.id) === 'BusinessVault/Acme/metadata/manifest.json',
+    )!;
+    manifest.content = new TextEncoder().encode('{not json');
+
+    const rows = await provider.listBusinesses();
+    expect(rows).toEqual([]);
+  });
+});
+
 describe('GoogleDriveStorageProvider — writeJournalEvents', () => {
   it('appends JSONL to journal/YYYY/YYYY-MM.events.jsonl and dedupes on event_id', async () => {
     const { provider, drive } = await connected();
