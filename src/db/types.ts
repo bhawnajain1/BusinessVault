@@ -357,6 +357,10 @@ export interface PurchaseLine {
 export interface PaymentAllocation {
   invoice_id?: string;
   bill_id?: string;
+  // Set when this slice captured excess and became an on-account advance for
+  // the party. The advance JE credits Customer/Supplier Advances instead of
+  // AR/AP. Exactly one of {invoice_id, bill_id, advance_id} is set.
+  advance_id?: string;
   amount_paise: number; // money: integer paise
 }
 

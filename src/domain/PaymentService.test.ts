@@ -105,6 +105,8 @@ async function seed(db: BusinessVaultDB): Promise<void> {
     makeAccount('acc-cash', '1100', 'asset'),
     makeAccount('acc-ar', '1200', 'asset'),
     makeAccount('acc-ap', '2100', 'liability'),
+    makeAccount('acc-cust-adv', '2050', 'liability'),
+    makeAccount('acc-sup-adv', '1250', 'asset'),
   ]);
 }
 
@@ -304,6 +306,179 @@ describe('PaymentService.createPayment', () => {
     expect(bill?.balance_paise).toBe(0);
     expect(bill?.status).toBe('paid');
   });
+
+  it('captures excess into a customer advance (payablesRec §13/§14) — invoice fully paid, remainder held on account', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-adv-1', 100000));
+    const svc = new PaymentService(db);
+
+    const payment = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-ADV-1',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'bank',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 150000,
+      advance_number: 'ADV-1',
+      allocations: [
+        { invoice_id: 'inv-adv-1', amount_paise: 100000 },
+        { as_advance: true, amount_paise: 50000 },
+      ],
+    });
+
+    const inv = await db.invoices.get('inv-adv-1');
+    expect(inv?.balance_paise).toBe(0);
+    expect(inv?.status).toBe('paid');
+
+    const advs = await db.advances
+      .where('[business_id+party_type+party_id]')
+      .equals([BIZ, 'customer', 'cust-1'])
+      .toArray();
+    expect(advs.length).toBe(1);
+    expect(advs[0].amount_paise).toBe(50000);
+    expect(advs[0].remaining_paise).toBe(50000);
+    expect(advs[0].journal_entry_id).toBe(payment.journal_entry_id);
+
+    const advSlice = payment.allocations.find((a) => a.advance_id);
+    expect(advSlice?.advance_id).toBe(advs[0].id);
+
+    const lines = await db.journal_lines
+      .where('[business_id+entry_id]')
+      .equals([BIZ, payment.journal_entry_id])
+      .toArray();
+    const sumD = lines.reduce((s, l) => s + l.debit_paise, 0);
+    const sumC = lines.reduce((s, l) => s + l.credit_paise, 0);
+    expect(sumD).toBe(sumC);
+    expect(sumD).toBe(150000);
+    const advLine = lines.find((l) => l.account_id === 'acc-cust-adv');
+    expect(advLine?.credit_paise).toBe(50000);
+    const arLine = lines.find((l) => l.account_id === 'acc-ar');
+    expect(arLine?.credit_paise).toBe(100000);
+
+    const events = await db.sync_events
+      .where('business_id')
+      .equals(BIZ)
+      .toArray();
+    const advEvt = events.find(
+      (e) => e.entity_type === 'advance' && e.operation === 'created',
+    );
+    expect(advEvt).toBeTruthy();
+  });
+
+  it('pure on-account customer receipt (no invoice slice) materializes an advance', async () => {
+    const db = freshDb();
+    await seed(db);
+    const svc = new PaymentService(db);
+
+    const payment = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-ADV-PURE',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 40000,
+      advance_number: 'ADV-PURE',
+      allocations: [{ as_advance: true, amount_paise: 40000 }],
+    });
+
+    const advs = await db.advances
+      .where('[business_id+party_type+party_id]')
+      .equals([BIZ, 'customer', 'cust-1'])
+      .toArray();
+    expect(advs.length).toBe(1);
+    expect(advs[0].remaining_paise).toBe(40000);
+
+    const lines = await db.journal_lines
+      .where('[business_id+entry_id]')
+      .equals([BIZ, payment.journal_entry_id])
+      .toArray();
+    // Dr Cash 40000, Cr CustomerAdvance 40000 — no AR line.
+    expect(lines.length).toBe(2);
+    expect(lines.some((l) => l.account_id === 'acc-ar')).toBe(false);
+    const advLine = lines.find((l) => l.account_id === 'acc-cust-adv');
+    expect(advLine?.credit_paise).toBe(40000);
+  });
+
+  it('captures excess into a supplier advance on outbound over-pay', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.purchases.add(makeBill('bill-adv-1', 30000));
+    const svc = new PaymentService(db);
+
+    const payment = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-ADV-OUT',
+      payment_date: '2026-08-19',
+      direction: 'out',
+      party_type: 'supplier',
+      party_id: 'sup-1',
+      method: 'bank',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ap',
+      amount_paise: 50000,
+      advance_number: 'ADV-SUP-1',
+      allocations: [
+        { bill_id: 'bill-adv-1', amount_paise: 30000 },
+        { as_advance: true, amount_paise: 20000 },
+      ],
+    });
+
+    const bill = await db.purchases.get('bill-adv-1');
+    expect(bill?.balance_paise).toBe(0);
+
+    const advs = await db.advances
+      .where('[business_id+party_type+party_id]')
+      .equals([BIZ, 'supplier', 'sup-1'])
+      .toArray();
+    expect(advs.length).toBe(1);
+    expect(advs[0].remaining_paise).toBe(20000);
+    expect(advs[0].party_type).toBe('supplier');
+
+    const lines = await db.journal_lines
+      .where('[business_id+entry_id]')
+      .equals([BIZ, payment.journal_entry_id])
+      .toArray();
+    // Dr AP 30000 + Dr SupplierAdvance 20000 + Cr Cash 50000
+    const sumD = lines.reduce((s, l) => s + l.debit_paise, 0);
+    expect(sumD).toBe(50000);
+    const advLine = lines.find((l) => l.account_id === 'acc-sup-adv');
+    expect(advLine?.debit_paise).toBe(20000);
+  });
+
+  it('requires advance_number when any allocation is as_advance', async () => {
+    const db = freshDb();
+    await seed(db);
+    const svc = new PaymentService(db);
+
+    await expect(
+      svc.createPayment({
+        business_id: BIZ,
+        device_id: DEV,
+        payment_number: 'PAY-NO-NUM',
+        payment_date: '2026-08-19',
+        direction: 'in',
+        party_type: 'customer',
+        party_id: 'cust-1',
+        method: 'cash',
+        cash_or_bank_account_id: 'acc-cash',
+        ar_or_ap_account_id: 'acc-ar',
+        amount_paise: 10000,
+        allocations: [{ as_advance: true, amount_paise: 10000 }],
+      }),
+    ).rejects.toBeInstanceOf(PaymentValidationError);
+  });
 });
 
 describe('PaymentService.refundPayment', () => {
@@ -377,6 +552,43 @@ describe('PaymentService.refundPayment', () => {
       (e) => e.entity_id === original.id && e.operation === 'reversed',
     );
     expect(reversedEvts.length).toBe(1);
+  });
+
+  it('refuses to refund a payment carrying an as_advance slice', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-adv-r', 50000));
+    const svc = new PaymentService(db);
+
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-ADV-R',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'bank',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 60000,
+      advance_number: 'ADV-R',
+      allocations: [
+        { invoice_id: 'inv-adv-r', amount_paise: 50000 },
+        { as_advance: true, amount_paise: 10000 },
+      ],
+    });
+
+    await expect(
+      svc.refundPayment({
+        business_id: BIZ,
+        device_id: DEV,
+        payment_id: p.id,
+        refund_payment_number: 'PAY-ADV-R-REV',
+        refund_date: '2026-08-20',
+        reason: 'x',
+      }),
+    ).rejects.toBeInstanceOf(PaymentValidationError);
   });
 
   it('refuses to refund a refund (negative amount)', async () => {

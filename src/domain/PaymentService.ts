@@ -2,6 +2,7 @@ import Dexie from 'dexie';
 import { ulid } from 'ulid';
 import { db as defaultDb, type BusinessVaultDB } from '../db';
 import type {
+  Advance,
   Invoice,
   JournalEntry,
   JournalLine,
@@ -28,6 +29,12 @@ export interface InvoicePaymentSplit {
 export interface PaymentAllocationInput {
   invoice_id?: string;
   bill_id?: string;
+  // When true, this slice is held on account as a customer/supplier advance
+  // instead of settling an invoice/bill. Materializes one Advance row inside
+  // the same transaction as the payment (spec §13/§14: overpayment must not
+  // become negative outstanding — the excess is an explicit advance instead).
+  // Exactly one of {invoice_id, bill_id, as_advance} is set per allocation.
+  as_advance?: boolean;
   amount_paise: number;
 }
 
@@ -46,6 +53,9 @@ export interface CreatePaymentInput {
   reference?: string;
   notes?: string;
   allocations: PaymentAllocationInput[];
+  // Required when any allocation has as_advance=true. Numbering the advance
+  // stays under caller control so it fits the caller's PAY-/ADV- scheme.
+  advance_number?: string;
   idempotency_key?: string;
 }
 
@@ -76,6 +86,62 @@ export class PaymentService {
     const journalEntryId = ulid();
     const now = new Date().toISOString();
     const allocationsPreview = previewAllocations(input);
+    const advanceAmount = allocationsPreview
+      .filter((a) => a.advance_id === '__PENDING__')
+      .reduce((s, a) => s + a.amount_paise, 0);
+    const allocatedAmount = input.amount_paise - advanceAmount;
+
+    // Advance-account lookup only when there's excess to capture on account.
+    const advanceAcctCode =
+      input.party_type === 'customer'
+        ? SYSTEM_ACCOUNT_CODES.CUSTOMER_ADVANCE
+        : SYSTEM_ACCOUNT_CODES.SUPPLIER_ADVANCE;
+    const advanceAcct =
+      advanceAmount > 0
+        ? await findAccountByCode(input.business_id, advanceAcctCode, {
+            db: this.db,
+          })
+        : null;
+    if (advanceAmount > 0 && !advanceAcct) {
+      throw new PaymentValidationError(
+        `Advance account (code ${advanceAcctCode}) not found — run "Repair chart of accounts" in Settings.`,
+      );
+    }
+    if (advanceAmount > 0 && !input.advance_number?.trim()) {
+      throw new PaymentValidationError(
+        'advance_number is required when any allocation has as_advance=true',
+      );
+    }
+
+    // Materialize the Advance row up front so the payment's allocation slice
+    // references a real advance_id (the JE and Advance share journal_entry_id).
+    const advanceId = advanceAmount > 0 ? ulid() : null;
+    const advance: Advance | null = advanceId
+      ? {
+          id: advanceId,
+          business_id: input.business_id,
+          advance_number: input.advance_number!.trim(),
+          advance_date: input.payment_date,
+          party_type: input.party_type,
+          party_id: input.party_id,
+          method: input.method,
+          account_id: input.cash_or_bank_account_id,
+          amount_paise: advanceAmount,
+          remaining_paise: advanceAmount,
+          reference: input.reference ?? '',
+          notes: `Auto-created from excess on payment ${input.payment_number}`,
+          applications: [],
+          journal_entry_id: journalEntryId,
+          created_at: now,
+          updated_at: now,
+          entity_version: 1,
+        }
+      : null;
+    if (advanceId) {
+      for (const a of allocationsPreview) {
+        if (a.advance_id === '__PENDING__') a.advance_id = advanceId;
+      }
+    }
 
     const paymentPreview: Payment = {
       id: paymentId,
@@ -98,6 +164,7 @@ export class PaymentService {
     };
 
     const createdHash = await sha256Hex(canonicalJson(paymentPreview));
+    const advanceHash = advance ? await sha256Hex(canonicalJson(advance)) : '';
     const allocatedHash =
       allocationsPreview.length > 0
         ? await sha256Hex(
@@ -114,6 +181,7 @@ export class PaymentService {
         this.db.payments,
         this.db.invoices,
         this.db.purchases,
+        this.db.advances,
         this.db.journal_entries,
         this.db.journal_lines,
         this.db.sync_events,
@@ -139,6 +207,9 @@ export class PaymentService {
           amount_paise: input.amount_paise,
           cash_or_bank_account_id: input.cash_or_bank_account_id,
           ar_or_ap_account_id: input.ar_or_ap_account_id,
+          allocated_paise: allocatedAmount,
+          advance_paise: advanceAmount,
+          advance_account_id: advanceAcct?.id ?? null,
           party_type: input.party_type,
           party_id: input.party_id,
           ref_id: paymentId,
@@ -147,9 +218,24 @@ export class PaymentService {
           now,
         });
 
+        if (advance) await this.db.advances.add(advance);
         await this.db.payments.add(paymentPreview);
         await this.db.journal_entries.add(journal.entry);
         await this.db.journal_lines.bulkAdd(journal.lines);
+
+        if (advance) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'advance',
+            entity_id: advance.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: advance,
+            payload_hash: advanceHash,
+            timestamp: now,
+          });
+        }
 
         await this.writeEventPrehashed({
           business_id: input.business_id,
@@ -222,6 +308,14 @@ export class PaymentService {
         'cannot refund a refund/reversal payment',
       );
     }
+    // Advance-carrying refunds would require unwinding the Advance row too
+    // (its remaining_paise may already be partly consumed by apply-to-invoice).
+    // Not modeled yet — cancel the associated advance explicitly first.
+    if (original.allocations.some((a) => a.advance_id)) {
+      throw new PaymentValidationError(
+        'cannot refund a payment with on-account (as_advance) slices — cancel the associated advance first',
+      );
+    }
     const originalEntry = await this.db.journal_entries.get(
       original.journal_entry_id,
     );
@@ -245,6 +339,7 @@ export class PaymentService {
       (a) => ({
         invoice_id: a.invoice_id,
         bill_id: a.bill_id,
+        advance_id: a.advance_id,
         amount_paise: -a.amount_paise,
       }),
     );
@@ -623,28 +718,31 @@ function previewAllocations(
         'allocation amount must be positive integer paise',
       );
     }
-    if (
-      (a.invoice_id && a.bill_id) ||
-      (!a.invoice_id && !a.bill_id)
-    ) {
+    // Exactly one of: invoice_id, bill_id, as_advance must be set per slice.
+    const targetCount =
+      (a.invoice_id ? 1 : 0) + (a.bill_id ? 1 : 0) + (a.as_advance ? 1 : 0);
+    if (targetCount !== 1) {
       throw new PaymentValidationError(
-        'allocation must target exactly one of invoice_id or bill_id',
+        'allocation must target exactly one of invoice_id, bill_id, or as_advance',
       );
     }
-    if (input.direction === 'in' && !a.invoice_id) {
+    if (input.direction === 'in' && a.bill_id) {
       throw new PaymentValidationError(
-        'inbound payment must allocate to invoice_id, not bill_id',
+        'inbound payment cannot allocate to bill_id',
       );
     }
-    if (input.direction === 'out' && !a.bill_id) {
+    if (input.direction === 'out' && a.invoice_id) {
       throw new PaymentValidationError(
-        'outbound payment must allocate to bill_id, not invoice_id',
+        'outbound payment cannot allocate to invoice_id',
       );
     }
     sum += a.amount_paise;
     out.push({
       invoice_id: a.invoice_id,
       bill_id: a.bill_id,
+      // '__PENDING__' is rewritten to the real Advance.id after materialization
+      // in createPayment. It never survives to the persisted Payment row.
+      advance_id: a.as_advance ? '__PENDING__' : undefined,
       amount_paise: a.amount_paise,
     });
   }
@@ -653,17 +751,13 @@ function previewAllocations(
       `over-allocation: SUM(allocations)=${sum} exceeds amount_paise=${input.amount_paise}`,
     );
   }
-  // Regression fix: previously a payment could be posted where SUM(allocations)
-  // was strictly less than amount_paise. buildJournalEntry then posted the full
-  // amount_paise against AR/AP while allocations decremented only the allocated
-  // portion — the difference silently created an unattributable balance
-  // (customer over-payment) with no advance-account credit and no audit trail.
-  // Reject under-allocation. Callers who want to record an advance/on-account
-  // payment must add an explicit "advances" allocation.
+  // Under-allocation is rejected: the caller must explicitly capture any excess
+  // with an { as_advance: true } slice so it lands in Customer/Supplier Advances
+  // instead of silently inflating AR/AP with no audit trail.
   if (sum < input.amount_paise) {
     throw new PaymentValidationError(
       `under-allocation: SUM(allocations)=${sum} is less than amount_paise=${input.amount_paise}. ` +
-        `To record an on-account payment, add an explicit allocation to the customer/supplier advance.`,
+        `To record excess on account, add an { as_advance: true, amount_paise: <excess> } allocation.`,
     );
   }
   return out;
@@ -691,6 +785,12 @@ function buildJournalEntry(args: {
   amount_paise: number;
   cash_or_bank_account_id: string;
   ar_or_ap_account_id: string;
+  // Split of amount_paise: allocated portion settles AR/AP, advance portion
+  // goes to CUSTOMER_ADVANCE/SUPPLIER_ADVANCE. allocated + advance === amount.
+  // When advance_paise is 0, collapses to the classic 2-line entry.
+  allocated_paise: number;
+  advance_paise: number;
+  advance_account_id: string | null;
   party_type: PartyType;
   party_id: string;
   ref_id: string;
@@ -699,14 +799,8 @@ function buildJournalEntry(args: {
   now: string;
 }): { entry: JournalEntry; lines: JournalLine[] } {
   const now = args.now;
-  const debitAccount =
-    args.direction === 'in'
-      ? args.cash_or_bank_account_id
-      : args.ar_or_ap_account_id;
-  const creditAccount =
-    args.direction === 'in'
-      ? args.ar_or_ap_account_id
-      : args.cash_or_bank_account_id;
+  const cashAccount = args.cash_or_bank_account_id;
+  const arApAccount = args.ar_or_ap_account_id;
 
   const entry: JournalEntry = {
     id: args.id,
@@ -726,36 +820,93 @@ function buildJournalEntry(args: {
     entity_version: 1,
   };
 
-  const lines: JournalLine[] = [
-    {
+  const lines: JournalLine[] = [];
+  let lineNo = 1;
+  // direction 'in':  Dr Cash        Cr AR (allocated) + Cr CustomerAdvance (excess)
+  // direction 'out': Dr AP (alloc) + Dr SupplierAdvance (excess)  Cr Cash
+  if (args.direction === 'in') {
+    lines.push({
       id: ulid(),
       business_id: args.business_id,
       entry_id: entry.id,
-      line_no: 1,
-      account_id: debitAccount,
+      line_no: lineNo++,
+      account_id: cashAccount,
       debit_paise: args.amount_paise,
       credit_paise: 0,
-      party_type: args.direction === 'in' ? null : args.party_type,
-      party_id: args.direction === 'in' ? null : args.party_id,
-      description:
-        args.direction === 'in' ? 'Cash/Bank received' : 'Accounts Payable settled',
-    },
-    {
+      party_type: null,
+      party_id: null,
+      description: 'Cash/Bank received',
+    });
+    if (args.allocated_paise > 0) {
+      lines.push({
+        id: ulid(),
+        business_id: args.business_id,
+        entry_id: entry.id,
+        line_no: lineNo++,
+        account_id: arApAccount,
+        debit_paise: 0,
+        credit_paise: args.allocated_paise,
+        party_type: args.party_type,
+        party_id: args.party_id,
+        description: 'Accounts Receivable cleared',
+      });
+    }
+    if (args.advance_paise > 0) {
+      lines.push({
+        id: ulid(),
+        business_id: args.business_id,
+        entry_id: entry.id,
+        line_no: lineNo++,
+        account_id: args.advance_account_id!,
+        debit_paise: 0,
+        credit_paise: args.advance_paise,
+        party_type: args.party_type,
+        party_id: args.party_id,
+        description: 'Customer advance received',
+      });
+    }
+  } else {
+    if (args.allocated_paise > 0) {
+      lines.push({
+        id: ulid(),
+        business_id: args.business_id,
+        entry_id: entry.id,
+        line_no: lineNo++,
+        account_id: arApAccount,
+        debit_paise: args.allocated_paise,
+        credit_paise: 0,
+        party_type: args.party_type,
+        party_id: args.party_id,
+        description: 'Accounts Payable settled',
+      });
+    }
+    if (args.advance_paise > 0) {
+      lines.push({
+        id: ulid(),
+        business_id: args.business_id,
+        entry_id: entry.id,
+        line_no: lineNo++,
+        account_id: args.advance_account_id!,
+        debit_paise: args.advance_paise,
+        credit_paise: 0,
+        party_type: args.party_type,
+        party_id: args.party_id,
+        description: 'Supplier advance paid',
+      });
+    }
+    lines.push({
       id: ulid(),
       business_id: args.business_id,
       entry_id: entry.id,
-      line_no: 2,
-      account_id: creditAccount,
+      line_no: lineNo++,
+      account_id: cashAccount,
       debit_paise: 0,
       credit_paise: args.amount_paise,
-      party_type: args.direction === 'in' ? args.party_type : null,
-      party_id: args.direction === 'in' ? args.party_id : null,
-      description:
-        args.direction === 'in'
-          ? 'Accounts Receivable cleared'
-          : 'Cash/Bank paid',
-    },
-  ];
+      party_type: null,
+      party_id: null,
+      description: 'Cash/Bank paid',
+    });
+  }
 
   return { entry, lines };
 }
