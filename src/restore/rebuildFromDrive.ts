@@ -29,6 +29,7 @@ import type {
   SyncEvent,
 } from '../storage/CustomerStorageProvider';
 import { LocalFolderStorageProvider } from '../storage/LocalFolderStorageProvider';
+import { setCurrentBusinessId } from '../lib/business';
 import { parseCsv } from '../csv/csvCodec';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -412,6 +413,12 @@ export async function rebuildFromDrive(
     counts,
     issues,
   });
+
+  // Point the meta-DB at the restored business so the app boots into it on
+  // next reload. Without this, `currentBusinessId()` throws NotOnboardedError
+  // and every domain page renders the onboarding wizard — exactly the state
+  // testing surfaced after a successful-looking restore.
+  await setCurrentBusinessId(selected.businessId);
 
   progress('Restore complete', 100);
 

@@ -11,6 +11,7 @@ import {
   EmptyBackupError,
   UnshippedEventsError,
 } from './rebuildFromDrive';
+import { metaDb, __resetMetaDbForTests } from '../lib/device';
 import { writeCsv } from '../csv/csvCodec';
 import { TABLE_SPECS } from './tableSchema';
 
@@ -560,6 +561,7 @@ describe('rebuildFromDrive', () => {
   afterEach(async () => {
     db.close();
     await fs.rm(root, { recursive: true, force: true });
+    __resetMetaDbForTests();
   });
 
   it('rebuilds a business end-to-end from the folder', async () => {
@@ -715,6 +717,83 @@ describe('rebuildFromDrive', () => {
     // Restore ran to completion — unshipped event is gone; snapshot data landed.
     expect(report.counts.customers).toBe(2);
     expect(await db.sync_events.get('evt_unshipped_2')).toBeUndefined();
+  });
+
+  it('replays "business:created" events into the businesses table', async () => {
+    // Onboarding emits events with operation:'created' (not 'create'). Without
+    // an explicit handler mapping, restore's applyEvent returned 'unhandled'
+    // and the businesses row was never inserted from the journal — leaving
+    // the app in a no-active-business state after restore.
+    const { applyEvent } = await import('./eventHandlers');
+    const now = new Date().toISOString();
+    const businessPayload = {
+      id: 'biz_replay',
+      name: 'Replayed Biz',
+      legal_name: '',
+      gstin: null,
+      pan: null,
+      address_line1: '',
+      address_line2: '',
+      city: '',
+      state: '',
+      state_code: '',
+      pincode: '',
+      country: 'IN',
+      phone: '',
+      email: '',
+      financial_year_start_month: 4,
+      current_financial_year: '2026-27',
+      currency: 'INR',
+      logo_ref: null,
+      invoice_prefix: 'INV-',
+      invoice_next_seq: 1,
+      drive_folder_id: null,
+      drive_connected_email: null,
+      schema_version: 1,
+      created_at: now,
+      updated_at: now,
+      entity_version: 1,
+    };
+    // Provider-wire SyncOperation is CRUD-only (create/update/…), but journals
+    // written in the wild also carry past-tense verbs (created/updated/…) —
+    // that's exactly the drift the ':created' handler covers. Cast to exercise
+    // that wire shape through applyEvent.
+    const result = await applyEvent(
+      {
+        event_id: 'evt_biz_replay',
+        business_id: 'biz_replay',
+        device_id: 'dev_1',
+        entity_type: 'business',
+        entity_id: 'biz_replay',
+        operation: 'created' as unknown as SyncEvent['operation'],
+        entity_version: 1,
+        timestamp: now,
+        payload: businessPayload,
+        payload_hash: 'x',
+        previous_hash: null,
+        sync_status: 'SYNCED',
+      },
+      { db, businessId: 'biz_replay', diagnostics: [] },
+    );
+
+    expect(result).toBe('applied');
+    const row = await db.businesses.get('biz_replay');
+    expect(row).toBeDefined();
+    expect(row!.name).toBe('Replayed Biz');
+  });
+
+  it('sets current_business_id in meta-DB after successful restore', async () => {
+    // The app boots into the business whose id is stored under
+    // `current_business_id` in the meta-DB. Without this, a successful restore
+    // still drops the user into onboarding because `currentBusinessId()` throws.
+    await rebuildFromDrive(provider, {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    const row = await metaDb().settings.get('current_business_id');
+    expect(row).toBeDefined();
+    expect(row!.value).toBe(BID);
   });
 
   it('refuses to wipe local data when the backup folder has no snapshots and no events', async () => {

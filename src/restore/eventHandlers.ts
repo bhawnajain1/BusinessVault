@@ -64,7 +64,9 @@ const put =
 
 const HANDLERS: Record<string, EventHandler> = {
   'business:create': put<unknown>((db) => db.businesses),
+  'business:created': put<unknown>((db) => db.businesses),
   'business:update': put<unknown>((db) => db.businesses),
+  'business:updated': put<unknown>((db) => db.businesses),
 
   'customer:create': put<Customer>((db) => db.customers),
   'customer:update': put<Customer>((db) => db.customers),
