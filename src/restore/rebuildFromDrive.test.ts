@@ -6,7 +6,11 @@ import { Blob as NodeBlob } from 'node:buffer';
 import { LocalFolderStorageProvider } from '../storage/LocalFolderStorageProvider';
 import type { SyncEvent } from '../storage/CustomerStorageProvider';
 import { BusinessVaultDB } from '../db/database';
-import { rebuildFromDrive, UnshippedEventsError } from './rebuildFromDrive';
+import {
+  rebuildFromDrive,
+  EmptyBackupError,
+  UnshippedEventsError,
+} from './rebuildFromDrive';
 import { writeCsv } from '../csv/csvCodec';
 import { TABLE_SPECS } from './tableSchema';
 
@@ -711,6 +715,64 @@ describe('rebuildFromDrive', () => {
     // Restore ran to completion — unshipped event is gone; snapshot data landed.
     expect(report.counts.customers).toBe(2);
     expect(await db.sync_events.get('evt_unshipped_2')).toBeUndefined();
+  });
+
+  it('refuses to wipe local data when the backup folder has no snapshots and no events', async () => {
+    // Producer set up: create a business folder but write NEITHER a snapshot
+    // NOR any journal events. This is the "onboarded to Drive but never
+    // successfully flushed" state that bhawna's testing session hit.
+    const emptyRoot = await mktmp();
+    const emptyProducer = new LocalFolderStorageProvider();
+    await emptyProducer.connect({ kind: 'local-folder', rootPath: emptyRoot });
+    await emptyProducer.initializeBusiness({
+      businessId: 'biz_empty',
+      businessName: 'Empty Business',
+    });
+    // No writeSnapshot, no writeJournalEvents.
+
+    // Seed the target DB with pre-existing user data so we can verify it
+    // survives — this is the whole point of the guard.
+    await db.customers.add({
+      id: 'cust_precious',
+      business_id: 'biz_empty',
+      name: 'Do Not Wipe Me',
+      phone: '',
+      email: '',
+      gstin: null,
+      billing_address: '',
+      shipping_address: '',
+      state: '',
+      state_code: '',
+      opening_balance_paise: 0,
+      credit_limit_paise: 0,
+      notes: '',
+      active: 1,
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    });
+
+    const restoreProvider = new LocalFolderStorageProvider();
+    let thrown: unknown = null;
+    try {
+      await rebuildFromDrive(restoreProvider, {
+        db,
+        providerConfig: { kind: 'local-folder', rootPath: emptyRoot },
+      });
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(EmptyBackupError);
+    const err = thrown as EmptyBackupError;
+    expect(err.businessId).toBe('biz_empty');
+    expect(err.businessName).toBe('Empty Business');
+
+    // The critical assertion: local data was NOT wiped.
+    expect(await db.customers.get('cust_precious')).toBeDefined();
+    expect(await db.customers.count()).toBe(1);
+
+    await fs.rm(emptyRoot, { recursive: true, force: true });
   });
 
   it('aborts with "Backup integrity verification failed" on checksum mismatch', async () => {

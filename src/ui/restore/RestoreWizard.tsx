@@ -9,6 +9,7 @@ import type {
 import {
   rebuildFromDrive,
   renderDiagnosticReport,
+  EmptyBackupError,
   UnshippedEventsError,
   type DiscoveredBusiness,
   type RestoreReport,
@@ -217,6 +218,18 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           );
           setUnshipped(err.summary);
           setStep('confirm-data-loss');
+          return;
+        }
+        if (err instanceof EmptyBackupError) {
+          const msg =
+            `This backup folder has no data for '${err.businessName}' — ` +
+            `nothing to restore. If this is unexpected, check that ` +
+            `${err.folderPath}/journal/2026/*.events.jsonl or ` +
+            `${err.folderPath}/snapshots/daily/ exists on the provider. ` +
+            `Your local data was not touched.`;
+          appendLog(`Empty backup: ${err.businessName} (${err.folderPath})`);
+          setError(msg);
+          setStep('error');
           return;
         }
         const msg = (err as Error).message;

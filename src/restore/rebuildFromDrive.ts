@@ -142,6 +142,25 @@ export class UnshippedEventsError extends Error {
   }
 }
 
+// Thrown when the selected business folder has zero snapshots AND zero
+// journal events. Without this guard, rebuildFromDrive would happily
+// clear() every local table and report "Restore complete ✓ all checks OK"
+// with zero rows — silently destroying whatever the user had locally. The
+// user sees this happen the moment they click "overwrite anyway" past the
+// unshipped-events guard on a folder that isn't actually populated.
+export class EmptyBackupError extends Error {
+  constructor(
+    public readonly businessId: string,
+    public readonly businessName: string,
+    public readonly folderPath: string,
+  ) {
+    super(
+      `No data to restore for '${businessName}' — the backup folder at '${folderPath}' contains no snapshots and no journal events. Local data has been left untouched.`,
+    );
+    this.name = 'EmptyBackupError';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
@@ -255,6 +274,28 @@ export async function rebuildFromDrive(
     }
   }
 
+  // Read the journal BEFORE clearing local state so we can bail out cleanly
+  // when the backup is empty. Reading is idempotent and cheap compared to
+  // wiping the DB and then discovering there was nothing to restore.
+  const sinceEventId =
+    (manifest.journalCheckpoint as string | undefined) ?? undefined;
+  const events = await provider.readJournalEvents({
+    businessId: selected.businessId,
+    sinceEventId,
+  });
+
+  // Zero snapshots + zero journal events = a backup folder that was never
+  // populated (e.g. business onboarded to Drive but the sync worker never
+  // successfully flushed). Wiping local tables and reporting "Restore
+  // complete ✓" against this is silent data-loss — refuse instead.
+  if (!snapshotIndex && events.length === 0) {
+    throw new EmptyBackupError(
+      selected.businessId,
+      selected.businessName,
+      selected.folderPath,
+    );
+  }
+
   // Bulk-insert snapshot into Dexie under ONE transaction. If anything throws,
   // Dexie rolls back leaving the database in its pre-restore state (which
   // rebuildFromDrive already cleared at the head of the transaction — so on
@@ -285,12 +326,6 @@ export async function rebuildFromDrive(
 
   // 6. replay journal events after the snapshot's checkpoint
   progress('Replaying journal events', 70);
-  const sinceEventId =
-    (manifest.journalCheckpoint as string | undefined) ?? undefined;
-  const events = await provider.readJournalEvents({
-    businessId: selected.businessId,
-    sinceEventId,
-  });
 
   const diagnostics: string[] = [];
   let replayed = 0;
