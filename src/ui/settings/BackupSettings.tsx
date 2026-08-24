@@ -6,6 +6,10 @@ import { getActiveProvider } from '../../sync/providerRegistry';
 import { enqueue } from '../../sync/syncQueue';
 import { buildSnapshotInput } from '../../sync/buildSnapshotInput';
 import { pokeSyncWorker } from '../../sync/syncWorker';
+import { adoptConnectedProvider, stopSyncWorker } from '../../sync/bootProvider';
+import { connectDrive } from '../../drive/connectDrive';
+import { buildDriveProvider } from '../onboarding/driveGlue';
+import { hasGoogleClientId } from '../../auth/gis';
 import type {
   ConnectionStatus,
   IntegrityReport,
@@ -169,6 +173,66 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     }
   }, []);
 
+  const onSwitchToDrive = useCallback(async (): Promise<void> => {
+    clearMessages();
+    if (!business) {
+      setError('Business is still loading.');
+      return;
+    }
+    if (!hasGoogleClientId()) {
+      setError('Google Drive is not configured. Set VITE_GOOGLE_CLIENT_ID and reload.');
+      return;
+    }
+    const ok = window.confirm(
+      `Switch this business's backups to Google Drive?\n\n` +
+        `From now on, new entries and snapshots will go to Drive under ` +
+        `BusinessVault/${business.name}. Files already in your local backup ` +
+        `folder are left as-is — this does not copy them over.`,
+    );
+    if (!ok) return;
+    setBusy('switch');
+    try {
+      const res = await connectDrive({ businessId, prompt: 'consent' });
+      const provider = await buildDriveProvider(businessId);
+      const init = await provider.initializeBusiness({
+        businessId,
+        businessName: business.name,
+      });
+      await db.businesses.update(businessId, {
+        drive_folder_id: init.providerFolderId,
+        drive_connected_email: res.identity.email,
+        updated_at: new Date().toISOString(),
+      });
+      // Refresh local view of the business row so the button hides + the
+      // "connected as" line updates without a page reload.
+      const refreshed = await db.businesses.get(businessId);
+      if (refreshed) setBusiness(refreshed);
+      // Swap the running local-folder worker (or none) for a Drive worker so
+      // queued sync_events flush to Drive immediately. Promote any events the
+      // old worker had already claimed (SYNCING) back to QUEUED so the fresh
+      // Drive worker re-picks them up — otherwise a mid-flush switch would
+      // orphan them.
+      await db.sync_events
+        .where('[business_id+sync_status]')
+        .equals([businessId, 'SYNCING'])
+        .modify({ sync_status: 'QUEUED' });
+      await db.sync_queue
+        .where('[business_id+status]')
+        .equals([businessId, 'running'])
+        .modify({ status: 'pending' });
+      stopSyncWorker();
+      adoptConnectedProvider(provider, businessId);
+      setConn(await provider.connectionStatus());
+      setMessage(
+        `Switched to Google Drive as ${res.identity.email}. New entries will back up to Drive.`,
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }, [business, businessId]);
+
   const onDisconnect = useCallback(async (): Promise<void> => {
     clearMessages();
     const ok = window.confirm(
@@ -286,7 +350,17 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
         >
           Export My Business
         </button>
-        {!disconnected && (
+        {driveFolderId == null && (
+          <button
+            type="button"
+            onClick={onSwitchToDrive}
+            disabled={!!busy}
+            className="rounded-md border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-800 hover:bg-blue-100 disabled:opacity-50"
+          >
+            {busy === 'switch' ? 'Switching…' : 'Switch to Google Drive backup'}
+          </button>
+        )}
+        {!disconnected && driveFolderId != null && (
           <button
             type="button"
             onClick={onDisconnect}
