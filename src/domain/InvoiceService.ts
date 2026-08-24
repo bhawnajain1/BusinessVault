@@ -69,7 +69,7 @@ export interface CreateInvoiceInput {
   idempotencyKey?: string;
 }
 
-export interface VoidResult {
+export interface ReversalResult {
   originalInvoice: Invoice;
   creditNote: Invoice;
   reversingJournalEntryId: string;
@@ -417,15 +417,23 @@ export class InvoiceService {
     );
   }
 
-  async voidInvoice(invoiceId: string, reason: string): Promise<VoidResult> {
+  // Internal mechanism used by updateInvoice to preserve the append-only journal
+  // invariant during an edit: post a reversing JE + emit a mirror-negative credit
+  // note that carries the original's amount back off the books. The original row
+  // stays intact (audit chain). NOT a user-facing "void" — the user-facing surface
+  // is Edit + Delete (see updateInvoice / deleteInvoice).
+  private async reverseInvoicePosting(
+    invoiceId: string,
+    reason: string,
+  ): Promise<ReversalResult> {
     if (!reason || reason.trim().length === 0) {
-      throw new Error('void reason required');
+      throw new Error('reversal reason required');
     }
 
     const original = await this.db.invoices.get(invoiceId);
     if (!original) throw new Error(`Invoice not found: ${invoiceId}`);
     if (original.reversed_by_invoice_id) {
-      throw new Error('Invoice already voided');
+      throw new Error('Invoice already reversed');
     }
 
     const now = new Date().toISOString();
@@ -461,9 +469,9 @@ export class InvoiceService {
     const reversalJournal: JournalEntry = {
       id: reversalJournalId,
       business_id: original.business_id,
-      entry_number: `JE-VOID-${creditNoteId}`,
+      entry_number: `JE-REV-${creditNoteId}`,
       entry_date: original.invoice_date,
-      narration: `Void of ${original.invoice_number}: ${reason}`,
+      narration: `Reversal of ${original.invoice_number}: ${reason}`,
       ref_type: 'reversal',
       ref_id: creditNoteId,
       reversed_by_id: null,
@@ -503,13 +511,15 @@ export class InvoiceService {
     };
 
     // Pre-compute hashes outside tx (SubtleCrypto).
-    const voidedPayload = {
+    // NOTE: payload field `voided_at` is retained for backwards wire compatibility
+    // with journal files already written by earlier versions of this app.
+    const reversalPayload = {
       invoice_id: invoiceId,
       voided_at: now,
       reason,
       credit_note_invoice_id: creditNoteId,
     };
-    const voidedHash = await sha256Hex(canonicalJson(voidedPayload));
+    const reversalHash = await sha256Hex(canonicalJson(reversalPayload));
     const creditNotePayload = creditNote;
     const creditNoteHash = await sha256Hex(canonicalJson(creditNotePayload));
 
@@ -606,7 +616,7 @@ export class InvoiceService {
           });
         }
 
-        // Sync events for both the void and the credit note.
+        // Sync events for the reversal + the credit note.
         await writeEventInTx(this.db, {
           business_id: original.business_id,
           device_id: 'system',
@@ -615,8 +625,8 @@ export class InvoiceService {
           operation: 'reversed',
           entity_version: original.entity_version + 1,
           timestamp: now,
-          payload: voidedPayload,
-          payload_hash: voidedHash,
+          payload: reversalPayload,
+          payload_hash: reversalHash,
         });
         await writeEventInTx(this.db, {
           business_id: original.business_id,
@@ -811,18 +821,12 @@ export class InvoiceService {
   }
 
   /**
-   * Spec §24: append-only accounting. Once posted, invoices are NEVER mutated
-   * destructively. Draft-status invoices in a brief grace window may be edited;
-   * everything else must go through voidInvoice + reissue.
-   */
-  /**
-   * Edit an existing invoice by voiding the original (reverses journal + stock,
-   * appends a credit note per spec §24) and posting a new invoice under the
-   * original invoice number. The credit note remains in the ledger for audit;
-   * callers filter it out of default list views.
-   *
-   * This is the ONLY safe edit path — direct mutation would break the
-   * append-only journal invariant, hash chain, and multi-device sync.
+   * Edit an existing invoice. To preserve the append-only journal invariant
+   * (spec §24) the underlying implementation reverses the original's postings —
+   * emits a reversing journal + a mirror-negative credit note — and then posts a
+   * fresh invoice under the same invoice_number. The reversed original stays in
+   * the ledger for audit; UI filters it out of default list views. Callers see
+   * a normal "edit" — the reversal shape is not surfaced.
    */
   async updateInvoice(
     invoiceId: string,
@@ -831,9 +835,9 @@ export class InvoiceService {
     const original = await this.db.invoices.get(invoiceId);
     if (!original) throw new Error(`Invoice not found: ${invoiceId}`);
     if (original.reversed_by_invoice_id) {
-      throw new Error('Cannot edit an already-voided invoice');
+      throw new Error('Cannot edit an already-superseded invoice');
     }
-    await this.voidInvoice(invoiceId, 'edit');
+    await this.reverseInvoicePosting(invoiceId, 'edit');
     return this.createInvoice({
       ...input,
       invoice_number: original.invoice_number,

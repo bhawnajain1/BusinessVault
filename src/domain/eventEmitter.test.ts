@@ -108,7 +108,7 @@ describe('emit', () => {
     );
     const third = await emit(
       'invoice',
-      'voided',
+      'reversed',
       'inv-1',
       {
         invoice_id: 'inv-1',

@@ -197,7 +197,7 @@ export default function PurchasesPage() {
       header: '',
       render: (r) =>
         r.status === 'cancelled' ? (
-          <span className="text-xs text-slate-400">voided</span>
+          <span className="text-xs text-slate-400">cancelled</span>
         ) : (
           <button
             type="button"
@@ -458,7 +458,7 @@ export default function PurchasesPage() {
             checked={showVoided}
             onChange={(e) => setShowVoided(e.target.checked)}
           />
-          <span>Show voided</span>
+          <span>Show cancelled</span>
         </label>
       </div>
 

@@ -140,7 +140,7 @@ export default function InvoicesPage() {
       render: (r) => (
         <div className="flex items-center gap-3 justify-end">
           {r.reversed_by_invoice_id ? (
-            <span className="text-xs text-slate-400">voided</span>
+            <span className="text-xs text-slate-400">superseded</span>
           ) : r.status === 'cancelled' ? (
             <span className="text-xs text-slate-400">cancelled</span>
           ) : (
@@ -287,7 +287,7 @@ export default function InvoicesPage() {
             checked={showVoided}
             onChange={(e) => setShowVoided(e.target.checked)}
           />
-          Show voided
+          Show superseded / credit notes
         </label>
       </div>
 

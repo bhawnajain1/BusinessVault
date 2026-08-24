@@ -503,18 +503,23 @@ export class PurchaseService {
     );
   }
 
-  async voidPurchase(
+  // Internal mechanism used by update() to preserve the append-only journal
+  // invariant during an edit: post a reversing JE + reverse stock movements and
+  // flip the original's status to 'cancelled' with a renamed bill_number so the
+  // number is free for the re-issued row. NOT user-facing — surface is Edit +
+  // Delete (see update / delete flows).
+  private async reversePurchasePosting(
     purchaseId: string,
     deviceId: string,
     reason: string,
   ): Promise<Purchase> {
     if (!reason || reason.trim().length === 0) {
-      throw new Error('void reason required');
+      throw new Error('reversal reason required');
     }
     const original = await this.db.purchases.get(purchaseId);
     if (!original) throw new Error(`Purchase not found: ${purchaseId}`);
     if (original.status === 'cancelled') {
-      throw new Error('Purchase already voided');
+      throw new Error('Purchase already reversed');
     }
 
     const now = this.now();
@@ -547,9 +552,9 @@ export class PurchaseService {
     const reversalJournal: JournalEntry = {
       id: reversalJournalId,
       business_id: original.business_id,
-      entry_number: `JE-VOID-${original.bill_number}`,
+      entry_number: `JE-REV-${original.bill_number}`,
       entry_date: original.bill_date,
-      narration: `Void of purchase bill ${original.bill_number}: ${reason}`,
+      narration: `Reversal of purchase bill ${original.bill_number}: ${reason}`,
       ref_type: 'reversal',
       ref_id: purchaseId,
       reversed_by_id: null,
@@ -606,18 +611,18 @@ export class PurchaseService {
         for (const l of reversalLines) await db.journal_lines.add(l);
 
         // Rename the old bill_number so a re-create can reuse the number.
-        // Append -VOID-<ulid-suffix> to guarantee uniqueness. Append the reason
+        // Append -REV-<ulid-suffix> to guarantee uniqueness. Append the reason
         // to notes so the trail is preserved.
-        const voidedBillNumber = `${original.bill_number}-VOID-${reversalJournalId.slice(-6)}`;
-        const voided: Purchase = {
+        const reversedBillNumber = `${original.bill_number}-REV-${reversalJournalId.slice(-6)}`;
+        const reversed: Purchase = {
           ...original,
-          bill_number: voidedBillNumber,
+          bill_number: reversedBillNumber,
           status: 'cancelled',
-          notes: `${original.notes ? original.notes + '\n' : ''}[VOIDED ${now}] ${reason}`,
+          notes: `${original.notes ? original.notes + '\n' : ''}[REVERSED ${now}] ${reason}`,
           updated_at: now,
           entity_version: original.entity_version + 1,
         };
-        await db.purchases.put(voided);
+        await db.purchases.put(reversed);
 
         await appendSyncEvent(db, {
           businessId: original.business_id,
@@ -629,7 +634,7 @@ export class PurchaseService {
             purchase_id: purchaseId,
             reason,
             reversal_journal_id: reversalJournalId,
-            renamed_bill_number: voidedBillNumber,
+            renamed_bill_number: reversedBillNumber,
           },
           timestamp: now,
         });
@@ -672,11 +677,11 @@ export class PurchaseService {
   }
 
   /**
-   * Edit an existing purchase by reversing the original (journal + stock)
-   * and posting a new purchase in its place. Bill number is preserved.
-   *
-   * This is the ONLY safe edit path — direct mutation would break the
-   * append-only journal invariant and desync the trial balance.
+   * Edit an existing purchase. To preserve the append-only journal invariant,
+   * the underlying implementation reverses the original's postings (journal +
+   * stock) and posts a fresh purchase with the same bill_number. The reversed
+   * original row stays cancelled + renamed for audit. Callers see a normal
+   * "edit" — the reversal shape is not surfaced.
    */
   async update(
     purchaseId: string,
@@ -685,10 +690,9 @@ export class PurchaseService {
     const original = await this.db.purchases.get(purchaseId);
     if (!original) throw new Error(`Purchase not found: ${purchaseId}`);
     if (original.status === 'cancelled') {
-      throw new Error('Cannot edit a voided purchase');
+      throw new Error('Cannot edit a cancelled purchase');
     }
-    // The void path renames the bill_number so create() can reuse it.
-    await this.voidPurchase(purchaseId, input.deviceId, 'edit');
+    await this.reversePurchasePosting(purchaseId, input.deviceId, 'edit');
     return this.create(input);
   }
 

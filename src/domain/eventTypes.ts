@@ -26,9 +26,12 @@ export interface InvoiceUpdatedEvent {
   payload: Partial<Invoice> & { id: string };
 }
 
-export interface InvoiceVoidedEvent {
+// Emitted when an invoice is reversed (edit flow). The 'voided_at' field name
+// is retained in the payload for backward compatibility with previously written
+// journal files — do not rename without a schema migration.
+export interface InvoiceReversedEvent {
   entityType: 'invoice';
-  operation: 'voided';
+  operation: 'reversed';
   payload: {
     invoice_id: string;
     voided_at: string;
@@ -147,7 +150,7 @@ export interface ReturnCreatedEvent {
 export type BusinessEvent =
   | InvoiceCreatedEvent
   | InvoiceUpdatedEvent
-  | InvoiceVoidedEvent
+  | InvoiceReversedEvent
   | InvoiceLineCreatedEvent
   | PaymentCreatedEvent
   | PaymentAllocatedEvent

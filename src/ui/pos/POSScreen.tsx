@@ -176,7 +176,7 @@ export default function POSScreen(): JSX.Element {
       const inv = await db.invoices.get(editingInvoiceId);
       if (!inv || inv.business_id !== business.id) return;
       if (inv.reversed_by_invoice_id) {
-        setSaveError('This invoice has already been voided and cannot be edited.');
+        setSaveError('This invoice has already been superseded by a newer edit and cannot be edited again.');
         setSaveState('error');
         setHydratedFromId(editingInvoiceId);
         return;
@@ -559,7 +559,7 @@ export default function POSScreen(): JSX.Element {
         </label>
         {editingInvoiceId && (
           <div className="ml-auto text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-            Editing existing invoice — original will be voided and a new copy issued under the same invoice number.
+            Editing existing invoice — the original will be superseded (kept for audit) and a new copy will be issued under the same invoice number.
           </div>
         )}
       </div>

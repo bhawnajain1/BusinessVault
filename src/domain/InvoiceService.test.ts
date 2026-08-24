@@ -384,72 +384,6 @@ describe('InvoiceService.createInvoice', () => {
   });
 });
 
-describe('InvoiceService.voidInvoice', () => {
-  it('creates a balanced credit note and reversing journal', async () => {
-    const inv = await service.createInvoice({
-      business_id: businessId,
-      device_id: deviceId,
-      invoice_number: 'INV-VOID-1',
-      invoice_date: '2026-08-19',
-      customer_id: customerId,
-      customer_state_code: '29',
-      place_of_supply: '29',
-      is_interstate: false,
-      financial_year: '2026-27',
-      lines: [intrastateLine()],
-    });
-
-    const res = await service.voidInvoice(inv.id, 'Customer returned goods');
-    expect(res.creditNote.total_paise).toBe(-23600);
-    expect(res.creditNote.reverses_invoice_id).toBe(inv.id);
-
-    const original = await db.invoices.get(inv.id);
-    expect(original?.reversed_by_invoice_id).toBe(res.creditNote.id);
-
-    // Reversing journal balances and mirrors original.
-    const revLines = await db.journal_lines
-      .where('entry_id')
-      .equals(res.reversingJournalEntryId)
-      .toArray();
-    const d = revLines.reduce((a, l) => a + l.debit_paise, 0);
-    const c = revLines.reduce((a, l) => a + l.credit_paise, 0);
-    expect(d).toBe(c);
-    // 23600 = AR/Sales/GST side of original reversed + 16000 = Dr COGS(8000) / Cr Inv(8000)
-    // per line reversed. Original invoice had 2 units of the widget at ₹80 avg cost.
-    expect(d).toBe(23600 + 16000);
-
-    // Aggregate across ALL journal entries: net debits == net credits == 0.
-    const allLines = await db.journal_lines.where('business_id').equals(businessId).toArray();
-    const netD = allLines.reduce((a, l) => a + l.debit_paise, 0);
-    const netC = allLines.reduce((a, l) => a + l.credit_paise, 0);
-    expect(netD).toBe(netC);
-
-    // Stock returned to inventory.
-    const stock = await db.item_stock
-      .where('[business_id+item_id+warehouse_id]')
-      .equals([businessId, itemId, warehouseId])
-      .first();
-    expect(stock?.qty_micros).toBe(100_000_000); // back to original
-  });
-
-  it('refuses to void the same invoice twice', async () => {
-    const inv = await service.createInvoice({
-      business_id: businessId,
-      device_id: deviceId,
-      invoice_number: 'INV-VOID-2',
-      invoice_date: '2026-08-19',
-      customer_id: customerId,
-      customer_state_code: '29',
-      place_of_supply: '29',
-      is_interstate: false,
-      financial_year: '2026-27',
-      lines: [intrastateLine()],
-    });
-    await service.voidInvoice(inv.id, 'wrong customer');
-    await expect(service.voidInvoice(inv.id, 'again')).rejects.toThrow(/already voided/);
-  });
-});
-
 describe('InvoiceService — subtotal_paise is integer (regression)', () => {
   it('produces an integer subtotal_paise even when qty*price/1_000_000 is fractional', async () => {
     // 3 units of qty at 333333 micros = 999999 micros = 0.999999 units
@@ -573,7 +507,7 @@ describe('InvoiceService — cess and round-off posting (regression)', () => {
 });
 
 describe('InvoiceService.updateInvoice', () => {
-  it('voids the original and reissues under the same invoice_number', async () => {
+  it('reverses the original and reissues under the same invoice_number', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -603,7 +537,7 @@ describe('InvoiceService.updateInvoice', () => {
     expect(original?.reversed_by_invoice_id).not.toBeNull();
   });
 
-  it('refuses to edit an already-voided invoice', async () => {
+  it('refuses to edit an already-superseded invoice', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -616,7 +550,20 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    await service.voidInvoice(inv.id, 'testing');
+    // First edit reverses the original and creates a reissue. The original's
+    // reversed_by_invoice_id is now set — a second edit against the original
+    // id must be refused (caller should target the reissued id instead).
+    await service.updateInvoice(inv.id, {
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
     await expect(
       service.updateInvoice(inv.id, {
         business_id: businessId,
@@ -629,7 +576,7 @@ describe('InvoiceService.updateInvoice', () => {
         financial_year: '2026-27',
         lines: [intrastateLine()],
       }),
-    ).rejects.toThrow(/already-voided/);
+    ).rejects.toThrow(/already-superseded/);
   });
 });
 

@@ -522,8 +522,36 @@ describe('service-layer round-trip', () => {
           },
         ],
       });
-      const voidResult = await invSvc.voidInvoice(invoice3.id, 'wrong customer');
-      expect(voidResult.creditNote.id).toBeDefined();
+      // Edit invoice3 — the underlying reversal + credit-note flow is the same
+      // as the old voidInvoice path; updateInvoice is now the public surface.
+      await invSvc.updateInvoice(invoice3.id, {
+        business_id: BID,
+        device_id: DEVICE_ID,
+        invoice_date: NOW_DATE,
+        customer_id: customer.id,
+        customer_state_code: '29',
+        place_of_supply: '29',
+        is_interstate: false,
+        financial_year: FY,
+        lines: [
+          {
+            item_id: item.id,
+            hsn: item.hsn,
+            warehouse_id: warehouseId,
+            qty_micros: 1_000_000,
+            unit_price_paise: 8_474,
+            taxable_paise: 8_474,
+            tax_rate_bps: 1800,
+            cgst_paise: 763,
+            sgst_paise: 763,
+            igst_paise: 0,
+            line_total_paise: 10_000,
+          },
+        ],
+      });
+      const reversedInvoice3 = await invSvc.getInvoice(invoice3.id);
+      expect(reversedInvoice3?.reversed_by_invoice_id).toBeDefined();
+      const invoice3CreditNoteId = reversedInvoice3!.reversed_by_invoice_id!;
 
       // Invoice #4 — pay in full, then refund the payment.
       const invoice4 = await invSvc.createInvoice({
@@ -661,14 +689,15 @@ describe('service-layer round-trip', () => {
       const before = await snapshotCounts(db);
 
       // Stock math: purchase +100, adjustment +3, six invoices consume 5+1+1+1+1+1 = 10.
-      // voidInvoice returns invoice #3's 1 unit to stock (sale_return movement),
-      // so net consumed is 9. Deletion is soft, does NOT reverse stock.
-      // Total = 100 + 3 - 9 = 94.
+      // Invoice #3 was edited via updateInvoice, which reverses the original
+      // (+1 stock via sale_return) and immediately posts a fresh invoice for
+      // the same qty (-1 stock) — net zero change from the edit. Deletion is
+      // soft, does NOT reverse stock. Total = 100 + 3 - 10 = 93.
       const stockRow = await db.item_stock
         .where('[business_id+item_id+warehouse_id]')
         .equals([BID, item.id, warehouseId])
         .first();
-      expect(stockRow?.qty_micros).toBe(94_000_000);
+      expect(stockRow?.qty_micros).toBe(93_000_000);
 
       // -------------------------------------------------------------------
       // Phase 4 — Flush every LOCAL_ONLY sync_event to the folder.
@@ -756,14 +785,14 @@ describe('service-layer round-trip', () => {
         expect(restoredInv!.status).toBe('partial');
 
         // Invoice #3: voided. reversed_by_invoice_id points at the credit
-        // note, and — importantly — status stays 'issued' (voidInvoice never
-        // sets status='cancelled'; the app hides voided invoices via the
-        // reversed_by_invoice_id non-null check). If the invoice:reverse
-        // handler is ever regressed to set status='cancelled', this asserts
+        // note, and — importantly — status stays 'issued' (the reversal path
+        // never sets status='cancelled'; the app hides superseded invoices via
+        // the reversed_by_invoice_id non-null check). If the invoice:reverse
+        // handler is ever regressed to set status='cancelled', this assert
         // catches the divergence.
         const restoredInv3 = await restoredDb.invoices.get(invoice3.id);
         expect(restoredInv3).toBeDefined();
-        expect(restoredInv3!.reversed_by_invoice_id).toBe(voidResult.creditNote.id);
+        expect(restoredInv3!.reversed_by_invoice_id).toBe(invoice3CreditNoteId);
         expect(restoredInv3!.status).toBe('issued');
 
         // Invoice #4: paid, then refunded. rebuildInvoicePaidBalance sums
@@ -835,12 +864,12 @@ describe('service-layer round-trip', () => {
         expect(twiceRestoredInv2!.status).toBe('paid');
 
         // Item stock cache is derived from movements — rebuildFromDrive
-        // recomputes it, so 94 units must be back.
+        // recomputes it, so 93 units must be back.
         const restoredStock = await restoredDb.item_stock
           .where('[business_id+item_id+warehouse_id]')
           .equals([BID, item.id, warehouseId])
           .first();
-        expect(restoredStock?.qty_micros).toBe(94_000_000);
+        expect(restoredStock?.qty_micros).toBe(93_000_000);
 
         // GST totals — sum invoice.cgst + sgst.
         expect(after.cgst).toBe(before.cgst);

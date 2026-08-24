@@ -285,11 +285,13 @@ const HANDLERS: Record<string, EventHandler> = {
     await ctx.db.payments.put(existing);
   },
 
-  // spec §24: never destructive. void = credit note emitted separately.
-  // Wire form is 'invoice:reverse' after syncWorker collapses 'reversed'
-  // → 'reverse'. Payload is voidedPayload = {invoice_id, voided_at, reason,
-  // credit_note_invoice_id}. Sets reversed_by_invoice_id on the original;
-  // the credit note itself arrives via a separate invoice:create event.
+  // spec §24: never destructive. Edit reverses the original + emits a credit
+  // note separately. Wire form is 'invoice:reverse' after syncWorker collapses
+  // 'reversed' → 'reverse'. Payload = {invoice_id, voided_at, reason,
+  // credit_note_invoice_id} — the 'voided_at' field name is retained for
+  // backward-compat with journal files already written by earlier versions.
+  // Sets reversed_by_invoice_id on the original; the credit note itself arrives
+  // via a separate invoice:create event.
   'invoice:reverse': async (evt, ctx) => {
     const p = asRecord(evt.payload, evt.event_id);
     const id = String(p.invoice_id ?? p.id ?? '');

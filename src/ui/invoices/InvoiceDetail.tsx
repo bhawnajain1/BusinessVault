@@ -28,8 +28,6 @@ export default function InvoiceDetail() {
   const navigate = useNavigate();
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [voiding, setVoiding] = useState(false);
-  const [voidReason, setVoidReason] = useState('');
   const [deleting, setDeleting] = useState(false);
 
   async function load() {
@@ -63,22 +61,6 @@ export default function InvoiceDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  async function voidInvoice() {
-    if (!data) return;
-    if (!voidReason.trim()) return;
-    setVoiding(true);
-    try {
-      const svc = new InvoiceService();
-      await svc.voidInvoice(data.invoice.id, voidReason.trim());
-      setVoidReason('');
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setVoiding(false);
-    }
-  }
-
   async function deleteInvoice() {
     if (!data) return;
     const ok = window.confirm(
@@ -99,7 +81,7 @@ export default function InvoiceDetail() {
   if (error) return <div className="p-6 text-rose-600">{error}</div>;
   if (!data) return <div className="p-6 text-slate-500">Loading...</div>;
   const { invoice, lines, customer, items, journal, journalLines } = data;
-  const alreadyVoided = !!invoice.reversed_by_invoice_id;
+  const superseded = !!invoice.reversed_by_invoice_id;
   const isCreditNote = !!invoice.reverses_invoice_id;
 
   return (
@@ -113,13 +95,17 @@ export default function InvoiceDetail() {
             Invoice {invoice.invoice_number}
           </h1>
           <StatusBadge status={invoice.status} />
-          {alreadyVoided && <StatusBadge status="cancelled" />}
+          {superseded && (
+            <span className="text-xs text-slate-600" title="Superseded by a newer edit">
+              Superseded
+            </span>
+          )}
           {isCreditNote && (
             <span className="text-xs text-slate-600">Credit Note</span>
           )}
         </div>
         <div className="flex items-center gap-2">
-          {!alreadyVoided && invoice.status !== 'cancelled' && (
+          {!superseded && invoice.status !== 'cancelled' && (
             <Link
               to={`/invoices/${invoice.id}/edit`}
               className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
@@ -278,29 +264,6 @@ export default function InvoiceDetail() {
         </div>
       )}
 
-      {!alreadyVoided && !isCreditNote && invoice.status !== 'cancelled' && (
-        <div className="border border-rose-200 rounded p-3 bg-rose-50">
-          <div className="text-sm font-medium text-rose-800 mb-2">
-            Void invoice (issues a credit note — the original stays for audit)
-          </div>
-          <div className="flex gap-2">
-            <input
-              value={voidReason}
-              onChange={(e) => setVoidReason(e.target.value)}
-              placeholder="Reason (required)"
-              className="flex-1 border border-slate-300 rounded px-2 py-1.5 text-sm"
-            />
-            <button
-              type="button"
-              onClick={voidInvoice}
-              disabled={voiding || voidReason.trim().length === 0}
-              className="text-sm bg-rose-600 text-white rounded px-3 py-1.5 hover:bg-rose-700 disabled:opacity-50"
-            >
-              {voiding ? 'Voiding...' : 'Void'}
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
