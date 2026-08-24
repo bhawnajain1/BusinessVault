@@ -232,6 +232,13 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
   const runJob = async (job: SyncQueueJob): Promise<void> => {
     const now = clock();
     await markInFlight(job.id, now);
+    const t0 = clock().getTime();
+    log.debug('sync', 'job start', {
+      jobId: job.id,
+      kind: job.kind,
+      businessId: job.business_id,
+      attempts: job.attempts,
+    });
     try {
       if (job.kind === 'journal_flush') {
         const p = job.payload as JournalBatchPayload;
@@ -240,6 +247,12 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
           .anyOf(p.eventIds)
           .toArray();
         const providerEvents = rows.map(toProviderEvent);
+        log.debug('sync', 'journal_flush shipping', {
+          jobId: job.id,
+          eventCount: providerEvents.length,
+          firstEventId: providerEvents[0]?.event_id,
+          firstTimestamp: providerEvents[0]?.timestamp,
+        });
         const res = await deps.provider.writeJournalEvents(providerEvents);
         // Mark synced. Duplicates are still SYNCED (idempotent replay).
         const nowIso = iso(clock());
@@ -253,6 +266,13 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
             last_error: null,
           });
         await markDone(job.id, clock());
+        log.info('sync', 'journal_flush done', {
+          jobId: job.id,
+          written: res.written,
+          duplicates: res.duplicates.length,
+          journalPath: res.journalPath,
+          ms: clock().getTime() - t0,
+        });
         emit({
           status: 'HEALTHY',
           pending: await pendingCount(),
@@ -263,6 +283,9 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
         if (!p || !p.input || typeof p.input.businessId !== 'string') {
           // Malformed payload — was queued by a broken caller. Fail dead so
           // the queue doesn't spin forever burning quota.
+          log.warn('sync', 'snapshot job has malformed payload — shelving', {
+            jobId: job.id,
+          });
           await markFailure({
             id: job.id,
             error: 'snapshot job has malformed payload (missing p.input.businessId)',
@@ -273,8 +296,21 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
           });
           return;
         }
+        log.debug('sync', 'snapshot shipping', {
+          jobId: job.id,
+          businessId: p.input.businessId,
+          asOf: p.input.asOf,
+          kind: p.input.kind,
+        });
         const handle = await deps.provider.writeSnapshot(p.input);
         await markDone(job.id, clock());
+        log.info('sync', 'snapshot done', {
+          jobId: job.id,
+          path: handle.path,
+          providerFolderId: handle.providerFolderId,
+          createdAt: handle.createdAt,
+          ms: clock().getTime() - t0,
+        });
         emit({
           status: 'HEALTHY',
           pending: await pendingCount(),
@@ -282,6 +318,10 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
         });
       } else if (job.kind === 'attachment_upload') {
         const p = job.payload as AttachmentPayload;
+        log.debug('sync', 'attachment shipping', {
+          jobId: job.id,
+          attachmentId: p.attachmentId,
+        });
         const res = await deps.provider.uploadAttachment(p.input);
         if (p.attachmentId) {
           await db.attachments.update(p.attachmentId, {
@@ -290,6 +330,11 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
           });
         }
         await markDone(job.id, clock());
+        log.info('sync', 'attachment done', {
+          jobId: job.id,
+          providerFileId: res.providerFileId,
+          ms: clock().getTime() - t0,
+        });
         emit({ status: 'HEALTHY', pending: await pendingCount() });
       } else {
         // Unknown kinds get shelved as dead so they don't retry forever.
@@ -307,8 +352,12 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
       log.warn('sync', 'job failed', {
         jobId: job.id,
         kind: job.kind,
+        businessId: job.business_id,
         attempts: job.attempts + 1,
-        error: err,
+        errorName: err instanceof Error ? err.name : typeof err,
+        errorMessage: msg,
+        errorStack: err instanceof Error ? err.stack : undefined,
+        ms: clock().getTime() - t0,
       });
       const attempts = job.attempts + 1;
       const dead = attempts >= job.max_attempts;

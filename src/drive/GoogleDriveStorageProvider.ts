@@ -44,6 +44,7 @@ import type {
   WriteJournalResult,
   WriteSnapshotInput,
 } from '../storage/CustomerStorageProvider';
+import { log } from '../lib/log';
 
 // ---------------------------------------------------------------------------
 // SCHEMA_VERSION — import fallback: db/schema.ts may not exist at build time
@@ -535,6 +536,7 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
   async writeJournalEvents(events: SyncEvent[]): Promise<WriteJournalResult> {
     this.assertBusiness();
     if (events.length === 0) {
+      log.debug('drive.provider', 'writeJournalEvents called with 0 events', {});
       return { written: 0, duplicates: [], journalPath: '' };
     }
 
@@ -548,6 +550,10 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       list.push(ev);
       byBucket.set(key, list);
     }
+    log.debug('drive.provider', 'writeJournalEvents grouping', {
+      totalEvents: events.length,
+      buckets: [...byBucket.keys()],
+    });
 
     let totalWritten = 0;
     const duplicates: string[] = [];
@@ -556,7 +562,7 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
     for (const [ym, batch] of byBucket) {
       const [yearStr] = ym.split('-');
       const dir = `journal/${yearStr}`;
-      await this.ensureDir(dir);
+      const dirId = await this.ensureDir(dir);
       const path = `${dir}/${ym}.events.jsonl`;
       lastPath = path;
 
@@ -592,7 +598,14 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
         appendLines.push(JSON.stringify(ev));
       }
 
-      if (appendLines.length === 0) continue;
+      if (appendLines.length === 0) {
+        log.debug('drive.provider', 'bucket already up to date — skipping', {
+          bucket: ym,
+          existingFileId: ref?.id,
+          dupsInBatch: batch.length,
+        });
+        continue;
+      }
 
       const needsTrailingNewline = existing.length > 0 && !existing.endsWith('\n');
       const nextContent =
@@ -600,10 +613,28 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
 
       const newBlob = textBlob(nextContent, MIME_JSONL);
       if (ref) {
+        log.debug('drive.provider', 'appending to existing journal file', {
+          bucket: ym,
+          fileId: ref.id,
+          appendCount: appendLines.length,
+          bytes: nextContent.length,
+        });
         const updated = await this.api.updateFileContents(ref.id, newBlob, MIME_JSONL);
         this.fileRefCache.set(path, updated);
+        log.info('drive.provider', 'journal file updated', {
+          bucket: ym,
+          fileId: updated.id,
+          version: updated.version,
+        });
       } else {
         const parentId = await this.ensureDir(dir);
+        log.debug('drive.provider', 'creating new journal file', {
+          bucket: ym,
+          parentId,
+          dirId,
+          appendCount: appendLines.length,
+          bytes: nextContent.length,
+        });
         const created = await this.api.createFile({
           parentId,
           name: `${ym}.events.jsonl`,
@@ -611,10 +642,21 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
           body: newBlob,
         });
         this.fileRefCache.set(path, created);
+        log.info('drive.provider', 'journal file created', {
+          bucket: ym,
+          fileId: created.id,
+          version: created.version,
+          parentId,
+        });
       }
       totalWritten += appendLines.length;
     }
 
+    log.info('drive.provider', 'writeJournalEvents complete', {
+      totalWritten,
+      duplicates: duplicates.length,
+      lastPath,
+    });
     return { written: totalWritten, duplicates, journalPath: lastPath };
   }
 

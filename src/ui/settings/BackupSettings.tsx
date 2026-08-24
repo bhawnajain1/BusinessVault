@@ -10,6 +10,7 @@ import { adoptConnectedProvider, stopSyncWorker } from '../../sync/bootProvider'
 import { connectDrive } from '../../drive/connectDrive';
 import { buildDriveProvider } from '../onboarding/driveGlue';
 import { hasGoogleClientId } from '../../auth/gis';
+import { log } from '../../lib/log';
 import type {
   ConnectionStatus,
   IntegrityReport,
@@ -212,7 +213,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       // old worker had already claimed (SYNCING) back to QUEUED so the fresh
       // Drive worker re-picks them up — otherwise a mid-flush switch would
       // orphan them.
-      await db.sync_events
+      const syncingRequeued = await db.sync_events
         .where('[business_id+sync_status]')
         .equals([businessId, 'SYNCING'])
         .modify({ sync_status: 'QUEUED' });
@@ -222,7 +223,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       // IndexedDB. Restore-from-Drive would find an empty journal without
       // this backfill. Clearing synced_at + journal_file lets the Drive
       // worker treat them as fresh work.
-      await db.sync_events
+      const syncedBackfilled = await db.sync_events
         .where('[business_id+sync_status]')
         .equals([businessId, 'SYNCED'])
         .modify({
@@ -230,15 +231,23 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
           synced_at: null,
           journal_file: null,
         });
-      await db.sync_queue
+      const runningRequeued = await db.sync_queue
         .where('[business_id+status]')
         .equals([businessId, 'running'])
         .modify({ status: 'pending' });
+      log.info('backup', 'switch-to-drive backfill', {
+        businessId,
+        syncingRequeued,
+        syncedBackfilled,
+        runningRequeued,
+        driveFolderId: init.providerFolderId,
+        driveEmail: res.identity.email,
+      });
       stopSyncWorker();
       adoptConnectedProvider(provider, businessId);
       setConn(await provider.connectionStatus());
       setMessage(
-        `Switched to Google Drive as ${res.identity.email}. Your history is being re-uploaded to Drive — check back in a minute.`,
+        `Switched to Google Drive as ${res.identity.email}. Your history (${syncedBackfilled} events) is being re-uploaded to Drive — check back in a minute.`,
       );
     } catch (e) {
       setError((e as Error).message);
