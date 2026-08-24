@@ -121,6 +121,10 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
 
   const onSnapshotNow = useCallback(async (): Promise<void> => {
     clearMessages();
+    if (!getActiveProvider()) {
+      setError('Google Drive is not connected — click Reconnect above, then try again.');
+      return;
+    }
     setBusy('snapshot');
     try {
       if (!business) {
