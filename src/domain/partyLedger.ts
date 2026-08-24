@@ -1,4 +1,4 @@
-import type { Advance, Invoice, Purchase } from '../db/types';
+import type { Advance, Customer, Invoice, Purchase, Supplier } from '../db/types';
 
 // Party ledger — derived outstanding per the spec (payablesRec.md).
 //
@@ -64,7 +64,8 @@ export interface CustomerReceivable {
   total_billed_paise: number;
   total_paid_paise: number;
   total_credit_note_paise: number;
-  outstanding_paise: number;
+  opening_balance_paise: number; // signed carry-in; positive = customer owed us at go-live
+  outstanding_paise: number; // includes opening_balance_paise contribution
   advance_paise: number;
   overdue_count: number;
   aging: AgingBuckets;
@@ -76,7 +77,8 @@ export interface SupplierPayable {
   total_billed_paise: number;
   total_paid_paise: number;
   total_debit_note_paise: number;
-  outstanding_paise: number;
+  opening_balance_paise: number; // signed carry-in; positive = we owed supplier at go-live
+  outstanding_paise: number; // includes opening_balance_paise contribution
   advance_paise: number;
   overdue_count: number;
   aging: AgingBuckets;
@@ -201,6 +203,7 @@ export function computeReceivables(
   invoices: Invoice[],
   asOfYmd: string,
   advances: Advance[] = [],
+  customers: Customer[] = [],
 ): DerivedReceivables {
   // Partition: originals (positive-total sales), credit notes (reversing).
   // Cancelled and draft never contribute either way.
@@ -226,28 +229,35 @@ export function computeReceivables(
     total_billed_paise: 0,
     total_paid_paise: 0,
     total_credit_note_paise: 0,
+    opening_balance_paise: 0,
     outstanding_paise: 0,
     advance_paise: 0,
     overdue_count: 0,
     aging: emptyAging(),
   };
 
-  for (const row of perInvoice) {
-    let cust = bucket.get(row.customer_id);
+  function ensureCustomer(customerId: string): CustomerReceivable {
+    let cust = bucket.get(customerId);
     if (!cust) {
       cust = {
-        customer_id: row.customer_id,
+        customer_id: customerId,
         invoice_count: 0,
         total_billed_paise: 0,
         total_paid_paise: 0,
         total_credit_note_paise: 0,
+        opening_balance_paise: 0,
         outstanding_paise: 0,
         advance_paise: 0,
         overdue_count: 0,
         aging: emptyAging(),
       };
-      bucket.set(row.customer_id, cust);
+      bucket.set(customerId, cust);
     }
+    return cust;
+  }
+
+  for (const row of perInvoice) {
+    const cust = ensureCustomer(row.customer_id);
     cust.total_billed_paise += row.grand_total_paise;
     cust.total_paid_paise += row.paid_paise;
     cust.total_credit_note_paise += row.credit_note_paise;
@@ -277,23 +287,30 @@ export function computeReceivables(
   for (const adv of advances) {
     if (adv.party_type !== 'customer') continue;
     if (adv.remaining_paise <= 0) continue;
-    let cust = bucket.get(adv.party_id);
-    if (!cust) {
-      cust = {
-        customer_id: adv.party_id,
-        invoice_count: 0,
-        total_billed_paise: 0,
-        total_paid_paise: 0,
-        total_credit_note_paise: 0,
-        outstanding_paise: 0,
-        advance_paise: 0,
-        overdue_count: 0,
-        aging: emptyAging(),
-      };
-      bucket.set(adv.party_id, cust);
-    }
+    const cust = ensureCustomer(adv.party_id);
     cust.advance_paise += adv.remaining_paise;
     grand.advance_paise += adv.remaining_paise;
+  }
+
+  // Fold in opening balances. Positive opening = customer owed us on go-live,
+  // treated as an additional outstanding contribution bucketed as "current"
+  // (no due date to age against). Negative opening = customer had credit on
+  // account; that lives in advance_paise instead.
+  for (const c of customers) {
+    const opening = c.opening_balance_paise;
+    if (opening === 0) continue;
+    const cust = ensureCustomer(c.id);
+    cust.opening_balance_paise += opening;
+    grand.opening_balance_paise += opening;
+    if (opening > 0) {
+      cust.outstanding_paise += opening;
+      grand.outstanding_paise += opening;
+      bucketize(opening, 0, cust.aging);
+      bucketize(opening, 0, grand.aging);
+    } else {
+      cust.advance_paise += -opening;
+      grand.advance_paise += -opening;
+    }
   }
 
   const perCustomer = [...bucket.values()].sort(
@@ -316,6 +333,7 @@ export function computePayables(
   purchases: Purchase[],
   asOfYmd: string,
   advances: Advance[] = [],
+  suppliers: Supplier[] = [],
 ): DerivedPayables {
   const usable = purchases.filter((p) => p.status !== 'cancelled');
   const originals = usable.filter((p) => p.total_paise > 0);
@@ -377,28 +395,35 @@ export function computePayables(
     total_billed_paise: 0,
     total_paid_paise: 0,
     total_debit_note_paise: 0,
+    opening_balance_paise: 0,
     outstanding_paise: 0,
     advance_paise: 0,
     overdue_count: 0,
     aging: emptyAging(),
   };
 
-  for (const row of perPurchase) {
-    let sup = bucket.get(row.supplier_id);
+  function ensureSupplier(supplierId: string): SupplierPayable {
+    let sup = bucket.get(supplierId);
     if (!sup) {
       sup = {
-        supplier_id: row.supplier_id,
+        supplier_id: supplierId,
         bill_count: 0,
         total_billed_paise: 0,
         total_paid_paise: 0,
         total_debit_note_paise: 0,
+        opening_balance_paise: 0,
         outstanding_paise: 0,
         advance_paise: 0,
         overdue_count: 0,
         aging: emptyAging(),
       };
-      bucket.set(row.supplier_id, sup);
+      bucket.set(supplierId, sup);
     }
+    return sup;
+  }
+
+  for (const row of perPurchase) {
+    const sup = ensureSupplier(row.supplier_id);
     sup.total_billed_paise += row.grand_total_paise;
     sup.total_paid_paise += row.paid_paise;
     sup.total_debit_note_paise += row.debit_note_paise;
@@ -420,21 +445,7 @@ export function computePayables(
   }
 
   for (const [supplierId, adv] of leftoverAdvanceBySupplier.entries()) {
-    let sup = bucket.get(supplierId);
-    if (!sup) {
-      sup = {
-        supplier_id: supplierId,
-        bill_count: 0,
-        total_billed_paise: 0,
-        total_paid_paise: 0,
-        total_debit_note_paise: 0,
-        outstanding_paise: 0,
-        advance_paise: 0,
-        overdue_count: 0,
-        aging: emptyAging(),
-      };
-      bucket.set(supplierId, sup);
-    }
+    const sup = ensureSupplier(supplierId);
     sup.advance_paise += adv;
     grand.advance_paise += adv;
   }
@@ -445,23 +456,29 @@ export function computePayables(
   for (const adv of advances) {
     if (adv.party_type !== 'supplier') continue;
     if (adv.remaining_paise <= 0) continue;
-    let sup = bucket.get(adv.party_id);
-    if (!sup) {
-      sup = {
-        supplier_id: adv.party_id,
-        bill_count: 0,
-        total_billed_paise: 0,
-        total_paid_paise: 0,
-        total_debit_note_paise: 0,
-        outstanding_paise: 0,
-        advance_paise: 0,
-        overdue_count: 0,
-        aging: emptyAging(),
-      };
-      bucket.set(adv.party_id, sup);
-    }
+    const sup = ensureSupplier(adv.party_id);
     sup.advance_paise += adv.remaining_paise;
     grand.advance_paise += adv.remaining_paise;
+  }
+
+  // Fold in opening balances. Positive opening = we owed supplier on go-live,
+  // treated as outstanding bucketed as "current". Negative opening = supplier
+  // held credit for us; lives in advance_paise.
+  for (const s of suppliers) {
+    const opening = s.opening_balance_paise;
+    if (opening === 0) continue;
+    const sup = ensureSupplier(s.id);
+    sup.opening_balance_paise += opening;
+    grand.opening_balance_paise += opening;
+    if (opening > 0) {
+      sup.outstanding_paise += opening;
+      grand.outstanding_paise += opening;
+      bucketize(opening, 0, sup.aging);
+      bucketize(opening, 0, grand.aging);
+    } else {
+      sup.advance_paise += -opening;
+      grand.advance_paise += -opening;
+    }
   }
 
   const perSupplier = [...bucket.values()].sort(

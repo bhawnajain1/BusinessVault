@@ -63,8 +63,8 @@ export default function ReceivablesPayablesPage() {
           >,
         ]);
         const asOfYmd = todayYmd();
-        const ar = computeReceivables(invoices, asOfYmd, advances);
-        const ap = computePayables(bills, asOfYmd, advances);
+        const ar = computeReceivables(invoices, asOfYmd, advances, customers);
+        const ap = computePayables(bills, asOfYmd, advances, suppliers);
         const customerById = new Map(customers.map((c) => [c.id, c]));
         const supplierById = new Map(suppliers.map((s) => [s.id, s]));
         if (alive) setData({ ar, ap, customerById, supplierById, asOfYmd });

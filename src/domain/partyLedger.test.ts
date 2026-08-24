@@ -1,6 +1,48 @@
 import { describe, expect, it } from 'vitest';
 import { computePayables, computeReceivables } from './partyLedger';
-import type { Advance, Invoice, Purchase } from '../db/types';
+import type { Advance, Customer, Invoice, Purchase, Supplier } from '../db/types';
+
+function mkCust(o: { id: string; opening_balance_paise?: number }): Customer {
+  return {
+    id: o.id,
+    business_id: 'B',
+    name: `Cust ${o.id}`,
+    phone: '',
+    email: '',
+    gstin: null,
+    billing_address: '',
+    shipping_address: '',
+    state: '',
+    state_code: '',
+    opening_balance_paise: o.opening_balance_paise ?? 0,
+    credit_limit_paise: 0,
+    notes: '',
+    active: 1,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    entity_version: 1,
+  };
+}
+
+function mkSup(o: { id: string; opening_balance_paise?: number }): Supplier {
+  return {
+    id: o.id,
+    business_id: 'B',
+    name: `Sup ${o.id}`,
+    phone: '',
+    email: '',
+    gstin: null,
+    address: '',
+    state: '',
+    state_code: '',
+    opening_balance_paise: o.opening_balance_paise ?? 0,
+    notes: '',
+    active: 1,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    entity_version: 1,
+  };
+}
 
 function mkAdv(o: Partial<Advance> & Pick<Advance, 'id' | 'party_type' | 'remaining_paise'>): Advance {
   return {
@@ -191,6 +233,32 @@ describe('computeReceivables', () => {
     expect(ar.totals.aging.current_paise).toBe(100_00);
     expect(ar.totals.overdue_count).toBe(0);
   });
+
+  it('positive customer opening balance adds to outstanding and current bucket', () => {
+    const invs = [mkInv({ id: 'I1', total_paise: 100_00, customer_id: 'C1' })];
+    const customers = [mkCust({ id: 'C1', opening_balance_paise: 25_00 })];
+    const ar = computeReceivables(invs, '2026-02-01', [], customers);
+    expect(ar.totals.outstanding_paise).toBe(125_00);
+    expect(ar.totals.opening_balance_paise).toBe(25_00);
+    expect(ar.totals.aging.current_paise).toBe(125_00);
+    expect(ar.perCustomer[0].outstanding_paise).toBe(125_00);
+  });
+
+  it('negative customer opening balance becomes advance', () => {
+    const customers = [mkCust({ id: 'Cnew', opening_balance_paise: -40_00 })];
+    const ar = computeReceivables([], '2026-02-01', [], customers);
+    expect(ar.totals.outstanding_paise).toBe(0);
+    expect(ar.totals.advance_paise).toBe(40_00);
+    expect(ar.totals.opening_balance_paise).toBe(-40_00);
+  });
+
+  it('customer with only opening balance still gets a bucket row', () => {
+    const customers = [mkCust({ id: 'Cnew', opening_balance_paise: 50_00 })];
+    const ar = computeReceivables([], '2026-02-01', [], customers);
+    expect(ar.perCustomer).toHaveLength(1);
+    expect(ar.perCustomer[0].customer_id).toBe('Cnew');
+    expect(ar.perCustomer[0].outstanding_paise).toBe(50_00);
+  });
 });
 
 describe('computePayables', () => {
@@ -225,5 +293,22 @@ describe('computePayables', () => {
     const ap = computePayables(bills, '2026-02-01');
     expect(ap.totals.outstanding_paise).toBe(0);
     expect(ap.totals.advance_paise).toBe(30_00);
+  });
+
+  it('positive supplier opening balance adds to outstanding and current bucket', () => {
+    const bills = [mkPur({ id: 'B1', total_paise: 100_00, supplier_id: 'S1' })];
+    const suppliers = [mkSup({ id: 'S1', opening_balance_paise: 20_00 })];
+    const ap = computePayables(bills, '2026-02-01', [], suppliers);
+    expect(ap.totals.outstanding_paise).toBe(120_00);
+    expect(ap.totals.opening_balance_paise).toBe(20_00);
+    expect(ap.totals.aging.current_paise).toBe(120_00);
+  });
+
+  it('negative supplier opening balance becomes advance', () => {
+    const suppliers = [mkSup({ id: 'Snew', opening_balance_paise: -35_00 })];
+    const ap = computePayables([], '2026-02-01', [], suppliers);
+    expect(ap.totals.outstanding_paise).toBe(0);
+    expect(ap.totals.advance_paise).toBe(35_00);
+    expect(ap.totals.opening_balance_paise).toBe(-35_00);
   });
 });
