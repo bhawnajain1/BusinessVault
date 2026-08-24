@@ -1,7 +1,11 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
+
+const APP_VERSION = JSON.parse(
+  readFileSync(path.resolve(__dirname, 'package.json'), 'utf8'),
+).version as string;
 
 const DEBUG_LOG_PATH = '/tmp/bv-debug.log';
 
@@ -40,6 +44,9 @@ export default defineConfig({
   // asset paths, and React-Router's basename picks it up in main.tsx. Override
   // with BV_BASE=/ for a root-hosted deploy (e.g. custom domain).
   base: process.env.BV_BASE ?? '/BusinessVault/',
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   plugins: [react(), browserLogSink()],
   resolve: {
     alias: {

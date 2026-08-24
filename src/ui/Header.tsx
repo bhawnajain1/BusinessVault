@@ -8,6 +8,11 @@ import ThemeToggle from './theme/ThemeToggle';
 // in that case the Feedback button hides itself.
 const FEEDBACK_EMAIL = (import.meta.env.VITE_FEEDBACK_EMAIL as string | undefined) ?? '';
 
+// Baked in at build time from package.json — see vite.config.ts.
+declare const __APP_VERSION__: string;
+const APP_VERSION: string =
+  typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
+
 function buildFeedbackHref(): string {
   const subject = `BusinessVault feedback`;
   const body = [
@@ -38,6 +43,13 @@ export default function Header() {
         <span>BusinessVault</span>
       </Link>
       <div className="flex items-center gap-2">
+        <span
+          className="text-xs text-fg-muted tabular-nums"
+          aria-label={`BusinessVault version ${APP_VERSION}`}
+          title={`BusinessVault v${APP_VERSION}`}
+        >
+          v{APP_VERSION}
+        </span>
         {FEEDBACK_EMAIL && (
           <a
             href={buildFeedbackHref()}
