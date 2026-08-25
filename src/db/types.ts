@@ -34,7 +34,12 @@ export type EventOperation =
   | 'updated'
   | 'deleted'
   | 'posted'
-  | 'reversed';
+  | 'reversed'
+  | 'restored'
+  | 'superseded'
+  | 'allocated'
+  | 'adjusted'
+  | 'movement';
 
 export type InvoiceStatus =
   | 'draft'
@@ -374,6 +379,9 @@ export interface PaymentAllocation {
 export interface Payment {
   id: string;
   business_id: string;
+  // User-facing receipt/payment number. STABLE across Edit revisions — every
+  // row in a supersede chain shares the same payment_number. Uniqueness is
+  // enforced only over ACTIVE rows (see isPaymentActive) at the service layer.
   payment_number: string;
   payment_date: string;
   direction: PaymentDirection;
@@ -386,10 +394,34 @@ export interface Payment {
   notes: string;
   allocations: PaymentAllocation[];
   journal_entry_id: string;
-  // Cascade soft-delete: set when the sole invoice this payment is allocated
-  // against is deleted via InvoiceService.deleteInvoice. Restore clears it.
+
+  // Lifecycle state — see src/domain/paymentState.ts for the canonical
+  // ACTIVE / RECYCLED / SUPERSEDED predicate. Financial readers MUST consume
+  // the helper, not check these fields directly.
+  //
+  // RECYCLED: `deleted_at` set. User-initiated soft-delete via
+  //   PaymentService.softDeletePayment. Visible in the Recycle Bin, restorable
+  //   via PaymentService.restorePayment.
+  //
+  // SUPERSEDED: `superseded_at` set + `replaced_by_payment_id` populated.
+  //   System-initiated during PaymentService.updatePayment (Edit). Visible ONLY
+  //   in the per-payment revision history; hidden from the Payments list and
+  //   from the Recycle Bin; NOT independently restorable.
+  //
+  // Invariant: at most one row per revision chain (same payment_number) has
+  // BOTH `deleted_at == null` AND `superseded_at == null` (i.e. is ACTIVE).
   deleted_at?: string | null;
   deleted_reason?: string | null;
+  superseded_at?: string | null;
+  superseded_reason?: string | null;
+
+  // Revision chain. All revisions share the same `payment_number` but each has
+  // its own `id` and its own `journal_entry_id`. Revision 1 has
+  // `replaces_payment_id == null`.
+  revision?: number;
+  replaces_payment_id?: string | null;
+  replaced_by_payment_id?: string | null;
+
   created_at: string;
   updated_at: string;
   entity_version: number;
@@ -423,10 +455,23 @@ export interface Advance {
   notes: string;
   applications: AdvanceApplication[];
   journal_entry_id: string; // the receipt/payment JE
-  // Cascade soft-delete: set when the sole invoice this advance was applied to
-  // is deleted via InvoiceService.deleteInvoice. Restore clears it.
+
+  // Lifecycle mirrors Payment (see src/domain/paymentState.ts::isAdvanceActive):
+  // RECYCLED (`deleted_at` set) — the originating payment was soft-deleted, or
+  //   the sole invoice the advance was applied to was deleted; hidden from
+  //   receivables/payables math but preserved for audit.
+  // SUPERSEDED (`superseded_at` set) — the originating payment was Edit-replaced.
+  //   The new payment revision materializes a fresh Advance row when needed.
+  //
+  // The row is NEVER hard-deleted — financial records are preserved; only
+  // their effective financial state changes.
   deleted_at?: string | null;
   deleted_reason?: string | null;
+  superseded_at?: string | null;
+  superseded_reason?: string | null;
+  replaces_advance_id?: string | null;
+  replaced_by_advance_id?: string | null;
+
   created_at: string;
   updated_at: string;
   entity_version: number;

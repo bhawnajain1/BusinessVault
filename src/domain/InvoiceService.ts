@@ -15,6 +15,7 @@ import type {
 import { canonicalJson, sha256Hex, GENESIS_HASH } from '../journal/event';
 import { bankersRound } from './gst';
 import { log } from '../lib/log';
+import { isPaymentActive, isAdvanceActive } from './paymentState';
 
 // ---------- Account codes (system chart of accounts) ----------
 // These must exist in the accounts table before an invoice can be created.
@@ -678,7 +679,10 @@ export class InvoiceService {
       .equals(invoice.business_id)
       .toArray();
     const paymentsToHide = allPayments.filter((p) => {
-      if (p.deleted_at) return false;
+      // Only ACTIVE payments can be cascade-hidden. Already-RECYCLED rows
+      // are inert; SUPERSEDED rows represent a prior Edit revision and are
+      // owned by their revision chain, not by an invoice's cascade.
+      if (!isPaymentActive(p)) return false;
       const targets = p.allocations ?? [];
       if (targets.length === 0) return false;
       // Only cascade if every remaining (non-deleted) allocation targets this invoice.
@@ -690,7 +694,7 @@ export class InvoiceService {
       .equals(invoice.business_id)
       .toArray();
     const advancesToHide = allAdvances.filter((a) => {
-      if (a.deleted_at) return false;
+      if (!isAdvanceActive(a)) return false;
       const apps = a.applications ?? [];
       if (apps.length === 0) return false;
       return apps.every((app) => app.invoice_id === invoiceId);

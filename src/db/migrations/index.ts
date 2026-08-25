@@ -73,11 +73,52 @@ const migration_v3_to_v4: Migration = {
   },
 };
 
+// v4 → v5: adds the SUPERSEDED lifecycle state alongside RECYCLED on payments
+// and advances. Backfills:
+//   payments: superseded_at, superseded_reason, revision (defaults to 1),
+//             replaces_payment_id, replaced_by_payment_id — all null except
+//             revision which defaults to 1 for pre-v5 rows (they are all
+//             the first and only revision).
+//   advances: superseded_at, superseded_reason, replaces_advance_id,
+//             replaced_by_advance_id — all null.
+// No table additions; index changes on payments/advances are applied by
+// Dexie on open (see STORES_V5).
+const migration_v4_to_v5: Migration = {
+  from: 4,
+  to: 5,
+  describe: 'v4 → v5: adds SUPERSEDED lifecycle fields to payments/advances',
+  apply(tables) {
+    const backfillPayment = (rows: Record<string, unknown>[] | undefined) =>
+      (rows ?? []).map((r) => ({
+        ...r,
+        superseded_at: r.superseded_at ?? null,
+        superseded_reason: r.superseded_reason ?? null,
+        revision: r.revision ?? 1,
+        replaces_payment_id: r.replaces_payment_id ?? null,
+        replaced_by_payment_id: r.replaced_by_payment_id ?? null,
+      }));
+    const backfillAdvance = (rows: Record<string, unknown>[] | undefined) =>
+      (rows ?? []).map((r) => ({
+        ...r,
+        superseded_at: r.superseded_at ?? null,
+        superseded_reason: r.superseded_reason ?? null,
+        replaces_advance_id: r.replaces_advance_id ?? null,
+        replaced_by_advance_id: r.replaced_by_advance_id ?? null,
+      }));
+    return {
+      ...tables,
+      payments: backfillPayment(tables.payments),
+      advances: backfillAdvance(tables.advances),
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
   migration_v2_to_v3,
   migration_v3_to_v4,
+  migration_v4_to_v5,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

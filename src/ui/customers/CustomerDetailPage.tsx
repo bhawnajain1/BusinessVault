@@ -12,6 +12,7 @@ import type {
 } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { PaymentService } from '../../domain/PaymentService';
+import { isPaymentActive, isAdvanceActive } from '../../domain/paymentState';
 import { SYSTEM_ACCOUNT_CODES } from '../../domain/coa';
 import Money from '../components/Money';
 import { streamCsvExport } from '../../csv/streamCsvExport';
@@ -175,12 +176,22 @@ export default function CustomerDetailPage() {
           db.payments
             .where('[business_id+direction]')
             .equals([businessId, 'in'])
-            .filter((p) => p.party_id === id && p.party_type === 'customer')
+            .filter(
+              (p) =>
+                p.party_id === id &&
+                p.party_type === 'customer' &&
+                isPaymentActive(p),
+            )
             .toArray(),
           db.advances
             .where('business_id')
             .equals(businessId)
-            .filter((a) => a.party_type === 'customer' && a.party_id === id)
+            .filter(
+              (a) =>
+                a.party_type === 'customer' &&
+                a.party_id === id &&
+                isAdvanceActive(a),
+            )
             .toArray(),
           db.accounts.where('business_id').equals(businessId).toArray(),
         ]);

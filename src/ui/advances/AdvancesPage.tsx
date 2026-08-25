@@ -15,6 +15,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { AdvanceService } from '../../domain/AdvanceService';
+import { isAdvanceActive } from '../../domain/paymentState';
 
 const METHODS: PaymentMethod[] = ['cash', 'card', 'upi', 'bank', 'cheque'];
 
@@ -226,6 +227,8 @@ export default function AdvancesPage() {
       const makeCol = () => {
         let c = db.advances.where('business_id').equals(businessId).reverse();
         c = c.filter((a) => {
+          // RECYCLED + SUPERSEDED advances are hidden from the main list.
+          if (!isAdvanceActive(a)) return false;
           if (directionFilter && a.party_type !== directionFilter) return false;
           const partyName = partyById.get(a.party_id)?.name;
           if (

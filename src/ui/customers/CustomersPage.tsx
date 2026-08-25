@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../../db';
 import type { Customer, Invoice, Payment, Advance } from '../../db/types';
 import { createCustomerService } from '../../domain/CustomerService';
+import { isPaymentActive, isAdvanceActive } from '../../domain/paymentState';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Drawer from '../components/Drawer';
@@ -105,11 +106,12 @@ export default function CustomersPage() {
         db.payments
           .where('[business_id+direction]')
           .equals([businessId, 'in'])
+          .filter(isPaymentActive)
           .toArray(),
         db.advances
           .where('business_id')
           .equals(businessId)
-          .filter((a) => a.party_type === 'customer')
+          .filter((a) => a.party_type === 'customer' && isAdvanceActive(a))
           .toArray(),
       ]);
       if (cancelled) return;
