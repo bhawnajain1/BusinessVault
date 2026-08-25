@@ -261,6 +261,7 @@ export class PaymentService {
       notes: input.notes ?? '',
       allocations: allocationsPreview,
       journal_entry_id: journalEntryId,
+      revision: 1,
       created_at: now,
       updated_at: now,
       entity_version: 1,

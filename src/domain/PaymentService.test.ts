@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { BusinessVaultDB } from '../db/database';
 import type { Invoice, Purchase, Account } from '../db/types';
-import { PaymentService, PaymentValidationError } from './PaymentService';
+import {
+  PaymentService,
+  PaymentValidationError,
+  PaymentAdvanceConsumedError,
+  PaymentRestoreConflictError,
+} from './PaymentService';
+import { AdvanceService } from './AdvanceService';
+import { isPaymentActive, isAdvanceActive, paymentLifecycle } from './paymentState';
 
 const BIZ = 'biz-01HXYZ';
 const DEV = 'dev-01HXYZ';
@@ -683,5 +690,578 @@ describe('PaymentService lookup', () => {
 
     const forCust = await svc.listCustomerPayments(BIZ, 'cust-1');
     expect(forCust.length).toBe(2);
+  });
+});
+
+// ---- lifecycle: softDelete / restore / update -----------------------------
+
+describe('PaymentService.softDeletePayment', () => {
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+  });
+
+  it('reverses invoice paid/balance, marks payment RECYCLED, posts reversal JE', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 100000));
+    const svc = new PaymentService(db);
+
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-D1',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 40000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 40000 }],
+    });
+
+    await svc.softDeletePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      reason: 'user delete',
+    });
+
+    const recycled = await db.payments.get(p.id);
+    expect(recycled?.deleted_at).toBeTruthy();
+    expect(recycled?.superseded_at).toBeFalsy();
+    expect(paymentLifecycle(recycled!)).toBe('RECYCLED');
+    expect(isPaymentActive(recycled!)).toBe(false);
+
+    const inv = await db.invoices.get('inv-1');
+    expect(inv?.paid_paise).toBe(0);
+    expect(inv?.balance_paise).toBe(100000);
+
+    // A reversal JE exists and references the original.
+    const entries = await db.journal_entries
+      .where('[business_id+ref_type+ref_id]')
+      .equals([BIZ, 'reversal', p.id])
+      .toArray();
+    expect(entries.length).toBe(1);
+    const revEntry = entries[0];
+    expect(revEntry.reverses_id).toBe(p.journal_entry_id);
+  });
+
+  it('is idempotent — deleting an already-recycled payment is a no-op', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 100000));
+    const svc = new PaymentService(db);
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-D2',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 10000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 10000 }],
+    });
+    await svc.softDeletePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      reason: 'first',
+    });
+    await svc.softDeletePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      reason: 'second',
+    });
+    const entries = await db.journal_entries
+      .where('[business_id+ref_type+ref_id]')
+      .equals([BIZ, 'reversal', p.id])
+      .toArray();
+    // Second delete short-circuits — still only ONE reversal JE.
+    expect(entries.length).toBe(1);
+  });
+
+  it('allows delete when the created advance is FULLY unconsumed', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 30000));
+    const svc = new PaymentService(db);
+
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-D3',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 50000,
+      advance_number: 'ADV-D3',
+      allocations: [
+        { invoice_id: 'inv-1', amount_paise: 30000 },
+        { as_advance: true, amount_paise: 20000 },
+      ],
+    });
+
+    await svc.softDeletePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      reason: 'clean rollback',
+    });
+
+    const recycled = await db.payments.get(p.id);
+    expect(recycled?.deleted_at).toBeTruthy();
+    // The cascade-hidden advance is preserved (never hard-deleted) and marked
+    // deleted with the cascade reason tag.
+    const advs = await db.advances.where('business_id').equals(BIZ).toArray();
+    expect(advs.length).toBe(1);
+    expect(advs[0].deleted_at).toBeTruthy();
+    expect(advs[0].deleted_reason).toBe(`cascade:${p.id}`);
+    expect(isAdvanceActive(advs[0])).toBe(false);
+  });
+
+  it('refuses when the created advance has been partially consumed', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 30000));
+    await db.invoices.add(makeInvoice('inv-2', 20000));
+    const svc = new PaymentService(db);
+    const advSvc = new AdvanceService(db);
+
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-D4',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 50000,
+      advance_number: 'ADV-D4',
+      allocations: [
+        { invoice_id: 'inv-1', amount_paise: 30000 },
+        { as_advance: true, amount_paise: 20000 },
+      ],
+    });
+
+    const advs = await db.advances.where('business_id').equals(BIZ).toArray();
+    // Consume ₹8000 of the advance against inv-2.
+    await advSvc.applyAdvance({
+      business_id: BIZ,
+      device_id: DEV,
+      advance_id: advs[0].id,
+      invoice_id: 'inv-2',
+      amount_paise: 8000,
+    });
+
+    await expect(
+      svc.softDeletePayment({
+        business_id: BIZ,
+        device_id: DEV,
+        payment_id: p.id,
+        reason: 'try',
+      }),
+    ).rejects.toBeInstanceOf(PaymentAdvanceConsumedError);
+
+    // Original still ACTIVE — nothing was reversed.
+    const stillLive = await db.payments.get(p.id);
+    expect(isPaymentActive(stillLive!)).toBe(true);
+    const inv1 = await db.invoices.get('inv-1');
+    expect(inv1?.paid_paise).toBe(30000);
+  });
+
+  it('refuses to touch a SUPERSEDED payment (edit tip instead)', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 100000));
+    const svc = new PaymentService(db);
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-D5',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 10000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 10000 }],
+    });
+    await svc.updatePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      payment_date: '2026-08-20',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 12000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 12000 }],
+    });
+    await expect(
+      svc.softDeletePayment({
+        business_id: BIZ,
+        device_id: DEV,
+        payment_id: p.id,
+        reason: 'nope',
+      }),
+    ).rejects.toBeInstanceOf(PaymentValidationError);
+  });
+});
+
+describe('PaymentService.restorePayment', () => {
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+  });
+
+  it('restores fully when the original invoice is still open', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 100000));
+    const svc = new PaymentService(db);
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-R1',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 40000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 40000 }],
+    });
+    await svc.softDeletePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      reason: 'oops',
+    });
+    const restored = await svc.restorePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+    });
+    expect(restored.deleted_at).toBeFalsy();
+    expect(isPaymentActive(restored)).toBe(true);
+
+    const inv = await db.invoices.get('inv-1');
+    expect(inv?.paid_paise).toBe(40000);
+    expect(inv?.balance_paise).toBe(60000);
+  });
+
+  it('throws RESTORE_ALLOCATION_CONFLICT when target no longer has capacity', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 100000));
+    const svc = new PaymentService(db);
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-R2',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 40000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 40000 }],
+    });
+    await svc.softDeletePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      reason: 'oops',
+    });
+    // Someone else fully pays inv-1 while our payment is recycled.
+    await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-OTHER',
+      payment_date: '2026-08-20',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 100000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 100000 }],
+    });
+
+    await expect(
+      svc.restorePayment({
+        business_id: BIZ,
+        device_id: DEV,
+        payment_id: p.id,
+      }),
+    ).rejects.toBeInstanceOf(PaymentRestoreConflictError);
+  });
+
+  it('with allow_partial=true, shortfall flows to a new advance; other payment untouched', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 100000));
+    const svc = new PaymentService(db);
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-R3',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 60000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 60000 }],
+    });
+    await svc.softDeletePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      reason: 'temp',
+    });
+    // Another payment pays ₹80k of the ₹100k — leaving ₹20k open.
+    await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-OTHER',
+      payment_date: '2026-08-20',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 80000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 80000 }],
+    });
+
+    const restored = await svc.restorePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      allow_partial: true,
+    });
+
+    // Restored allocation is fitted to available (₹20k) + new advance of ₹40k.
+    const invSlice = restored.allocations.find((a) => a.invoice_id === 'inv-1');
+    const advSlice = restored.allocations.find((a) => a.advance_id);
+    expect(invSlice?.amount_paise).toBe(20000);
+    expect(advSlice?.amount_paise).toBe(40000);
+
+    // Other payment untouched.
+    const others = await db.payments
+      .where('[business_id+payment_number]')
+      .equals([BIZ, 'PAY-OTHER'])
+      .toArray();
+    expect(others[0].amount_paise).toBe(80000);
+    expect(isPaymentActive(others[0])).toBe(true);
+
+    // Invoice is fully paid (₹20k + ₹80k).
+    const inv = await db.invoices.get('inv-1');
+    expect(inv?.balance_paise).toBe(0);
+  });
+});
+
+describe('PaymentService.updatePayment', () => {
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+  });
+
+  it('marks original SUPERSEDED, inserts new revision with SAME payment_number', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 100000));
+    const svc = new PaymentService(db);
+    const original = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-E1',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 30000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 30000 }],
+    });
+
+    const edited = await svc.updatePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: original.id,
+      payment_date: '2026-08-20',
+      method: 'upi',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 45000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 45000 }],
+      reason: 'wrong amount',
+    });
+
+    // Same payment_number, different id, revision bumped.
+    expect(edited.payment_number).toBe('PAY-E1');
+    expect(edited.id).not.toBe(original.id);
+    expect(edited.revision).toBe(2);
+    expect(edited.replaces_payment_id).toBe(original.id);
+
+    // Original is SUPERSEDED and forward-linked.
+    const oldRow = await db.payments.get(original.id);
+    expect(oldRow?.superseded_at).toBeTruthy();
+    expect(oldRow?.deleted_at).toBeFalsy();
+    expect(oldRow?.replaced_by_payment_id).toBe(edited.id);
+    expect(paymentLifecycle(oldRow!)).toBe('SUPERSEDED');
+
+    // Invoice paid reflects the NEW amount only.
+    const inv = await db.invoices.get('inv-1');
+    expect(inv?.paid_paise).toBe(45000);
+    expect(inv?.balance_paise).toBe(55000);
+
+    // Revision chain walkable.
+    const chain = await svc.listPaymentRevisions(BIZ, 'PAY-E1');
+    expect(chain.length).toBe(2);
+    expect(chain[0].revision).toBe(1);
+    expect(chain[1].revision).toBe(2);
+  });
+
+  it('SUPERSEDED rows are hidden from Recycle Bin', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 100000));
+    const svc = new PaymentService(db);
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-E2',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 10000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 10000 }],
+    });
+    await svc.updatePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      payment_date: '2026-08-20',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 12000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 12000 }],
+    });
+    const bin = await svc.listRecycledPayments(BIZ);
+    expect(bin.length).toBe(0);
+  });
+
+  it('exactly one ACTIVE row per revision chain', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 100000));
+    const svc = new PaymentService(db);
+    let current = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-E3',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 5000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 5000 }],
+    });
+    // Three consecutive edits.
+    for (let i = 0; i < 3; i++) {
+      current = await svc.updatePayment({
+        business_id: BIZ,
+        device_id: DEV,
+        payment_id: current.id,
+        payment_date: '2026-08-20',
+        method: 'cash',
+        cash_or_bank_account_id: 'acc-cash',
+        ar_or_ap_account_id: 'acc-ar',
+        amount_paise: 6000 + i * 1000,
+        allocations: [{ invoice_id: 'inv-1', amount_paise: 6000 + i * 1000 }],
+      });
+    }
+    const chain = await svc.listPaymentRevisions(BIZ, 'PAY-E3');
+    const active = chain.filter(isPaymentActive);
+    expect(chain.length).toBe(4);
+    expect(active.length).toBe(1);
+    expect(active[0].revision).toBe(4);
+    // Invoice paid reflects only the latest revision.
+    const inv = await db.invoices.get('inv-1');
+    expect(inv?.paid_paise).toBe(8000);
+  });
+
+  it('refuses to edit a RECYCLED payment (must restore first)', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-1', 100000));
+    const svc = new PaymentService(db);
+    const p = await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-E4',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 10000,
+      allocations: [{ invoice_id: 'inv-1', amount_paise: 10000 }],
+    });
+    await svc.softDeletePayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_id: p.id,
+      reason: 'try',
+    });
+    await expect(
+      svc.updatePayment({
+        business_id: BIZ,
+        device_id: DEV,
+        payment_id: p.id,
+        payment_date: '2026-08-20',
+        method: 'cash',
+        cash_or_bank_account_id: 'acc-cash',
+        ar_or_ap_account_id: 'acc-ar',
+        amount_paise: 15000,
+        allocations: [{ invoice_id: 'inv-1', amount_paise: 15000 }],
+      }),
+    ).rejects.toBeInstanceOf(PaymentValidationError);
   });
 });
