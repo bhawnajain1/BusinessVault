@@ -1153,9 +1153,17 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
           continue;
         }
         seen.add(folderPath);
+        // Same nested-manifest fallback as the Drive provider — writeSnapshot
+        // used to drop the top-level businessId when replacing the manifest;
+        // fall through to userManifest so those older backups still resolve
+        // to the correct ULID.
+        const nested = (manifest.userManifest ?? {}) as {
+          businessId?: unknown;
+          businessName?: unknown;
+        };
         out.push({
-          businessId: String(manifest.businessId ?? e.name),
-          businessName: String(manifest.businessName ?? e.name),
+          businessId: String(manifest.businessId ?? nested.businessId ?? e.name),
+          businessName: String(manifest.businessName ?? nested.businessName ?? e.name),
           folderPath,
           manifest,
         });

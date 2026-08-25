@@ -498,9 +498,17 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       } catch {
         continue;
       }
+      // Older manifests written by writeSnapshot (before Fix A above) stored
+      // businessId only inside `userManifest`, not at the top level. Fall
+      // through nested → top-level → folder-name so those backups still
+      // restore against the correct businessId.
+      const nested = (manifest.userManifest ?? {}) as {
+        businessId?: unknown;
+        businessName?: unknown;
+      };
       out.push({
-        businessId: String(manifest.businessId ?? c.name),
-        businessName: String(manifest.businessName ?? c.name),
+        businessId: String(manifest.businessId ?? nested.businessId ?? c.name),
+        businessName: String(manifest.businessName ?? nested.businessName ?? c.name),
         folderPath: `${ROOT_FOLDER_NAME}/${c.name}`,
         manifest,
       });
@@ -818,8 +826,16 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       // 7. Rewrite metadata/manifest.json + metadata/checksums.json to point
       //    at this snapshot. Done LAST so a mid-upload failure never leaves
       //    the manifest advertising a partial snapshot.
+      // Keep top-level `businessId`/`businessName` populated — listBusinesses
+      // reads them directly. Prior versions dropped these when they replaced
+      // the whole manifest here, leaving Restore to fall back on the folder
+      // name (which for "Real Buiness" is not a ULID, so every domain-table
+      // count against selected.businessId returned 0).
+      const userManifest = input.manifest as { businessId?: unknown; businessName?: unknown };
       const nextManifest = {
         schemaVersion: SCHEMA_VERSION,
+        businessId: String(userManifest.businessId ?? this.business!.businessName),
+        businessName: this.business!.businessName,
         currentSnapshot: {
           kind: input.kind,
           asOf: input.asOf,
