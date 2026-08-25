@@ -753,6 +753,63 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
     const stagingDir = `snapshots/${input.kind}/.staging/${stamp}`;
     const finalDir = `snapshots/${input.kind}/${stamp}`;
 
+    log.info('drive.provider', 'writeSnapshot begin', {
+      stamp,
+      kind: input.kind,
+      fileCount: input.files.length,
+    });
+
+    // 0. Idempotent clash check — BEFORE we upload anything.
+    //    Retry storms in the sync worker used to re-upload every CSV and only
+    //    trip the clash guard at step 6 (after ~7 network roundtrips), then
+    //    the cleanup path left a stale staging id in cache and the next retry
+    //    404'd. On repeat retries of the same asOf we'd alternate clash / 404
+    //    forever.
+    //    Now: if the final folder already exists AND the manifest points at
+    //    it, treat this as a prior successful write from an earlier retry and
+    //    return that handle. Only refuse when the on-disk state is
+    //    inconsistent (folder present but manifest disagrees).
+    const finalParentEarly = await this.ensureDir(`snapshots/${input.kind}`);
+    const existing = await this.api.findChildByName(finalParentEarly, stamp);
+    if (existing) {
+      const manifestBlob = await this.readFileIfExists('metadata/manifest.json');
+      let manifestPath: string | null = null;
+      let manifestFolderId: string | null = null;
+      if (manifestBlob) {
+        try {
+          const parsed = JSON.parse(await blobText(manifestBlob)) as {
+            currentSnapshot?: { path?: string; providerFolderId?: string };
+          };
+          manifestPath = parsed.currentSnapshot?.path ?? null;
+          manifestFolderId = parsed.currentSnapshot?.providerFolderId ?? null;
+        } catch {
+          // fall through — treat as inconsistent
+        }
+      }
+      const manifestMatches =
+        manifestPath === finalDir && manifestFolderId === existing.id;
+      log.warn('drive.provider', 'snapshot clash', {
+        stamp,
+        kind: input.kind,
+        clashId: existing.id,
+        manifestPath,
+        manifestFolderId,
+        manifestMatches,
+      });
+      if (manifestMatches) {
+        this.folderIdCache.set(finalDir, existing.id);
+        return {
+          businessId: this.business!.providerFolderId,
+          kind: input.kind,
+          path: finalDir,
+          providerFolderId: existing.id,
+          asOf: input.asOf,
+          createdAt: nowIso(),
+        };
+      }
+      throw new Error(`snapshot '${stamp}' already exists — refusing to overwrite`);
+    }
+
     // 1. Read the current manifest (so we can roll back on failure).
     const prevManifestBlob = await this.readFileIfExists('metadata/manifest.json');
     const prevChecksumsBlob = await this.readFileIfExists('metadata/checksums.json');
@@ -806,13 +863,10 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       }
 
       // 6. Move staging → final. In Drive, "move" = re-parent.
-      const finalParent = await this.ensureDir(`snapshots/${input.kind}`);
-      // If a same-timestamp final dir already exists we bail: never clobber.
-      const clash = await this.api.findChildByName(finalParent, stamp);
-      if (clash) {
-        throw new Error(`snapshot '${stamp}' already exists — refusing to overwrite`);
-      }
-      // Reparent the staging folder itself.
+      //    The idempotent clash check at step 0 already guaranteed the final
+      //    dir does not exist for this stamp; if another writer raced us
+      //    between step 0 and here, moveFile will surface the error.
+      const finalParent = finalParentEarly;
       const stagingParent = await this.ensureDir(`snapshots/${input.kind}/.staging`);
       const moved = await this.api.moveFile(stagingId, finalParent, stagingParent);
       // Also rename it from ".staging/<ts>" segment to "<ts>". Since we just
@@ -881,6 +935,15 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       // re-resolves via ensureFolder against fresh Drive state.
       const nf = this.isDriveNotFound(err);
       if (nf) this.purgeDeadId(nf.deadId ?? stagingId);
+      log.warn('drive.provider', 'writeSnapshot rollback', {
+        stamp,
+        kind: input.kind,
+        uploadedCount: uploadedFiles.length,
+        manifestMutated,
+        checksumsMutated,
+        deadIdPurged: nf?.deadId ?? (nf ? stagingId : null),
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
       // Rollback: delete anything we uploaded into staging + drop the staging
       // folder. Previous manifest & checksums remain intact because we never
       // touched them until step 7. Best-effort — if deletes fail we surface

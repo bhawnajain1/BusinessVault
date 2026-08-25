@@ -233,11 +233,13 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
     const now = clock();
     await markInFlight(job.id, now);
     const t0 = clock().getTime();
-    log.debug('sync', 'job start', {
+    log.info('sync', 'job start', {
       jobId: job.id,
       kind: job.kind,
       businessId: job.business_id,
       attempts: job.attempts,
+      maxAttempts: job.max_attempts,
+      lastError: job.last_error ?? null,
     });
     try {
       if (job.kind === 'journal_flush') {
@@ -296,11 +298,12 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
           });
           return;
         }
-        log.debug('sync', 'snapshot shipping', {
+        log.info('sync', 'snapshot shipping', {
           jobId: job.id,
           businessId: p.input.businessId,
           asOf: p.input.asOf,
           kind: p.input.kind,
+          attempts: job.attempts,
         });
         const handle = await deps.provider.writeSnapshot(p.input);
         await markDone(job.id, clock());
