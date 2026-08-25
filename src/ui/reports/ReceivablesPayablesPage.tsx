@@ -294,7 +294,7 @@ export default function ReceivablesPayablesPage() {
                     <tr key={r.supplier_id} className="border-t border-slate-100">
                       <td className="px-3 py-1.5">
                         <Link
-                          to={`/suppliers`}
+                          to={`/suppliers/${r.supplier_id}`}
                           className="text-blue-700 hover:underline"
                           title={`View supplier ${data.supplierById.get(r.supplier_id)?.name ?? r.supplier_id}`}
                         >

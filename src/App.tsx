@@ -25,6 +25,7 @@ const PaymentsRecycleBin = lazy(
 const Advances = lazy(() => import('./ui/pages/Advances'));
 const PartyLedger = lazy(() => import('./ui/parties/PartyLedgerPage'));
 const CustomerDetail = lazy(() => import('./ui/customers/CustomerDetailPage'));
+const SupplierDetail = lazy(() => import('./ui/suppliers/SupplierDetailPage'));
 const Expenses = lazy(() => import('./ui/pages/Expenses'));
 const TrialBalancePage = lazy(() => import('./ui/reports/TrialBalancePage'));
 const ProfitLossPage = lazy(() => import('./ui/reports/ProfitLossPage'));
@@ -56,6 +57,7 @@ export default function App() {
           <Route path="/customers" element={<Customers />} />
           <Route path="/customers/:id" element={<CustomerDetail />} />
           <Route path="/suppliers" element={<Suppliers />} />
+          <Route path="/suppliers/:id" element={<SupplierDetail />} />
           <Route
             path="/parties/:partyType/:id/ledger"
             element={<PartyLedger />}
