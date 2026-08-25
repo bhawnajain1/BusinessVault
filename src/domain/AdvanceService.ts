@@ -14,6 +14,7 @@ import type {
 } from '../db/types';
 import { GENESIS_HASH, canonicalJson, sha256Hex } from '../journal/event';
 import { SYSTEM_ACCOUNT_CODES, findAccountByCode } from './coa';
+import { isAdvanceActive } from './paymentState';
 
 // AdvanceService — Phase 2 of payablesRec.md.
 //
@@ -479,6 +480,7 @@ export class AdvanceService {
     const rows = await this.db.advances
       .where('[business_id+party_type+party_id]')
       .equals([business_id, party_type, party_id])
+      .filter(isAdvanceActive)
       .toArray();
     return rows.sort((a, b) =>
       a.advance_date < b.advance_date ? -1 : a.advance_date > b.advance_date ? 1 : 0,

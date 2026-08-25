@@ -15,6 +15,7 @@ import type {
   Supplier,
 } from '../db/types';
 import { fromMoney, type Money } from '../domain/money';
+import { isPaymentActive } from '../domain/paymentState';
 import {
   balanceSheet,
   profitAndLoss,
@@ -93,7 +94,11 @@ export async function buildBusinessExcelExport(
   const invoices = await db.invoices.where('business_id').equals(businessId).toArray();
   const invoiceLines = await db.invoice_lines.where('business_id').equals(businessId).toArray();
   const purchases = await db.purchases.where('business_id').equals(businessId).toArray();
-  const payments = await db.payments.where('business_id').equals(businessId).toArray();
+  // Skip RECYCLED + SUPERSEDED payments — the export mirrors the live totals
+  // shown in Dashboard/Payments, which exclude both lifecycle states.
+  const payments = (
+    await db.payments.where('business_id').equals(businessId).toArray()
+  ).filter(isPaymentActive);
   const expenses = await db.expenses.where('business_id').equals(businessId).toArray();
   const accounts = await db.accounts.where('business_id').equals(businessId).toArray();
 

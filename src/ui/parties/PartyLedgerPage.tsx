@@ -13,6 +13,7 @@ import type {
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import Money from '../components/Money';
 import { streamCsvExport } from '../../csv/streamCsvExport';
+import { isPaymentActive, isAdvanceActive } from '../../domain/paymentState';
 
 // A single running-balance ledger row for one party (customer or supplier).
 // For a customer we build receivables: invoices increase balance owed BY them,
@@ -84,12 +85,22 @@ export default function PartyLedgerPage() {
             db.payments
               .where('[business_id+direction]')
               .equals([businessId, 'in'])
-              .filter((p) => p.party_id === id && p.party_type === 'customer')
+              .filter(
+                (p) =>
+                  p.party_id === id &&
+                  p.party_type === 'customer' &&
+                  isPaymentActive(p),
+              )
               .toArray(),
             db.advances
               .where('business_id')
               .equals(businessId)
-              .filter((a) => a.party_type === 'customer' && a.party_id === id)
+              .filter(
+                (a) =>
+                  a.party_type === 'customer' &&
+                  a.party_id === id &&
+                  isAdvanceActive(a),
+              )
               .toArray(),
           ]);
           if (cancelled) return;
@@ -105,12 +116,22 @@ export default function PartyLedgerPage() {
             db.payments
               .where('[business_id+direction]')
               .equals([businessId, 'out'])
-              .filter((p) => p.party_id === id && p.party_type === 'supplier')
+              .filter(
+                (p) =>
+                  p.party_id === id &&
+                  p.party_type === 'supplier' &&
+                  isPaymentActive(p),
+              )
               .toArray(),
             db.advances
               .where('business_id')
               .equals(businessId)
-              .filter((a) => a.party_type === 'supplier' && a.party_id === id)
+              .filter(
+                (a) =>
+                  a.party_type === 'supplier' &&
+                  a.party_id === id &&
+                  isAdvanceActive(a),
+              )
               .toArray(),
           ]);
           if (cancelled) return;

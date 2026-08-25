@@ -5,6 +5,7 @@ import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
+import { isPaymentActive } from '../../domain/paymentState';
 
 export default function PaymentsPage() {
   const { businessId, loading } = useActiveBusiness();
@@ -50,6 +51,10 @@ export default function PaymentsPage() {
           c = db.payments.where('business_id').equals(businessId);
         }
         c = c.reverse();
+        // Hide RECYCLED + SUPERSEDED from the main list — Recycle Bin has its
+        // own view; SUPERSEDED (Edit prior revision) only appears in a payment's
+        // per-row revision history.
+        c = c.filter((p) => isPaymentActive(p));
         if (search || filters.payment_number || filters.party || filters.method) {
           c = c.filter((p) => {
             if (

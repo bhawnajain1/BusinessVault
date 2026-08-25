@@ -51,6 +51,7 @@ import {
   type RecoveryDiagnosticReport,
 } from './diagnosticReport';
 import { accountingSelfCheck } from '../domain/AccountingService';
+import { isPaymentActive, isAdvanceActive } from '../domain/paymentState';
 import { InventoryService } from '../domain/InventoryService';
 
 // ---------------------------------------------------------------------------
@@ -658,11 +659,12 @@ async function rebuildInvoicePaidBalance(
   // original and its refund correctly reduces paid_paise. Filtering by
   // direction='in' would silently drop the refund and leave the invoice
   // appearing fully paid after restore.
-  // Skip soft-deleted payments so a deleted payment doesn't zero out the
-  // ledger; invoice:delete cascades already mark those.
+  // Skip inactive payments (RECYCLED or SUPERSEDED) so they don't zero out
+  // the ledger. invoice:delete cascades mark RECYCLED; PaymentService Edit
+  // marks SUPERSEDED — both are excluded via the central predicate.
   const paidByInvoice = new Map<string, number>();
   for (const p of payments) {
-    if (p.deleted_at) continue;
+    if (!isPaymentActive(p)) continue;
     const allocs = Array.isArray(p.allocations) ? p.allocations : [];
     for (const a of allocs) {
       if (!a.invoice_id) continue;
@@ -678,7 +680,7 @@ async function rebuildInvoicePaidBalance(
   // event carrying the post-apply state. Without this pass the restored
   // invoice ends up as if the advance never landed (silent data loss).
   for (const adv of advances) {
-    if (adv.deleted_at) continue;
+    if (!isAdvanceActive(adv)) continue;
     const apps = Array.isArray(adv.applications) ? adv.applications : [];
     for (const a of apps) {
       if (!a.invoice_id) continue;

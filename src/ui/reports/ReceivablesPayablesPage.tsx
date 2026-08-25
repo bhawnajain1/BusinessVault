@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { Advance, Customer, Invoice, Purchase, Supplier } from '../../db/types';
 import { money } from './reportUtils';
+import { isAdvanceActive } from '../../domain/paymentState';
 import { useBusinessId } from './useBusinessId';
 import {
   computePayables,
@@ -63,8 +64,10 @@ export default function ReceivablesPayablesPage() {
           >,
         ]);
         const asOfYmd = todayYmd();
-        const ar = computeReceivables(invoices, asOfYmd, advances, customers);
-        const ap = computePayables(bills, asOfYmd, advances, suppliers);
+        // Exclude RECYCLED + SUPERSEDED advances from AR/AP math.
+        const activeAdvances = advances.filter(isAdvanceActive);
+        const ar = computeReceivables(invoices, asOfYmd, activeAdvances, customers);
+        const ap = computePayables(bills, asOfYmd, activeAdvances, suppliers);
         const customerById = new Map(customers.map((c) => [c.id, c]));
         const supplierById = new Map(suppliers.map((s) => [s.id, s]));
         if (alive) setData({ ar, ap, customerById, supplierById, asOfYmd });
