@@ -16,6 +16,7 @@ import type {
 } from '../db/types';
 import { GENESIS_HASH, canonicalJson, sha256Hex } from '../journal/event';
 import { SYSTEM_ACCOUNT_CODES, findAccountByCode } from './coa';
+import { isPaymentActive, isAdvanceActive } from './paymentState';
 
 // UI-facing payment split — three tendered methods plus "credit" (unpaid).
 // Credit does NOT produce a Payment row; the invoice balance already reflects it.
@@ -69,10 +70,112 @@ export interface RefundPaymentInput {
   idempotency_key?: string;
 }
 
+export interface SoftDeletePaymentInput {
+  business_id: string;
+  device_id: string;
+  payment_id: string;
+  reason: string;
+}
+
+export interface RestorePaymentInput {
+  business_id: string;
+  device_id: string;
+  payment_id: string;
+  // When true, RESTORE proceeds even if some original allocation slices no
+  // longer fit the current invoice/bill outstanding — shortfalls fall through
+  // to an advance for the payer/payee. When false (default) and any slice
+  // cannot be fully restored to its original target, throws
+  // PaymentRestoreConflictError so the UI can prompt the user.
+  allow_partial?: boolean;
+}
+
+// Full Edit input — payment_number is IMMUTABLE across revisions and comes
+// from the original row, not the caller. Everything else in this shape can
+// change (amount, date, method, account, allocations, reference, notes).
+export interface UpdatePaymentInput {
+  business_id: string;
+  device_id: string;
+  payment_id: string;
+  payment_date: string;
+  method: PaymentMethod;
+  cash_or_bank_account_id: string;
+  ar_or_ap_account_id: string;
+  amount_paise: number;
+  reference?: string;
+  notes?: string;
+  allocations: PaymentAllocationInput[];
+  advance_number?: string;
+  reason?: string;
+}
+
+// Structured detail returned when softDeletePayment is refused because the
+// payment created an advance that has since been partially/fully consumed by
+// other invoices/bills. UI surfaces this in a "cannot delete" dialog with
+// per-target links.
+export interface AdvanceConsumer {
+  advance_id: string;
+  advance_number: string;
+  invoice_id?: string;
+  invoice_number?: string;
+  bill_id?: string;
+  bill_number?: string;
+  applied_paise: number;
+  applied_at: string;
+}
+
 export class PaymentValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PaymentValidationError';
+  }
+}
+
+/**
+ * Thrown by softDeletePayment / updatePayment when the payment created an
+ * advance and that advance has since been applied (partially or fully) to
+ * other invoices/bills. The consuming targets are attached so the UI can list
+ * them and route the user to "reverse those applications first".
+ *
+ * User rule (from spec §Q1 clarification): allow delete only when
+ *   (no advance was created) OR (advance is fully unconsumed).
+ * A partial consumption blocks the delete just as fully as a total one — we
+ * never automatically claw back money from downstream valid applications.
+ */
+export class PaymentAdvanceConsumedError extends Error {
+  readonly code = 'PAYMENT_ADVANCE_CONSUMED';
+  constructor(
+    readonly payment_id: string,
+    readonly consumers: AdvanceConsumer[],
+  ) {
+    super(
+      `Payment ${payment_id} created an advance that has been consumed by ${consumers.length} downstream application(s)`,
+    );
+    this.name = 'PaymentAdvanceConsumedError';
+  }
+}
+
+// Slice-level shape of what RESTORE could not do. `slice_kind` identifies the
+// original allocation target; `requested_paise` is what the historical slice
+// wanted; `available_paise` is what the target can accept right now. UI shows
+// the shortfall and asks "OK to make the difference a customer advance?".
+export interface RestoreAllocationConflict {
+  slice_kind: 'invoice' | 'bill' | 'advance';
+  target_id: string;
+  target_number: string;
+  requested_paise: number;
+  available_paise: number;
+}
+
+export class PaymentRestoreConflictError extends Error {
+  readonly code = 'RESTORE_ALLOCATION_CONFLICT';
+  constructor(
+    readonly payment_id: string,
+    readonly conflicts: RestoreAllocationConflict[],
+  ) {
+    super(
+      `Payment ${payment_id} cannot be fully restored to its original allocations`,
+    );
+    this.name = 'PaymentRestoreConflictError';
   }
 }
 
