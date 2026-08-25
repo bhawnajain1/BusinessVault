@@ -148,7 +148,14 @@ class GisDriveClient implements DriveApiClient {
     }
     if (!res.ok) {
       const text = await res.clone().text().catch(() => '');
-      throw new Error(`Drive ${init.method ?? 'GET'} ${url} failed: HTTP ${res.status} ${text.slice(0, 200)}`);
+      const err = new Error(
+        `Drive ${init.method ?? 'GET'} ${url} failed: HTTP ${res.status} ${text.slice(0, 200)}`,
+      ) as Error & { status?: number; body?: string };
+      // Attach the HTTP status so callers can react to 404 (stale-id) without
+      // parsing the message. Body kept short for log noise.
+      err.status = res.status;
+      err.body = text.slice(0, 500);
+      throw err;
     }
     return res;
   }

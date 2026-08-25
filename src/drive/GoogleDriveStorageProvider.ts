@@ -568,11 +568,22 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
 
       // Read existing content (empty on first write).
       let existing = '';
-      const ref = await this.resolveFile(path);
+      let ref = await this.resolveFile(path);
       const seen = new Set<string>();
       if (ref) {
-        const blob = await this.api.getFileContents(ref.id);
-        existing = await blobText(blob);
+        try {
+          const blob = await this.api.getFileContents(ref.id);
+          existing = await blobText(blob);
+        } catch (err) {
+          const nf = this.isDriveNotFound(err);
+          if (!nf) throw err;
+          // Cached journal file id is dead. Purge and fall through to the
+          // "create new" branch below, which uses ensureDir + createFile
+          // against the (freshly re-resolved) parent folder.
+          this.purgeDeadId(nf.deadId ?? ref.id);
+          ref = null;
+          existing = '';
+        }
         // Populate seen set with existing event_ids for idempotent replay
         // (spec: "Events are idempotent — replay must never double-effect").
         if (existing.length > 0) {
@@ -619,13 +630,19 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
           appendCount: appendLines.length,
           bytes: nextContent.length,
         });
-        const updated = await this.api.updateFileContents(ref.id, newBlob, MIME_JSONL);
-        this.fileRefCache.set(path, updated);
-        log.info('drive.provider', 'journal file updated', {
-          bucket: ym,
-          fileId: updated.id,
-          version: updated.version,
-        });
+        try {
+          const updated = await this.api.updateFileContents(ref.id, newBlob, MIME_JSONL);
+          this.fileRefCache.set(path, updated);
+          log.info('drive.provider', 'journal file updated', {
+            bucket: ym,
+            fileId: updated.id,
+            version: updated.version,
+          });
+        } catch (err) {
+          const nf = this.isDriveNotFound(err);
+          if (nf) this.purgeDeadId(nf.deadId ?? ref.id);
+          throw err;
+        }
       } else {
         const parentId = await this.ensureDir(dir);
         log.debug('drive.provider', 'creating new journal file', {
@@ -635,19 +652,25 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
           appendCount: appendLines.length,
           bytes: nextContent.length,
         });
-        const created = await this.api.createFile({
-          parentId,
-          name: `${ym}.events.jsonl`,
-          mimeType: MIME_JSONL,
-          body: newBlob,
-        });
-        this.fileRefCache.set(path, created);
-        log.info('drive.provider', 'journal file created', {
-          bucket: ym,
-          fileId: created.id,
-          version: created.version,
-          parentId,
-        });
+        try {
+          const created = await this.api.createFile({
+            parentId,
+            name: `${ym}.events.jsonl`,
+            mimeType: MIME_JSONL,
+            body: newBlob,
+          });
+          this.fileRefCache.set(path, created);
+          log.info('drive.provider', 'journal file created', {
+            bucket: ym,
+            fileId: created.id,
+            version: created.version,
+            parentId,
+          });
+        } catch (err) {
+          const nf = this.isDriveNotFound(err);
+          if (nf) this.purgeDeadId(nf.deadId ?? parentId);
+          throw err;
+        }
       }
       totalWritten += appendLines.length;
     }
@@ -836,6 +859,12 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
         createdAt: nowIso(),
       };
     } catch (err) {
+      // If the failure is HTTP 404 against a cached folder id (staging dir,
+      // finalParent, etc.) then Drive was mutated out from under us. Purge
+      // the dead id from every cache so the sync worker's next retry
+      // re-resolves via ensureFolder against fresh Drive state.
+      const nf = this.isDriveNotFound(err);
+      if (nf) this.purgeDeadId(nf.deadId ?? stagingId);
       // Rollback: delete anything we uploaded into staging + drop the staging
       // folder. Previous manifest & checksums remain intact because we never
       // touched them until step 7. Best-effort — if deletes fail we surface
@@ -1191,6 +1220,43 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
   private assertBusiness(): void {
     if (!this.connected) throw new Error('provider not connected');
     if (!this.business) throw new Error('initializeBusiness() must be called first');
+  }
+
+  // Drive can be mutated from outside the app (user deletes a folder in the
+  // Drive UI, another device moves a file). Our in-memory caches
+  // (folderIdCache / fileRefCache) keep pointing at the dead id and every
+  // subsequent write returns HTTP 404. Detect that 404, purge the dead id
+  // from both caches, and rethrow so the sync worker's normal backoff/retry
+  // loop picks up a fresh ensureFolder round on the next attempt.
+  private isDriveNotFound(err: unknown): { deadId: string | null } | null {
+    if (!(err instanceof Error)) return null;
+    const status = (err as Error & { status?: number }).status;
+    if (status !== 404) return null;
+    // Google's message format: `File not found: <id>.`
+    const m = /File not found:\s*([A-Za-z0-9_-]+)/.exec(err.message);
+    return { deadId: m ? m[1] : null };
+  }
+
+  private purgeDeadId(deadId: string): void {
+    let purgedFolders = 0;
+    for (const [path, id] of this.folderIdCache) {
+      if (id === deadId) {
+        this.folderIdCache.delete(path);
+        purgedFolders++;
+      }
+    }
+    let purgedFiles = 0;
+    for (const [path, ref] of this.fileRefCache) {
+      if (ref.id === deadId) {
+        this.fileRefCache.delete(path);
+        purgedFiles++;
+      }
+    }
+    log.warn('drive.provider', 'invalidated cache entries for dead Drive id', {
+      deadId,
+      purgedFolders,
+      purgedFiles,
+    });
   }
 
   /** Ensure a directory (relative to the business folder) exists; return id. */

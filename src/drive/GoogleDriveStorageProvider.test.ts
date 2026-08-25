@@ -148,6 +148,17 @@ class FakeDrive implements DriveApiClient {
       this.failNextCreate = this.failNextCreate.filter((n) => n !== input.name);
       throw new Error(`simulated createFile failure for ${input.name}`);
     }
+    // Mirror real Drive: create against a missing parent returns HTTP 404
+    // with a "File not found: <id>." body. Provider caches folder ids and
+    // fails when they're deleted out from under it — test path covered in
+    // "invalidates folder-id cache on HTTP 404".
+    if (!this.nodes.has(input.parentId)) {
+      const err = new Error(
+        `Drive POST failed: HTTP 404 { "error": { "code": 404, "message": "File not found: ${input.parentId}." } }`,
+      ) as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
     const id = this.mint();
     const now = new Date().toISOString();
     const bytes = await blobBytes(input.body);
@@ -167,7 +178,13 @@ class FakeDrive implements DriveApiClient {
   }
   async updateFileContents(fileId: string, body: Blob, mimeType: string): Promise<DriveFileRef> {
     const n = this.nodes.get(fileId);
-    if (!n) throw new Error('not found');
+    if (!n) {
+      const err = new Error(
+        `Drive PATCH failed: HTTP 404 { "error": { "code": 404, "message": "File not found: ${fileId}." } }`,
+      ) as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
     n.content = await blobBytes(body);
     n.mimeType = mimeType;
     n.version += 1;
@@ -177,7 +194,13 @@ class FakeDrive implements DriveApiClient {
   }
   async getFileContents(fileId: string): Promise<Blob> {
     const n = this.nodes.get(fileId);
-    if (!n) throw new Error('not found');
+    if (!n) {
+      const err = new Error(
+        `Drive GET failed: HTTP 404 { "error": { "code": 404, "message": "File not found: ${fileId}." } }`,
+      ) as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
     if (this.failVerifyFile === n.name) {
       // Simulate silent corruption — return different bytes than were written.
       return new Blob([new Uint8Array([0xff, 0xff, 0xff]).buffer]);
@@ -189,7 +212,13 @@ class FakeDrive implements DriveApiClient {
   }
   async getFileMetadata(fileId: string): Promise<DriveFileRef> {
     const n = this.nodes.get(fileId);
-    if (!n) throw new Error('not found');
+    if (!n) {
+      const err = new Error(
+        `Drive GET failed: HTTP 404 { "error": { "code": 404, "message": "File not found: ${fileId}." } }`,
+      ) as Error & { status?: number };
+      err.status = 404;
+      throw err;
+    }
     return this.ref(n);
   }
   async moveFile(
@@ -459,6 +488,52 @@ describe('GoogleDriveStorageProvider — writeJournalEvents', () => {
     const lines = text.split('\n').filter(Boolean);
     expect(lines).toHaveLength(3);
     for (const l of lines) expect(() => JSON.parse(l)).not.toThrow();
+  });
+
+  it('invalidates folder-id cache on HTTP 404 so the next retry re-resolves the parent', async () => {
+    // Repro of the bug seen in the wild (v0.5.5 debug logs, 2026-08-24):
+    //   1) A snapshot succeeded and cached the staging-dir folder id.
+    //   2) The staging folder was later deleted / reparented on Drive.
+    //   3) Every subsequent createFile against the cached parent id 404'd
+    //      forever — because the provider kept handing the sync worker the
+    //      dead id from folderIdCache.
+    // After the fix: the 404 purges the dead id from both caches and rethrows,
+    // so the sync worker's normal retry hits ensureFolder against fresh Drive
+    // state and succeeds.
+    const { provider, drive } = await connected();
+
+    // Prime: first journal write creates journal/2026 and journal/2026/…
+    await provider.writeJournalEvents([mkEvent('01H1', 'INV1')]);
+    // Sanity: the created journal file lives under some parent folder id.
+    const journalNode = [...drive.nodes.values()].find(
+      (n) => n.name === '2026-08.events.jsonl',
+    )!;
+    const staleParentId = journalNode.parent!;
+    expect(drive.nodes.has(staleParentId)).toBe(true);
+
+    // Simulate an out-of-band deletion of the parent + journal file — mirrors
+    // the user hitting "delete" on the folder from the Drive UI, or Drive
+    // GC after a reparent. The provider's in-memory folderIdCache still
+    // points at staleParentId.
+    drive.nodes.delete(journalNode.id);
+    drive.nodes.delete(staleParentId);
+
+    // First attempt after the deletion must fail: the cached fileRef points
+    // at a dead file id, updateFileContents 404s.
+    await expect(
+      provider.writeJournalEvents([mkEvent('01H2', 'INV2')]),
+    ).rejects.toMatchObject({ status: 404 });
+
+    // On the next retry, the caches have been purged and ensureFolder recreates
+    // the journal folder + file cleanly (this is what the sync worker's
+    // backoff-driven retry sees).
+    const retry = await provider.writeJournalEvents([mkEvent('01H2', 'INV2')]);
+    expect(retry.written).toBe(1);
+    const revived = [...drive.nodes.values()].find(
+      (n) => n.name === '2026-08.events.jsonl',
+    );
+    expect(revived).toBeDefined();
+    expect(revived!.id).not.toBe(journalNode.id);
   });
 });
 
