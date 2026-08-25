@@ -19,6 +19,7 @@ import { env } from '../../lib/env';
 import { connectDrive } from '../../drive/connectDrive';
 import { createDriveApiClient } from '../../drive/google';
 import { log } from '../../lib/log';
+import { downloadDebugLogs } from '../../lib/downloadLogs';
 
 type Step =
   | 'idle'
@@ -368,6 +369,39 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           >
             Start Restore
           </button>
+
+          {/* Debug-log export — shown pre-onboarding, so restore failures
+              can still be diagnosed (Settings' download button is gated
+              behind having a business row, which restore-from-scratch
+              users don't have yet). */}
+          <div className="border-t pt-3 mt-3">
+            <p className="text-xs text-slate-600 mb-2">
+              Debug: export the local log to share when reporting an issue.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => downloadDebugLogs(1)}
+                className="rounded border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-50"
+              >
+                Last hour
+              </button>
+              <button
+                type="button"
+                onClick={() => downloadDebugLogs(24)}
+                className="rounded border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-50"
+              >
+                Last 24 hours
+              </button>
+              <button
+                type="button"
+                onClick={() => downloadDebugLogs(24 * 7)}
+                className="rounded border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-50"
+              >
+                Last 7 days
+              </button>
+            </div>
+          </div>
         </section>
       )}
 

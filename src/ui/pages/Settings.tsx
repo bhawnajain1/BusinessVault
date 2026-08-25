@@ -8,7 +8,7 @@ import { seedDefaultMasters } from '../../domain/defaults';
 import { seedChartOfAccounts } from '../../domain/coa';
 import { appendSyncEvent } from '../../domain/syncEventLog';
 import { getDeviceId } from '../../lib/device';
-import { exportLogsAsJsonl, log } from '../../lib/log';
+import { downloadDebugLogs } from '../../lib/downloadLogs';
 
 interface Counts {
   units: number;
@@ -128,35 +128,52 @@ export default function Settings() {
     }
   }
 
-  async function downloadLogs(hours: number): Promise<void> {
-    try {
-      log.info('settings', 'user requested log export', { hours });
-      const jsonl = await exportLogsAsJsonl(hours * 60 * 60 * 1000);
-      const blob = new Blob([jsonl], { type: 'application/x-ndjson' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      a.href = url;
-      a.download = `businessvault-debug-${stamp}.jsonl`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      log.error('settings', 'log export failed', { error: e });
-    }
-  }
-
   if (!business) {
+    // Pre-onboarding fallback. Restore-from-Drive failures land users here
+    // (no business row created yet), so we surface Download logs inline —
+    // otherwise they cannot export the JSONL trace we'd need to diagnose.
     return (
-      <div className="p-6 text-slate-600">
+      <div className="p-6 text-slate-600 max-w-xl space-y-4">
         <p>No business found. Complete onboarding first.</p>
-        <Link
-          to="/onboarding"
-          className="mt-3 inline-block rounded bg-slate-900 px-4 py-2 text-sm text-white"
-        >
-          Go to onboarding
-        </Link>
+        <div className="flex gap-2">
+          <Link
+            to="/onboarding"
+            className="inline-block rounded bg-slate-900 px-4 py-2 text-sm text-white"
+          >
+            Go to onboarding
+          </Link>
+          <Link
+            to="/restore"
+            className="inline-block rounded border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50"
+          >
+            Restore from backup
+          </Link>
+        </div>
+        <div className="border-t border-slate-200 pt-4">
+          <p className="text-sm text-slate-700 mb-2">
+            Trouble with onboarding or restore? Export the local debug log to share when reporting an issue.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => downloadDebugLogs(1)}
+              className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
+            >
+              Last hour
+            </button>
+            <button
+              onClick={() => downloadDebugLogs(24)}
+              className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
+            >
+              Last 24 hours
+            </button>
+            <button
+              onClick={() => downloadDebugLogs(24 * 7)}
+              className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
+            >
+              Last 7 days
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -395,21 +412,21 @@ export default function Settings() {
         <div className="flex gap-2 flex-wrap">
           <button
             type="button"
-            onClick={() => downloadLogs(1)}
+            onClick={() => downloadDebugLogs(1)}
             className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
           >
             Download last 1 hour
           </button>
           <button
             type="button"
-            onClick={() => downloadLogs(24)}
+            onClick={() => downloadDebugLogs(24)}
             className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
           >
             Download last 24 hours
           </button>
           <button
             type="button"
-            onClick={() => downloadLogs(24 * 7)}
+            onClick={() => downloadDebugLogs(24 * 7)}
             className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
           >
             Download last 7 days
