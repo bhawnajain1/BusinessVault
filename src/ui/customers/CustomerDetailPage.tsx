@@ -275,8 +275,11 @@ export default function CustomerDetailPage() {
       0,
     );
     const advance = advances.reduce((s, a) => s + Math.max(0, a.remaining_paise), 0);
-    return { totalInvoiced, totalPaid, totalDue, advance };
-  }, [invoiceRows, advances]);
+    const creditLimit = customer?.credit_limit_paise ?? 0;
+    const availableCredit =
+      creditLimit > 0 ? Math.max(0, creditLimit - totalDue) : null;
+    return { totalInvoiced, totalPaid, totalDue, advance, creditLimit, availableCredit };
+  }, [invoiceRows, advances, customer]);
 
   const statementRows = useMemo(() => {
     const rows = buildStatement(invoices, payments, advances);
@@ -544,7 +547,7 @@ export default function CustomerDetailPage() {
       </section>
 
       {/* Section 2: Financial Summary */}
-      <section className="grid grid-cols-4 gap-3">
+      <section className="grid grid-cols-5 gap-3">
         <SummaryCard label="Total Invoiced" paise={summary.totalInvoiced} />
         <SummaryCard label="Total Paid" paise={summary.totalPaid} tone="emerald" />
         <SummaryCard
@@ -556,6 +559,18 @@ export default function CustomerDetailPage() {
           label="Customer Advance"
           paise={summary.advance}
           tone={summary.advance > 0 ? 'blue' : 'slate'}
+        />
+        <SummaryCard
+          label="Available Credit"
+          paise={summary.availableCredit}
+          tone={
+            summary.availableCredit === null
+              ? 'slate'
+              : summary.availableCredit === 0
+                ? 'rose'
+                : 'emerald'
+          }
+          fallback={summary.availableCredit === null ? 'No limit set' : undefined}
         />
       </section>
 
@@ -835,10 +850,12 @@ function SummaryCard({
   label,
   paise,
   tone = 'slate',
+  fallback,
 }: {
   label: string;
-  paise: number;
+  paise: number | null;
   tone?: 'slate' | 'emerald' | 'rose' | 'blue';
+  fallback?: string;
 }) {
   const toneClass =
     tone === 'emerald'
@@ -852,7 +869,11 @@ function SummaryCard({
     <div className={`border ${toneClass} rounded p-3`}>
       <div className="text-xs text-slate-600">{label}</div>
       <div className="text-xl font-semibold mt-1">
-        <Money paise={paise} />
+        {paise === null ? (
+          <span className="text-slate-400 text-base font-normal">{fallback ?? '—'}</span>
+        ) : (
+          <Money paise={paise} />
+        )}
       </div>
     </div>
   );
