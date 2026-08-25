@@ -135,12 +135,18 @@ export default function InvoicePrint() {
       <style>{`
         @media print {
           .no-print { display: none !important; }
-          @page { size: A4; margin: 12mm; }
+          @page { size: A4; margin: 10mm; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          /* Force the invoice to use the full page width and shrink the type
+             so all 10 columns of the line-item table (incl. RHS Total) fit
+             inside the printable area on A4. Without these overrides the
+             10-col grid overflows the right margin and gets clipped. */
+          .invoice-print-root { max-width: none !important; margin: 0 !important; padding: 0 !important; font-size: 11px !important; }
+          .invoice-print-root table { font-size: 10px !important; }
         }
       `}</style>
 
-      <div className="max-w-4xl mx-auto p-6 bg-white text-slate-900">
+      <div className="invoice-print-root max-w-4xl mx-auto p-6 bg-white text-slate-900">
         <div className="no-print flex items-center justify-between mb-4">
           <Link
             to={`/invoices/${invoice.id}`}
