@@ -40,6 +40,25 @@ function emit(patch: Partial<BootState>): void {
   for (const l of listeners) l(state);
 }
 
+// Always route worker creation through this. Without it, two sites in this
+// file assign `workerHandle = startSyncWorker(...)` without first stopping
+// the previous worker — most notably tryBootDrive (slow silent refresh) and
+// bootWithHandle. A user-initiated Reconnect can race the boot flow and
+// leave both workers polling the same sync_queue: the same jobId gets
+// started twice within a few ms, each worker takes its own backoff path,
+// and the sync_events state machine sees interleaved SYNCING→SYNCED
+// transitions. This helper enforces the stop-old-start-new invariant in
+// one place.
+function installWorker(handle: StopHandle): void {
+  if (workerHandle) {
+    log.info('boot', 'stopping previous worker before starting new one', {
+      wasBound: activeBusinessIdBound,
+    });
+    workerHandle.stop();
+  }
+  workerHandle = handle;
+}
+
 export function subscribeBoot(l: Listener): () => void {
   listeners.add(l);
   l(state);
@@ -127,10 +146,10 @@ async function tryBootDrive(business: Business): Promise<boolean> {
     });
     activeBusinessIdBound = business.id;
     setActiveProvider(provider);
-    workerHandle = startSyncWorker({
+    installWorker(startSyncWorker({
       provider,
       onStateChange: (h) => emit({ health: h }),
-    });
+    }));
     log.info('boot', 'drive sync worker started', { business: business.name });
     emit({ status: 'running', error: null, kind: 'google-drive' });
     return true;
@@ -157,12 +176,10 @@ async function tryBootDrive(business: Business): Promise<boolean> {
 export async function reconnectWithUserGesture(): Promise<boolean> {
   // If a worker is already running but the user is clicking Reconnect, it's
   // because sync is failing (e.g. businessId mismatch after creating a new
-  // business, or a stale handle mid-session). Tear down the stale worker so
-  // we can start fresh with a new provider bound to the active business.
+  // business, or a stale handle mid-session). Clear the provider + binding
+  // so the reconnect flow starts from a clean slate — installWorker below
+  // will stop the old worker atomically when the new one is created.
   if (workerHandle) {
-    log.info('boot', 'stopping stale worker before reconnect');
-    workerHandle.stop();
-    workerHandle = null;
     setActiveProvider(null);
     activeBusinessIdBound = null;
   }
@@ -189,10 +206,10 @@ export async function reconnectWithUserGesture(): Promise<boolean> {
       });
       activeBusinessIdBound = business.id;
       setActiveProvider(provider);
-      workerHandle = startSyncWorker({
+      installWorker(startSyncWorker({
         provider,
         onStateChange: (h) => emit({ health: h }),
-      });
+      }));
       emit({ status: 'running', error: null, kind: 'google-drive' });
       return true;
     } catch (err) {
@@ -224,10 +241,10 @@ export async function reconnectWithUserGesture(): Promise<boolean> {
     });
     activeBusinessIdBound = business.id;
     setActiveProvider(provider);
-    workerHandle = startSyncWorker({
+    installWorker(startSyncWorker({
       provider,
       onStateChange: (h) => emit({ health: h }),
-    });
+    }));
     emit({ status: 'running', error: null, kind: 'local-folder' });
     return true;
   } catch (err) {
@@ -258,10 +275,10 @@ async function bootWithHandle(
     });
     activeBusinessIdBound = business.id;
     setActiveProvider(provider);
-    workerHandle = startSyncWorker({
+    installWorker(startSyncWorker({
       provider,
       onStateChange: (h) => emit({ health: h }),
-    });
+    }));
     log.info('boot', 'sync worker started', { business: business.name });
     emit({ status: 'running', error: null, kind: 'local-folder' });
     return true;
@@ -290,24 +307,16 @@ export function adoptConnectedProvider(
   provider: CustomerStorageProvider,
   boundBusinessId: string,
 ): void {
-  if (workerHandle) {
-    if (activeBusinessIdBound === boundBusinessId) return;
-    log.info('boot', 'stopping worker before adopting new business', {
-      from: activeBusinessIdBound,
-      to: boundBusinessId,
-    });
-    workerHandle.stop();
-    workerHandle = null;
-  }
+  if (workerHandle && activeBusinessIdBound === boundBusinessId) return;
   activeBusinessIdBound = boundBusinessId;
   const kind: BootKind = provider instanceof LocalFolderStorageProvider
     ? 'local-folder'
     : 'google-drive';
   setActiveProvider(provider);
-  workerHandle = startSyncWorker({
+  installWorker(startSyncWorker({
     provider,
     onStateChange: (h) => emit({ health: h }),
-  });
+  }));
   log.info('boot', 'sync worker started via adopt', { business: boundBusinessId, kind });
   emit({ status: 'running', error: null, kind });
 }
