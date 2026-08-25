@@ -12,6 +12,8 @@ import type {
 import Money from '../components/Money';
 import Qty from '../components/Qty';
 import StatusBadge from '../components/StatusBadge';
+import MakePaymentModal from '../payments/MakePaymentModal';
+import { useActiveBusiness } from '../hooks/useActiveBusiness';
 
 interface Loaded {
   purchase: Purchase;
@@ -24,8 +26,11 @@ interface Loaded {
 
 export default function PurchaseDetail() {
   const { id } = useParams<{ id: string }>();
+  const { businessId, deviceId } = useActiveBusiness();
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [makeOpen, setMakeOpen] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!id) return;
@@ -54,20 +59,39 @@ export default function PurchaseDetail() {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [id]);
+  }, [id, reloadKey]);
 
   if (error) return <div className="p-6 text-rose-600">{error}</div>;
   if (!data) return <div className="p-6 text-slate-500">Loading...</div>;
   const { purchase, lines, supplier, items, journal, journalLines } = data;
+  const isDebitNote = !!purchase.reverses_purchase_id;
+  const superseded = !!purchase.reversed_by_purchase_id;
 
   return (
     <div className="p-6 flex flex-col gap-4">
-      <div className="flex items-center gap-3">
-        <Link to="/purchases" className="text-sm text-blue-700 hover:underline">
-          ← Purchases
-        </Link>
-        <h1 className="text-xl font-semibold">Bill {purchase.bill_number}</h1>
-        <StatusBadge status={purchase.status} />
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Link to="/purchases" className="text-sm text-blue-700 hover:underline">
+            ← Purchases
+          </Link>
+          <h1 className="text-xl font-semibold">Bill {purchase.bill_number}</h1>
+          <StatusBadge status={purchase.status} />
+          {isDebitNote && (
+            <span className="text-xs text-slate-600">Debit Note</span>
+          )}
+        </div>
+        {!superseded &&
+          !isDebitNote &&
+          purchase.status !== 'cancelled' &&
+          purchase.balance_paise > 0 && (
+            <button
+              type="button"
+              onClick={() => setMakeOpen(true)}
+              className="text-sm bg-rose-700 text-white rounded px-3 py-1.5 hover:bg-rose-800"
+            >
+              Record Payment
+            </button>
+          )}
       </div>
 
       <div className="grid grid-cols-3 gap-4 text-sm">
@@ -202,6 +226,22 @@ export default function PurchaseDetail() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {makeOpen && businessId && (
+        <MakePaymentModal
+          businessId={businessId}
+          deviceId={deviceId ?? ''}
+          preselectSupplierId={purchase.supplier_id}
+          preselectBillId={purchase.id}
+          preselectAmountPaise={purchase.balance_paise}
+          lockToSupplier
+          onClose={() => setMakeOpen(false)}
+          onSaved={() => {
+            setMakeOpen(false);
+            setReloadKey((k) => k + 1);
+          }}
+        />
       )}
     </div>
   );
