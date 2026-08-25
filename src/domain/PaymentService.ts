@@ -16,7 +16,7 @@ import type {
 } from '../db/types';
 import { GENESIS_HASH, canonicalJson, sha256Hex } from '../journal/event';
 import { SYSTEM_ACCOUNT_CODES, findAccountByCode } from './coa';
-import { isPaymentActive, isAdvanceActive } from './paymentState';
+import { isAdvanceActive } from './paymentState';
 
 // UI-facing payment split — three tendered methods plus "credit" (unpaid).
 // Credit does NOT produce a Payment row; the invoice balance already reflects it.
@@ -585,6 +585,1048 @@ export class PaymentService {
         return refund;
       },
     );
+  }
+
+  /**
+   * User-initiated soft-delete: move a payment to the Recycle Bin.
+   *
+   * Refused with PaymentAdvanceConsumedError if the payment created an
+   * advance that has since been partially or fully applied to other
+   * invoices/bills. Rationale (spec §Q1): the downstream applications
+   * represent real money credited to real invoices; we do not silently
+   * unwind them. The user must reverse those applications first, then
+   * retry the delete.
+   *
+   * Reverses in-tx:
+   *   - the payment's allocation impact on invoice/bill balances
+   *   - a full reversal JE
+   * Marks in-tx (never hard-deletes):
+   *   - payment.deleted_at + deleted_reason
+   *   - any advance the payment created (deleted_at + `cascade:${payment_id}`)
+   *
+   * Emits: payment.deleted, journal_entry.reversed, advance.deleted (if any).
+   *
+   * Idempotent — deleting an already-recycled payment returns silently.
+   * Refuses to touch a SUPERSEDED row (that came from an Edit, not a user
+   * action; only the ACTIVE tip of a revision chain is user-deletable).
+   */
+  async softDeletePayment(input: SoftDeletePaymentInput): Promise<void> {
+    const original = await this.db.payments.get(input.payment_id);
+    if (!original) {
+      throw new PaymentValidationError(
+        `payment ${input.payment_id} not found`,
+      );
+    }
+    if (original.business_id !== input.business_id) {
+      throw new PaymentValidationError('business_id mismatch');
+    }
+    if (original.superseded_at) {
+      throw new PaymentValidationError(
+        `payment ${input.payment_id} is superseded — delete the current revision instead`,
+      );
+    }
+    if (original.deleted_at) return; // idempotent
+
+    // ADVANCE-CONSUMPTION CHECK — enumerate every Advance row this payment
+    // created and see if any application row was appended after creation.
+    // An advance is created inside createPayment(), so its journal_entry_id
+    // matches the payment's. Applications land there via a separate service.
+    const consumers: AdvanceConsumer[] = [];
+    const paymentAdvanceIds = new Set(
+      original.allocations
+        .map((a) => a.advance_id)
+        .filter((id): id is string => !!id && id !== '__PENDING__'),
+    );
+    const advancesToCascade: Advance[] = [];
+    for (const advanceId of paymentAdvanceIds) {
+      const advance = await this.db.advances.get(advanceId);
+      if (!advance) continue;
+      if (!isAdvanceActive(advance)) continue;
+      const apps = advance.applications ?? [];
+      if (apps.length > 0) {
+        for (const app of apps) {
+          const invoice = app.invoice_id
+            ? await this.db.invoices.get(app.invoice_id)
+            : null;
+          const bill = app.bill_id
+            ? await this.db.purchases.get(app.bill_id)
+            : null;
+          consumers.push({
+            advance_id: advance.id,
+            advance_number: advance.advance_number,
+            invoice_id: app.invoice_id,
+            invoice_number: invoice?.invoice_number,
+            bill_id: app.bill_id,
+            bill_number: bill?.bill_number,
+            applied_paise: app.amount_paise,
+            applied_at: app.applied_at,
+          });
+        }
+        continue; // leave for consumer-list — do not add to cascade
+      }
+      advancesToCascade.push(advance);
+    }
+    if (consumers.length > 0) {
+      throw new PaymentAdvanceConsumedError(original.id, consumers);
+    }
+
+    const originalEntry = await this.db.journal_entries.get(
+      original.journal_entry_id,
+    );
+    if (!originalEntry) {
+      throw new PaymentValidationError(
+        `journal_entry ${original.journal_entry_id} not found`,
+      );
+    }
+    const originalLines = await this.db.journal_lines
+      .where('[business_id+entry_id]')
+      .equals([input.business_id, original.journal_entry_id])
+      .toArray();
+
+    const now = new Date().toISOString();
+    const reversalJournalId = ulid();
+    const trimmedReason = (input.reason ?? '').trim() || 'recycled';
+
+    const reversalEntry: JournalEntry = {
+      id: reversalJournalId,
+      business_id: input.business_id,
+      entry_number: `${originalEntry.entry_number}-REV`,
+      entry_date: now.slice(0, 10),
+      narration: `Recycle payment ${original.payment_number}: ${trimmedReason}`,
+      ref_type: 'reversal',
+      ref_id: original.id,
+      reversed_by_id: null,
+      reverses_id: original.journal_entry_id,
+      total_debit_paise: originalEntry.total_credit_paise,
+      total_credit_paise: originalEntry.total_debit_paise,
+      posted: 1,
+      created_at: now,
+      updated_at: now,
+      entity_version: 1,
+    };
+
+    const sortedOriginalLines = [...originalLines].sort(
+      (a, b) => a.line_no - b.line_no,
+    );
+    const reversalLines: JournalLine[] = sortedOriginalLines.map((l, idx) => ({
+      id: ulid(),
+      business_id: input.business_id,
+      entry_id: reversalJournalId,
+      line_no: idx + 1,
+      account_id: l.account_id,
+      debit_paise: l.credit_paise,
+      credit_paise: l.debit_paise,
+      party_type: l.party_type,
+      party_id: l.party_id,
+      description: `Reverse (recycle): ${l.description}`,
+    }));
+
+    const deletedPayload = {
+      payment_id: original.id,
+      deleted_at: now,
+      reason: trimmedReason,
+      reversal_entry_id: reversalJournalId,
+      cascaded_advance_ids: advancesToCascade.map((a) => a.id),
+    };
+    const deletedHash = await sha256Hex(canonicalJson(deletedPayload));
+
+    await this.db.transaction(
+      'rw',
+      [
+        this.db.payments,
+        this.db.invoices,
+        this.db.purchases,
+        this.db.advances,
+        this.db.journal_entries,
+        this.db.journal_lines,
+        this.db.sync_events,
+      ],
+      async () => {
+        await this.applyAllocationsToTargets(
+          { business_id: input.business_id, direction: original.direction },
+          original.allocations,
+          'reverse',
+        );
+
+        await this.db.journal_entries.add(reversalEntry);
+        await this.db.journal_lines.bulkAdd(reversalLines);
+        await this.db.journal_entries.update(original.journal_entry_id, {
+          reversed_by_id: reversalEntry.id,
+          updated_at: now,
+        });
+
+        await this.db.payments.update(original.id, {
+          deleted_at: now,
+          deleted_reason: trimmedReason,
+          updated_at: now,
+          entity_version: original.entity_version + 1,
+        });
+        for (const adv of advancesToCascade) {
+          await this.db.advances.update(adv.id, {
+            deleted_at: now,
+            deleted_reason: `cascade:${original.id}`,
+            updated_at: now,
+            entity_version: adv.entity_version + 1,
+          });
+        }
+
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'payment',
+          entity_id: original.id,
+          operation: 'deleted',
+          entity_version: original.entity_version + 1,
+          payload: deletedPayload,
+          payload_hash: deletedHash,
+          timestamp: now,
+        });
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'journal_entry',
+          entity_id: reversalEntry.id,
+          operation: 'posted',
+          entity_version: 1,
+          payload: reversalEntry,
+          timestamp: now,
+        });
+        for (const jl of reversalLines) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'journal_line',
+            entity_id: jl.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: jl,
+            timestamp: now,
+          });
+        }
+        for (const adv of advancesToCascade) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'advance',
+            entity_id: adv.id,
+            operation: 'deleted',
+            entity_version: adv.entity_version + 1,
+            payload: {
+              advance_id: adv.id,
+              deleted_at: now,
+              deleted_reason: `cascade:${original.id}`,
+            },
+            timestamp: now,
+          });
+        }
+      },
+    );
+  }
+
+  /**
+   * Restore a payment from the Recycle Bin.
+   *
+   * Strategy — spec §Q1 amendment 2: never take money from another valid
+   * payment automatically. For each original allocation slice:
+   *
+   *   1. Take min(original slice, current target outstanding). If the target
+   *      is soft-deleted or gone, its capacity is 0.
+   *   2. Apply that fitted amount. Shortfall (original − fitted) becomes an
+   *      advance for the party in the payment's direction.
+   *
+   * If any slice cannot be fully re-applied to its original target and
+   * `allow_partial` is false (the default), throws PaymentRestoreConflictError
+   * with the per-slice detail so the UI can prompt the user before proceeding.
+   * When `allow_partial` is true (UI has confirmed), shortfalls flow to advance
+   * as described.
+   *
+   * The restore materializes a fresh JE that mirrors the original's shape but
+   * with re-fitted allocations. The original JE stays reversed (from the
+   * softDelete step) — the ledger keeps both entries, preserving history.
+   *
+   * Idempotent — restoring a non-recycled payment returns silently.
+   * Refuses to restore a SUPERSEDED payment (Edit revisions are not
+   * user-restorable from the Recycle Bin).
+   */
+  async restorePayment(input: RestorePaymentInput): Promise<Payment> {
+    const original = await this.db.payments.get(input.payment_id);
+    if (!original) {
+      throw new PaymentValidationError(
+        `payment ${input.payment_id} not found`,
+      );
+    }
+    if (original.business_id !== input.business_id) {
+      throw new PaymentValidationError('business_id mismatch');
+    }
+    if (original.superseded_at) {
+      throw new PaymentValidationError(
+        `payment ${input.payment_id} is superseded — cannot restore from Recycle Bin`,
+      );
+    }
+    if (!original.deleted_at) {
+      return original; // idempotent
+    }
+
+    // Fit each original slice to current outstanding. Advance slices restore
+    // as an advance-again (their target is the party, not a specific doc).
+    type Fit = {
+      slice: PaymentAllocation;
+      fitted_paise: number;
+      shortfall_paise: number;
+      conflict?: RestoreAllocationConflict;
+    };
+    const fits: Fit[] = [];
+    for (const slice of original.allocations) {
+      if (slice.invoice_id && original.direction === 'in') {
+        const inv = await this.db.invoices.get(slice.invoice_id);
+        const available = inv && !inv.deleted_at ? inv.balance_paise : 0;
+        const fitted = Math.max(0, Math.min(slice.amount_paise, available));
+        const shortfall = slice.amount_paise - fitted;
+        fits.push({
+          slice,
+          fitted_paise: fitted,
+          shortfall_paise: shortfall,
+          conflict:
+            shortfall > 0
+              ? {
+                  slice_kind: 'invoice',
+                  target_id: slice.invoice_id,
+                  target_number: inv?.invoice_number ?? '(deleted)',
+                  requested_paise: slice.amount_paise,
+                  available_paise: available,
+                }
+              : undefined,
+        });
+      } else if (slice.bill_id && original.direction === 'out') {
+        const bill = await this.db.purchases.get(slice.bill_id);
+        const available = bill ? bill.balance_paise : 0;
+        const fitted = Math.max(0, Math.min(slice.amount_paise, available));
+        const shortfall = slice.amount_paise - fitted;
+        fits.push({
+          slice,
+          fitted_paise: fitted,
+          shortfall_paise: shortfall,
+          conflict:
+            shortfall > 0
+              ? {
+                  slice_kind: 'bill',
+                  target_id: slice.bill_id,
+                  target_number: bill?.bill_number ?? '(deleted)',
+                  requested_paise: slice.amount_paise,
+                  available_paise: available,
+                }
+              : undefined,
+        });
+      } else if (slice.advance_id) {
+        // Advance slices restore fully as advance — no shortfall possible.
+        fits.push({
+          slice,
+          fitted_paise: slice.amount_paise,
+          shortfall_paise: 0,
+        });
+      }
+    }
+
+    const conflicts = fits
+      .map((f) => f.conflict)
+      .filter((c): c is RestoreAllocationConflict => !!c);
+    if (conflicts.length > 0 && !input.allow_partial) {
+      throw new PaymentRestoreConflictError(original.id, conflicts);
+    }
+
+    // Build the restored payment's fresh allocation list. Any shortfall
+    // pooled into a single advance slice (customer OR supplier per direction).
+    const restoredAllocations: PaymentAllocation[] = [];
+    let totalShortfall = 0;
+    for (const f of fits) {
+      if (f.fitted_paise > 0) {
+        restoredAllocations.push({
+          invoice_id: f.slice.invoice_id,
+          bill_id: f.slice.bill_id,
+          advance_id: f.slice.advance_id, // '__PENDING__' rewritten below
+          amount_paise: f.fitted_paise,
+        });
+      }
+      totalShortfall += f.shortfall_paise;
+    }
+    const needsNewAdvance = totalShortfall > 0;
+    const restoredAdvanceId = needsNewAdvance ? ulid() : null;
+    if (restoredAdvanceId) {
+      restoredAllocations.push({
+        advance_id: restoredAdvanceId,
+        amount_paise: totalShortfall,
+      });
+    }
+
+    // The restored payment reuses the original's identity except for its JE
+    // (we materialize a fresh forward JE). The original's reversal JE from
+    // softDelete stays in place — audit trail is: create → reverse → restore.
+    const now = new Date().toISOString();
+    const newJournalId = ulid();
+
+    const advanceAcctCode =
+      original.party_type === 'customer'
+        ? SYSTEM_ACCOUNT_CODES.CUSTOMER_ADVANCE
+        : SYSTEM_ACCOUNT_CODES.SUPPLIER_ADVANCE;
+    const advanceAcct = needsNewAdvance
+      ? await findAccountByCode(input.business_id, advanceAcctCode, {
+          db: this.db,
+        })
+      : null;
+    if (needsNewAdvance && !advanceAcct) {
+      throw new PaymentValidationError(
+        `Advance account (code ${advanceAcctCode}) not found — run "Repair chart of accounts" in Settings.`,
+      );
+    }
+    const arApAcctCode =
+      original.direction === 'in'
+        ? SYSTEM_ACCOUNT_CODES.RECEIVABLE
+        : SYSTEM_ACCOUNT_CODES.PAYABLE;
+    const arApAcct = await findAccountByCode(input.business_id, arApAcctCode, {
+      db: this.db,
+    });
+    if (!arApAcct) {
+      throw new PaymentValidationError(
+        `AR/AP account (code ${arApAcctCode}) not found — run "Repair chart of accounts".`,
+      );
+    }
+
+    // Materialize new advance row if needed (shortfall path).
+    const newAdvance: Advance | null = restoredAdvanceId
+      ? {
+          id: restoredAdvanceId,
+          business_id: input.business_id,
+          advance_number: `${original.payment_number}-ADV-R`,
+          advance_date: now.slice(0, 10),
+          party_type: original.party_type,
+          party_id: original.party_id,
+          method: original.method,
+          account_id: original.account_id,
+          amount_paise: totalShortfall,
+          remaining_paise: totalShortfall,
+          reference: original.reference,
+          notes: `Restore shortfall from payment ${original.payment_number}`,
+          applications: [],
+          journal_entry_id: newJournalId,
+          created_at: now,
+          updated_at: now,
+          entity_version: 1,
+        }
+      : null;
+
+    // Advances the softDelete cascade-hid: reactivate any whose id is still in
+    // the restored allocations (i.e. we're restoring an as-advance slice).
+    const advanceIdsInSlices = new Set(
+      restoredAllocations
+        .map((a) => a.advance_id)
+        .filter((id): id is string => !!id && id !== restoredAdvanceId),
+    );
+    const advancesToUncascade: Advance[] = [];
+    for (const advId of advanceIdsInSlices) {
+      const adv = await this.db.advances.get(advId);
+      if (adv && adv.deleted_reason === `cascade:${original.id}`) {
+        advancesToUncascade.push(adv);
+      }
+    }
+
+    const allocatedAmount = restoredAllocations
+      .filter((a) => !a.advance_id)
+      .reduce((s, a) => s + a.amount_paise, 0);
+    const advanceAmount = restoredAllocations
+      .filter((a) => a.advance_id)
+      .reduce((s, a) => s + a.amount_paise, 0);
+
+    const restoredPayment: Payment = {
+      ...original,
+      allocations: restoredAllocations,
+      journal_entry_id: newJournalId,
+      deleted_at: null,
+      deleted_reason: null,
+      updated_at: now,
+      entity_version: original.entity_version + 1,
+    };
+
+    const restoredHash = await sha256Hex(canonicalJson(restoredPayment));
+
+    return await this.db.transaction(
+      'rw',
+      [
+        this.db.payments,
+        this.db.invoices,
+        this.db.purchases,
+        this.db.advances,
+        this.db.journal_entries,
+        this.db.journal_lines,
+        this.db.sync_events,
+      ],
+      async () => {
+        // Re-apply the fitted allocations to invoice/bill balances.
+        await this.applyAllocationsToTargets(
+          { business_id: input.business_id, direction: original.direction },
+          restoredAllocations,
+          'apply',
+        );
+
+        // Post fresh forward JE.
+        const journal = buildJournalEntry({
+          id: newJournalId,
+          business_id: input.business_id,
+          entry_date: now.slice(0, 10),
+          direction: original.direction,
+          amount_paise: original.amount_paise,
+          cash_or_bank_account_id: original.account_id,
+          ar_or_ap_account_id: arApAcct.id,
+          allocated_paise: allocatedAmount,
+          advance_paise: advanceAmount,
+          advance_account_id: advanceAcct?.id ?? null,
+          party_type: original.party_type,
+          party_id: original.party_id,
+          ref_id: original.id,
+          narration: `Restore payment ${original.payment_number}`,
+          reverses_id: null,
+          now,
+        });
+
+        if (newAdvance) await this.db.advances.add(newAdvance);
+        for (const adv of advancesToUncascade) {
+          await this.db.advances.update(adv.id, {
+            deleted_at: null,
+            deleted_reason: null,
+            updated_at: now,
+            entity_version: adv.entity_version + 1,
+          });
+        }
+        await this.db.payments.put(restoredPayment);
+        await this.db.journal_entries.add(journal.entry);
+        await this.db.journal_lines.bulkAdd(journal.lines);
+
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'payment',
+          entity_id: original.id,
+          operation: 'restored',
+          entity_version: restoredPayment.entity_version,
+          payload: restoredPayment,
+          payload_hash: restoredHash,
+          timestamp: now,
+        });
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'journal_entry',
+          entity_id: journal.entry.id,
+          operation: 'posted',
+          entity_version: 1,
+          payload: journal.entry,
+          timestamp: now,
+        });
+        for (const jl of journal.lines) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'journal_line',
+            entity_id: jl.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: jl,
+            timestamp: now,
+          });
+        }
+        if (newAdvance) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'advance',
+            entity_id: newAdvance.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: newAdvance,
+            timestamp: now,
+          });
+        }
+        for (const adv of advancesToUncascade) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'advance',
+            entity_id: adv.id,
+            operation: 'restored',
+            entity_version: adv.entity_version + 1,
+            payload: {
+              advance_id: adv.id,
+              restored_at: now,
+              restored_from_payment_id: original.id,
+            },
+            timestamp: now,
+          });
+        }
+
+        return restoredPayment;
+      },
+    );
+  }
+
+  /**
+   * Edit a payment via soft-delete-and-recreate (spec §Q2 Option 1).
+   *
+   * The original row is marked SUPERSEDED (not RECYCLED) — invisible in the
+   * Payments list and the Recycle Bin, visible only in the per-payment
+   * revision history. A brand-new Payment row is inserted with:
+   *   - a fresh `id` and fresh `journal_entry_id`
+   *   - the SAME `payment_number` (user-facing identity preserved)
+   *   - `revision = original.revision + 1`
+   *   - `replaces_payment_id = original.id`
+   *
+   * The original also has `replaced_by_payment_id` set to the new row's id
+   * so the chain is walkable in either direction.
+   *
+   * If the original's advance was partially consumed elsewhere, the Edit is
+   * refused with PaymentAdvanceConsumedError — the same rule as softDelete.
+   *
+   * Refuses to touch a superseded row (edit the current tip instead) or a
+   * recycled row (restore first, then edit).
+   */
+  async updatePayment(input: UpdatePaymentInput): Promise<Payment> {
+    const original = await this.db.payments.get(input.payment_id);
+    if (!original) {
+      throw new PaymentValidationError(
+        `payment ${input.payment_id} not found`,
+      );
+    }
+    if (original.business_id !== input.business_id) {
+      throw new PaymentValidationError('business_id mismatch');
+    }
+    if (original.superseded_at) {
+      throw new PaymentValidationError(
+        `payment ${input.payment_id} is superseded — edit the current revision instead`,
+      );
+    }
+    if (original.deleted_at) {
+      throw new PaymentValidationError(
+        `payment ${input.payment_id} is in the Recycle Bin — restore before editing`,
+      );
+    }
+
+    // Reuse softDelete's advance-consumption check so Edit inherits the exact
+    // same protection. We inspect advances first and refuse cleanly if any
+    // downstream consumption has happened.
+    const paymentAdvanceIds = new Set(
+      original.allocations
+        .map((a) => a.advance_id)
+        .filter((id): id is string => !!id && id !== '__PENDING__'),
+    );
+    const consumers: AdvanceConsumer[] = [];
+    for (const advanceId of paymentAdvanceIds) {
+      const advance = await this.db.advances.get(advanceId);
+      if (!advance) continue;
+      if (!isAdvanceActive(advance)) continue;
+      const apps = advance.applications ?? [];
+      for (const app of apps) {
+        const invoice = app.invoice_id
+          ? await this.db.invoices.get(app.invoice_id)
+          : null;
+        const bill = app.bill_id
+          ? await this.db.purchases.get(app.bill_id)
+          : null;
+        consumers.push({
+          advance_id: advance.id,
+          advance_number: advance.advance_number,
+          invoice_id: app.invoice_id,
+          invoice_number: invoice?.invoice_number,
+          bill_id: app.bill_id,
+          bill_number: bill?.bill_number,
+          applied_paise: app.amount_paise,
+          applied_at: app.applied_at,
+        });
+      }
+    }
+    if (consumers.length > 0) {
+      throw new PaymentAdvanceConsumedError(original.id, consumers);
+    }
+
+    // Step 1: reverse the original in-tx (mirrors softDelete but marks
+    // SUPERSEDED instead of RECYCLED, and forwards the chain link).
+    // Step 2: post the new revision.
+    //
+    // Both live inside ONE outer transaction so a partial-failure never
+    // leaves an orphan reversal without a replacement.
+    const originalEntry = await this.db.journal_entries.get(
+      original.journal_entry_id,
+    );
+    if (!originalEntry) {
+      throw new PaymentValidationError(
+        `journal_entry ${original.journal_entry_id} not found`,
+      );
+    }
+    const originalLines = await this.db.journal_lines
+      .where('[business_id+entry_id]')
+      .equals([input.business_id, original.journal_entry_id])
+      .toArray();
+
+    // Validate + preview the new allocations without side effects (throws if
+    // over/under-allocated, invalid mix, etc.).
+    const createShim: CreatePaymentInput = {
+      business_id: input.business_id,
+      device_id: input.device_id,
+      payment_number: original.payment_number, // preserved
+      payment_date: input.payment_date,
+      direction: original.direction,
+      party_type: original.party_type,
+      party_id: original.party_id,
+      method: input.method,
+      cash_or_bank_account_id: input.cash_or_bank_account_id,
+      ar_or_ap_account_id: input.ar_or_ap_account_id,
+      amount_paise: input.amount_paise,
+      reference: input.reference,
+      notes: input.notes,
+      allocations: input.allocations,
+      advance_number: input.advance_number,
+    };
+    validateCreateInput(createShim);
+    const newAllocations = previewAllocations(createShim);
+
+    const advanceAmount = newAllocations
+      .filter((a) => a.advance_id === '__PENDING__')
+      .reduce((s, a) => s + a.amount_paise, 0);
+    const allocatedAmount = input.amount_paise - advanceAmount;
+
+    const advanceAcctCode =
+      original.party_type === 'customer'
+        ? SYSTEM_ACCOUNT_CODES.CUSTOMER_ADVANCE
+        : SYSTEM_ACCOUNT_CODES.SUPPLIER_ADVANCE;
+    const advanceAcct =
+      advanceAmount > 0
+        ? await findAccountByCode(input.business_id, advanceAcctCode, {
+            db: this.db,
+          })
+        : null;
+    if (advanceAmount > 0 && !advanceAcct) {
+      throw new PaymentValidationError(
+        `Advance account (code ${advanceAcctCode}) not found — run "Repair chart of accounts".`,
+      );
+    }
+    if (advanceAmount > 0 && !input.advance_number?.trim()) {
+      throw new PaymentValidationError(
+        'advance_number is required when any allocation has as_advance=true',
+      );
+    }
+
+    const now = new Date().toISOString();
+    const trimmedReason = (input.reason ?? '').trim() || 'edited';
+
+    const newPaymentId = ulid();
+    const newJournalId = ulid();
+    const reversalJournalId = ulid();
+
+    const newAdvanceId = advanceAmount > 0 ? ulid() : null;
+    const newAdvance: Advance | null = newAdvanceId
+      ? {
+          id: newAdvanceId,
+          business_id: input.business_id,
+          advance_number: input.advance_number!.trim(),
+          advance_date: input.payment_date,
+          party_type: original.party_type,
+          party_id: original.party_id,
+          method: input.method,
+          account_id: input.cash_or_bank_account_id,
+          amount_paise: advanceAmount,
+          remaining_paise: advanceAmount,
+          reference: input.reference ?? '',
+          notes: `Auto-created from excess on payment ${original.payment_number} (rev ${(original.revision ?? 1) + 1})`,
+          applications: [],
+          journal_entry_id: newJournalId,
+          replaces_advance_id:
+            paymentAdvanceIds.size === 1 ? [...paymentAdvanceIds][0] : null,
+          created_at: now,
+          updated_at: now,
+          entity_version: 1,
+        }
+      : null;
+    if (newAdvanceId) {
+      for (const a of newAllocations) {
+        if (a.advance_id === '__PENDING__') a.advance_id = newAdvanceId;
+      }
+    }
+
+    // Advances the original created — mark superseded (not deleted) so they
+    // do not appear in Recycle Bin but ARE preserved for audit + chain.
+    const advancesToSupersede: Advance[] = [];
+    for (const advId of paymentAdvanceIds) {
+      const adv = await this.db.advances.get(advId);
+      if (adv && isAdvanceActive(adv)) advancesToSupersede.push(adv);
+    }
+
+    const newPayment: Payment = {
+      id: newPaymentId,
+      business_id: input.business_id,
+      payment_number: original.payment_number,
+      payment_date: input.payment_date,
+      direction: original.direction,
+      party_type: original.party_type,
+      party_id: original.party_id,
+      method: input.method,
+      account_id: input.cash_or_bank_account_id,
+      amount_paise: input.amount_paise,
+      reference: input.reference ?? '',
+      notes: input.notes ?? '',
+      allocations: newAllocations,
+      journal_entry_id: newJournalId,
+      revision: (original.revision ?? 1) + 1,
+      replaces_payment_id: original.id,
+      created_at: now,
+      updated_at: now,
+      entity_version: 1,
+    };
+    const newPaymentHash = await sha256Hex(canonicalJson(newPayment));
+
+    // Reversal JE for the original.
+    const sortedOriginalLines = [...originalLines].sort(
+      (a, b) => a.line_no - b.line_no,
+    );
+    const reversalEntry: JournalEntry = {
+      id: reversalJournalId,
+      business_id: input.business_id,
+      entry_number: `${originalEntry.entry_number}-REV`,
+      entry_date: now.slice(0, 10),
+      narration: `Supersede payment ${original.payment_number}: ${trimmedReason}`,
+      ref_type: 'reversal',
+      ref_id: original.id,
+      reversed_by_id: null,
+      reverses_id: original.journal_entry_id,
+      total_debit_paise: originalEntry.total_credit_paise,
+      total_credit_paise: originalEntry.total_debit_paise,
+      posted: 1,
+      created_at: now,
+      updated_at: now,
+      entity_version: 1,
+    };
+    const reversalLines: JournalLine[] = sortedOriginalLines.map((l, idx) => ({
+      id: ulid(),
+      business_id: input.business_id,
+      entry_id: reversalJournalId,
+      line_no: idx + 1,
+      account_id: l.account_id,
+      debit_paise: l.credit_paise,
+      credit_paise: l.debit_paise,
+      party_type: l.party_type,
+      party_id: l.party_id,
+      description: `Reverse (edit): ${l.description}`,
+    }));
+
+    const supersededPayload = {
+      payment_id: original.id,
+      superseded_at: now,
+      superseded_by_payment_id: newPaymentId,
+      reason: trimmedReason,
+      reversal_entry_id: reversalJournalId,
+    };
+    const supersededHash = await sha256Hex(canonicalJson(supersededPayload));
+
+    return await this.db.transaction(
+      'rw',
+      [
+        this.db.payments,
+        this.db.invoices,
+        this.db.purchases,
+        this.db.advances,
+        this.db.journal_entries,
+        this.db.journal_lines,
+        this.db.sync_events,
+      ],
+      async () => {
+        // Reverse the original's allocation impact.
+        await this.applyAllocationsToTargets(
+          { business_id: input.business_id, direction: original.direction },
+          original.allocations,
+          'reverse',
+        );
+
+        // Post reversal JE for the original.
+        await this.db.journal_entries.add(reversalEntry);
+        await this.db.journal_lines.bulkAdd(reversalLines);
+        await this.db.journal_entries.update(original.journal_entry_id, {
+          reversed_by_id: reversalEntry.id,
+          updated_at: now,
+        });
+
+        // Mark original SUPERSEDED and link chain forward.
+        await this.db.payments.update(original.id, {
+          superseded_at: now,
+          superseded_reason: trimmedReason,
+          replaced_by_payment_id: newPaymentId,
+          updated_at: now,
+          entity_version: original.entity_version + 1,
+        });
+
+        // Mark original advances SUPERSEDED and link forward.
+        for (const adv of advancesToSupersede) {
+          const patch: Partial<Advance> = {
+            superseded_at: now,
+            superseded_reason: `edit:${original.id}`,
+            updated_at: now,
+            entity_version: adv.entity_version + 1,
+          };
+          if (newAdvanceId) patch.replaced_by_advance_id = newAdvanceId;
+          await this.db.advances.update(adv.id, patch);
+        }
+
+        // Apply new allocations to invoice/bill balances.
+        await this.applyAllocationsToTargets(
+          { business_id: input.business_id, direction: original.direction },
+          newAllocations,
+          'apply',
+        );
+
+        // Post new forward JE.
+        const journal = buildJournalEntry({
+          id: newJournalId,
+          business_id: input.business_id,
+          entry_date: input.payment_date,
+          direction: original.direction,
+          amount_paise: input.amount_paise,
+          cash_or_bank_account_id: input.cash_or_bank_account_id,
+          ar_or_ap_account_id: input.ar_or_ap_account_id,
+          allocated_paise: allocatedAmount,
+          advance_paise: advanceAmount,
+          advance_account_id: advanceAcct?.id ?? null,
+          party_type: original.party_type,
+          party_id: original.party_id,
+          ref_id: newPaymentId,
+          narration: `Payment ${original.payment_number} (rev ${newPayment.revision})`,
+          reverses_id: null,
+          now,
+        });
+
+        if (newAdvance) await this.db.advances.add(newAdvance);
+        await this.db.payments.add(newPayment);
+        await this.db.journal_entries.add(journal.entry);
+        await this.db.journal_lines.bulkAdd(journal.lines);
+
+        // Events — supersede then create.
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'payment',
+          entity_id: original.id,
+          operation: 'superseded',
+          entity_version: original.entity_version + 1,
+          payload: supersededPayload,
+          payload_hash: supersededHash,
+          timestamp: now,
+        });
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'journal_entry',
+          entity_id: reversalEntry.id,
+          operation: 'posted',
+          entity_version: 1,
+          payload: reversalEntry,
+          timestamp: now,
+        });
+        for (const jl of reversalLines) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'journal_line',
+            entity_id: jl.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: jl,
+            timestamp: now,
+          });
+        }
+        for (const adv of advancesToSupersede) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'advance',
+            entity_id: adv.id,
+            operation: 'superseded',
+            entity_version: adv.entity_version + 1,
+            payload: {
+              advance_id: adv.id,
+              superseded_at: now,
+              superseded_by_advance_id: newAdvanceId,
+              reason: `edit:${original.id}`,
+            },
+            timestamp: now,
+          });
+        }
+
+        if (newAdvance) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'advance',
+            entity_id: newAdvance.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: newAdvance,
+            timestamp: now,
+          });
+        }
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'payment',
+          entity_id: newPaymentId,
+          operation: 'created',
+          entity_version: 1,
+          payload: newPayment,
+          payload_hash: newPaymentHash,
+          timestamp: now,
+        });
+        await this.writeEventPrehashed({
+          business_id: input.business_id,
+          device_id: input.device_id,
+          entity_type: 'journal_entry',
+          entity_id: journal.entry.id,
+          operation: 'posted',
+          entity_version: 1,
+          payload: journal.entry,
+          timestamp: now,
+        });
+        for (const jl of journal.lines) {
+          await this.writeEventPrehashed({
+            business_id: input.business_id,
+            device_id: input.device_id,
+            entity_type: 'journal_line',
+            entity_id: jl.id,
+            operation: 'created',
+            entity_version: 1,
+            payload: jl,
+            timestamp: now,
+          });
+        }
+
+        return newPayment;
+      },
+    );
+  }
+
+  /** Walk the revision chain of a payment (oldest first, ACTIVE tip last). */
+  async listPaymentRevisions(
+    business_id: string,
+    payment_number: string,
+  ): Promise<Payment[]> {
+    const rows = await this.db.payments
+      .where('[business_id+payment_number]')
+      .equals([business_id, payment_number])
+      .toArray();
+    return rows.sort(
+      (a, b) => (a.revision ?? 1) - (b.revision ?? 1),
+    );
+  }
+
+  /** List payments in the Recycle Bin (RECYCLED — superseded rows excluded). */
+  async listRecycledPayments(business_id: string): Promise<Payment[]> {
+    const rows = await this.db.payments
+      .where('business_id')
+      .equals(business_id)
+      .toArray();
+    return rows.filter((p) => !!p.deleted_at && !p.superseded_at);
   }
 
   async listPaymentsForInvoice(
