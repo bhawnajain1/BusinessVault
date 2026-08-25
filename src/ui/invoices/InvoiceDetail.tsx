@@ -13,6 +13,8 @@ import type {
 import Money from '../components/Money';
 import Qty from '../components/Qty';
 import StatusBadge from '../components/StatusBadge';
+import ReceivePaymentModal from '../payments/ReceivePaymentModal';
+import { useActiveBusiness } from '../hooks/useActiveBusiness';
 
 interface Loaded {
   invoice: Invoice;
@@ -26,9 +28,11 @@ interface Loaded {
 export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { businessId, deviceId } = useActiveBusiness();
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [receiveOpen, setReceiveOpen] = useState(false);
 
   async function load() {
     if (!id) return;
@@ -105,6 +109,18 @@ export default function InvoiceDetail() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          {!superseded &&
+            !isCreditNote &&
+            invoice.status !== 'cancelled' &&
+            invoice.balance_paise > 0 && (
+              <button
+                type="button"
+                onClick={() => setReceiveOpen(true)}
+                className="text-sm bg-emerald-700 text-white rounded px-3 py-1.5 hover:bg-emerald-800"
+              >
+                Record Payment
+              </button>
+            )}
           {!superseded && invoice.status !== 'cancelled' && (
             <Link
               to={`/invoices/${invoice.id}/edit`}
@@ -264,6 +280,20 @@ export default function InvoiceDetail() {
         </div>
       )}
 
+      {receiveOpen && businessId && (
+        <ReceivePaymentModal
+          businessId={businessId}
+          deviceId={deviceId ?? ''}
+          preselectCustomerId={invoice.customer_id}
+          preselectInvoiceId={invoice.id}
+          preselectAmountPaise={invoice.balance_paise}
+          onClose={() => setReceiveOpen(false)}
+          onSaved={() => {
+            setReceiveOpen(false);
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }

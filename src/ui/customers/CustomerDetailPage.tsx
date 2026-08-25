@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ulid } from 'ulid';
 import { db } from '../../db';
 import type {
   Account,
@@ -8,14 +7,12 @@ import type {
   Customer,
   Invoice,
   Payment,
-  PaymentMethod,
 } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
-import { PaymentService } from '../../domain/PaymentService';
 import { isPaymentActive, isAdvanceActive } from '../../domain/paymentState';
-import { SYSTEM_ACCOUNT_CODES } from '../../domain/coa';
 import Money from '../components/Money';
 import { streamCsvExport } from '../../csv/streamCsvExport';
+import ReceivePaymentModal from '../payments/ReceivePaymentModal';
 
 type Tab = 'invoices' | 'payments' | 'statement';
 
@@ -25,8 +22,6 @@ interface InvoiceRow {
   outstanding_paise: number;
   dyn_status: 'PAID' | 'PARTIALLY_PAID' | 'UNPAID' | 'OVERDUE' | 'CANCELLED';
 }
-
-const METHODS: PaymentMethod[] = ['cash', 'upi', 'bank', 'cheque', 'card'];
 
 function todayYmd(): string {
   return new Date().toISOString().slice(0, 10);
@@ -146,19 +141,13 @@ export default function CustomerDetailPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [activeTab, setActiveTab] = useState<Tab>('invoices');
 
-  // Payment modal state
-  const [payOpen, setPayOpen] = useState(false);
-  const [payPreselectInvoiceId, setPayPreselectInvoiceId] = useState<string | null>(null);
-  const [payAmountStr, setPayAmountStr] = useState('');
-  const [payDate, setPayDate] = useState<string>(todayYmd());
-  const [payMethod, setPayMethod] = useState<PaymentMethod>('cash');
-  const [payAccountId, setPayAccountId] = useState('');
-  const [payReference, setPayReference] = useState('');
-  const [payNotes, setPayNotes] = useState('');
-  const [payAllocMode, setPayAllocMode] = useState<'auto' | 'manual'>('auto');
-  const [payAllocations, setPayAllocations] = useState<Record<string, string>>({});
-  const [payError, setPayError] = useState<string | null>(null);
-  const [paySaving, setPaySaving] = useState(false);
+  // Payment modal — shared ReceivePaymentModal instance. Only preselect state
+  // is local; the modal owns its own form/allocation/save state.
+  const [receiveOpen, setReceiveOpen] = useState(false);
+  const [receivePreselectInvoiceId, setReceivePreselectInvoiceId] =
+    useState<string | undefined>(undefined);
+  const [receivePreselectAmountPaise, setReceivePreselectAmountPaise] =
+    useState<number | undefined>(undefined);
 
   useEffect(() => {
     if (!businessId || !id) return;
@@ -255,22 +244,6 @@ export default function CustomerDetailPage() {
     );
   }, [originals, payments, advances, creditsByOriginalId, asOfYmd]);
 
-  const openInvoiceRows = useMemo(
-    () =>
-      invoiceRows
-        .filter((r) => r.outstanding_paise > 0 && r.dyn_status !== 'CANCELLED')
-        .sort((a, b) => {
-          if (a.inv.invoice_date !== b.inv.invoice_date) {
-            return a.inv.invoice_date < b.inv.invoice_date ? -1 : 1;
-          }
-          if (a.inv.invoice_number !== b.inv.invoice_number) {
-            return a.inv.invoice_number < b.inv.invoice_number ? -1 : 1;
-          }
-          return a.inv.id < b.inv.id ? -1 : 1;
-        }),
-    [invoiceRows],
-  );
-
   // Financial summary cards.
   const summary = useMemo(() => {
     const nonCancelledOriginals = invoiceRows.filter(
@@ -301,150 +274,15 @@ export default function CustomerDetailPage() {
     });
   }, [invoices, payments, advances, customer]);
 
-  const svc = useMemo(() => new PaymentService(), []);
-
-  // Payment modal management ----------------------------------------------
-
   function openPaymentModal(preselectInvoiceId?: string) {
-    setPayError(null);
-    setPayPreselectInvoiceId(preselectInvoiceId ?? null);
-    setPayDate(todayYmd());
-    setPayMethod('cash');
-    const cash = accounts.find((a) => a.code === SYSTEM_ACCOUNT_CODES.CASH);
-    setPayAccountId(cash?.id ?? '');
-    setPayReference('');
-    setPayNotes('');
-    setPayAllocMode(preselectInvoiceId ? 'manual' : 'auto');
-
+    setReceivePreselectInvoiceId(preselectInvoiceId);
     if (preselectInvoiceId) {
       const row = invoiceRows.find((r) => r.inv.id === preselectInvoiceId);
-      const outs = row?.outstanding_paise ?? 0;
-      setPayAmountStr((outs / 100).toFixed(2));
-      setPayAllocations({ [preselectInvoiceId]: (outs / 100).toFixed(2) });
+      setReceivePreselectAmountPaise(row?.outstanding_paise);
     } else {
-      setPayAmountStr('');
-      setPayAllocations({});
+      setReceivePreselectAmountPaise(undefined);
     }
-    setPayOpen(true);
-  }
-
-  // On method change, auto-pick cash vs bank account.
-  useEffect(() => {
-    if (!payOpen) return;
-    const cash = accounts.find((a) => a.code === SYSTEM_ACCOUNT_CODES.CASH);
-    const bank = accounts.find((a) => a.code === SYSTEM_ACCOUNT_CODES.BANK);
-    if (payMethod === 'cash') {
-      setPayAccountId(cash?.id ?? payAccountId);
-    } else {
-      setPayAccountId(bank?.id ?? cash?.id ?? payAccountId);
-    }
-    // Only fire when method changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payMethod]);
-
-  // Live oldest-first auto-allocation preview when in auto mode.
-  const autoAllocations = useMemo(() => {
-    const amountPaise = Math.round(Number(payAmountStr || '0') * 100);
-    if (!Number.isFinite(amountPaise) || amountPaise <= 0) return {};
-    let remain = amountPaise;
-    const out: Record<string, number> = {};
-    for (const r of openInvoiceRows) {
-      if (remain <= 0) break;
-      const take = Math.min(r.outstanding_paise, remain);
-      if (take > 0) {
-        out[r.inv.id] = take;
-        remain -= take;
-      }
-    }
-    return out;
-  }, [payAmountStr, openInvoiceRows]);
-
-  // Resolve which allocations will actually be sent to the service.
-  const effectiveAllocations = useMemo(() => {
-    if (payAllocMode === 'auto') return autoAllocations;
-    const out: Record<string, number> = {};
-    for (const [invId, str] of Object.entries(payAllocations)) {
-      const paise = Math.round(Number(str) * 100);
-      if (Number.isFinite(paise) && paise > 0) out[invId] = paise;
-    }
-    return out;
-  }, [payAllocMode, autoAllocations, payAllocations]);
-
-  const effectiveAllocTotal = useMemo(
-    () => Object.values(effectiveAllocations).reduce((s, n) => s + n, 0),
-    [effectiveAllocations],
-  );
-
-  const paymentAmountPaise = useMemo(
-    () => Math.round(Number(payAmountStr || '0') * 100),
-    [payAmountStr],
-  );
-
-  const unallocatedPaise = paymentAmountPaise - effectiveAllocTotal;
-
-  async function savePayment() {
-    if (!businessId || !deviceId || !customer) return;
-    setPayError(null);
-
-    if (!Number.isFinite(paymentAmountPaise) || paymentAmountPaise <= 0)
-      return setPayError('Payment amount must be positive.');
-    if (!payAccountId) return setPayError('Pick a cash/bank account.');
-
-    if (effectiveAllocTotal > paymentAmountPaise) {
-      return setPayError(
-        `Allocations total ${(effectiveAllocTotal / 100).toFixed(2)} exceeds payment amount ${(paymentAmountPaise / 100).toFixed(2)}.`,
-      );
-    }
-    if (effectiveAllocTotal < paymentAmountPaise) {
-      return setPayError(
-        `Allocations total ${(effectiveAllocTotal / 100).toFixed(2)} is less than payment amount ${(paymentAmountPaise / 100).toFixed(2)}. Reduce the amount or record the difference as an advance from the Advances page.`,
-      );
-    }
-    for (const [invId, paise] of Object.entries(effectiveAllocations)) {
-      const row = invoiceRows.find((r) => r.inv.id === invId);
-      if (!row) return setPayError(`Unknown invoice ${invId}.`);
-      if (paise > row.outstanding_paise) {
-        return setPayError(
-          `Allocation to ${row.inv.invoice_number} exceeds outstanding ${(row.outstanding_paise / 100).toFixed(2)}.`,
-        );
-      }
-    }
-
-    const arAccount = accounts.find(
-      (a) => a.code === SYSTEM_ACCOUNT_CODES.RECEIVABLE,
-    );
-    if (!arAccount) return setPayError('Receivable account (1200) is missing in chart of accounts.');
-
-    const paymentNumber = `PAY-${ulid().slice(-10)}`;
-
-    setPaySaving(true);
-    try {
-      await svc.createPayment({
-        business_id: businessId,
-        device_id: deviceId,
-        payment_number: paymentNumber,
-        payment_date: payDate,
-        direction: 'in',
-        party_type: 'customer',
-        party_id: customer.id,
-        method: payMethod,
-        cash_or_bank_account_id: payAccountId,
-        ar_or_ap_account_id: arAccount.id,
-        amount_paise: paymentAmountPaise,
-        reference: payReference.trim() || undefined,
-        notes: payNotes.trim() || undefined,
-        allocations: Object.entries(effectiveAllocations).map(([invoice_id, amount_paise]) => ({
-          invoice_id,
-          amount_paise,
-        })),
-      });
-      setPayOpen(false);
-      setReloadKey((k) => k + 1);
-    } catch (e) {
-      setPayError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPaySaving(false);
-    }
+    setReceiveOpen(true);
   }
 
   const invoiceById = useMemo(() => {
@@ -817,40 +655,18 @@ export default function CustomerDetailPage() {
         </section>
       )}
 
-      {payOpen && (
-        <PaymentModal
-          customerName={customer.name}
-          amountStr={payAmountStr}
-          setAmountStr={setPayAmountStr}
-          date={payDate}
-          setDate={setPayDate}
-          method={payMethod}
-          setMethod={setPayMethod}
-          reference={payReference}
-          setReference={setPayReference}
-          notes={payNotes}
-          setNotes={setPayNotes}
-          accounts={accounts.filter(
-            (a) =>
-              a.active === 1 &&
-              (a.code === SYSTEM_ACCOUNT_CODES.CASH || a.code === SYSTEM_ACCOUNT_CODES.BANK),
-          )}
-          accountId={payAccountId}
-          setAccountId={setPayAccountId}
-          openInvoiceRows={openInvoiceRows}
-          allocMode={payAllocMode}
-          setAllocMode={setPayAllocMode}
-          allocations={payAllocations}
-          setAllocations={setPayAllocations}
-          autoAllocations={autoAllocations}
-          effectiveAllocations={effectiveAllocations}
-          effectiveAllocTotal={effectiveAllocTotal}
-          unallocatedPaise={unallocatedPaise}
-          preselectInvoiceId={payPreselectInvoiceId}
-          saving={paySaving}
-          error={payError}
-          onCancel={() => setPayOpen(false)}
-          onSave={savePayment}
+      {receiveOpen && businessId && (
+        <ReceivePaymentModal
+          businessId={businessId}
+          deviceId={deviceId ?? ''}
+          preselectCustomerId={customer.id}
+          preselectInvoiceId={receivePreselectInvoiceId}
+          preselectAmountPaise={receivePreselectAmountPaise}
+          onClose={() => setReceiveOpen(false)}
+          onSaved={() => {
+            setReceiveOpen(false);
+            setReloadKey((k) => k + 1);
+          }}
         />
       )}
     </div>
@@ -916,301 +732,3 @@ function StatusPill({ status }: { status: InvoiceRow['dyn_status'] }) {
   );
 }
 
-interface PaymentModalProps {
-  customerName: string;
-  amountStr: string;
-  setAmountStr: (s: string) => void;
-  date: string;
-  setDate: (s: string) => void;
-  method: PaymentMethod;
-  setMethod: (m: PaymentMethod) => void;
-  reference: string;
-  setReference: (s: string) => void;
-  notes: string;
-  setNotes: (s: string) => void;
-  accounts: Account[];
-  accountId: string;
-  setAccountId: (s: string) => void;
-  openInvoiceRows: InvoiceRow[];
-  allocMode: 'auto' | 'manual';
-  setAllocMode: (m: 'auto' | 'manual') => void;
-  allocations: Record<string, string>;
-  setAllocations: (r: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>)) => void;
-  autoAllocations: Record<string, number>;
-  effectiveAllocations: Record<string, number>;
-  effectiveAllocTotal: number;
-  unallocatedPaise: number;
-  preselectInvoiceId: string | null;
-  saving: boolean;
-  error: string | null;
-  onCancel: () => void;
-  onSave: () => void;
-}
-
-function PaymentModal(props: PaymentModalProps) {
-  const {
-    customerName,
-    amountStr,
-    setAmountStr,
-    date,
-    setDate,
-    method,
-    setMethod,
-    reference,
-    setReference,
-    notes,
-    setNotes,
-    accounts,
-    accountId,
-    setAccountId,
-    openInvoiceRows,
-    allocMode,
-    setAllocMode,
-    allocations,
-    setAllocations,
-    autoAllocations,
-    effectiveAllocations,
-    effectiveAllocTotal,
-    unallocatedPaise,
-    preselectInvoiceId,
-    saving,
-    error,
-    onCancel,
-    onSave,
-  } = props;
-
-  return (
-    <div className="fixed inset-0 bg-black/40 z-40 flex items-start justify-center p-6 overflow-y-auto">
-      <div className="bg-white rounded shadow-lg w-full max-w-2xl">
-        <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="font-semibold">Receive Payment — {customerName}</h2>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-slate-500 hover:text-slate-900"
-            aria-label="Close"
-          >
-            ✕
-          </button>
-        </div>
-        <div className="px-4 py-3 flex flex-col gap-3 text-sm">
-          <div className="grid grid-cols-2 gap-3">
-            <label className="flex flex-col">
-              <span className="text-slate-600 mb-1">Amount ₹</span>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={amountStr}
-                onChange={(e) => setAmountStr(e.target.value)}
-                className="border border-slate-300 rounded px-2 py-1.5 text-right"
-              />
-            </label>
-            <label className="flex flex-col">
-              <span className="text-slate-600 mb-1">Date</span>
-              <input
-                type="date"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                className="border border-slate-300 rounded px-2 py-1.5"
-              />
-            </label>
-            <label className="flex flex-col">
-              <span className="text-slate-600 mb-1">Payment method</span>
-              <select
-                value={method}
-                onChange={(e) => setMethod(e.target.value as PaymentMethod)}
-                className="border border-slate-300 rounded px-2 py-1.5 bg-white"
-              >
-                {METHODS.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col">
-              <span className="text-slate-600 mb-1">Deposit account</span>
-              <select
-                value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
-                className="border border-slate-300 rounded px-2 py-1.5 bg-white"
-              >
-                <option value="">— pick account —</option>
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.code} · {a.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col col-span-2">
-              <span className="text-slate-600 mb-1">Reference #</span>
-              <input
-                value={reference}
-                onChange={(e) => setReference(e.target.value)}
-                className="border border-slate-300 rounded px-2 py-1.5"
-                placeholder="UPI txn / cheque # / bank ref"
-              />
-            </label>
-            <label className="flex flex-col col-span-2">
-              <span className="text-slate-600 mb-1">Notes</span>
-              <textarea
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                className="border border-slate-300 rounded px-2 py-1.5 h-16"
-              />
-            </label>
-          </div>
-
-          <div className="border-t border-slate-100 pt-3">
-            <div className="flex items-center justify-between mb-2">
-              <div className="font-medium">Apply payment to</div>
-              <div className="flex gap-1 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setAllocMode('auto')}
-                  className={
-                    allocMode === 'auto'
-                      ? 'bg-slate-900 text-white rounded px-2 py-1'
-                      : 'border border-slate-300 rounded px-2 py-1 hover:bg-slate-50'
-                  }
-                >
-                  Oldest first (auto)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAllocMode('manual');
-                    // Seed manual allocations from current auto preview if empty.
-                    setAllocations((prev) => {
-                      if (Object.keys(prev).length > 0) return prev;
-                      const seeded: Record<string, string> = {};
-                      for (const [invId, paise] of Object.entries(autoAllocations)) {
-                        seeded[invId] = (paise / 100).toFixed(2);
-                      }
-                      return seeded;
-                    });
-                  }}
-                  className={
-                    allocMode === 'manual'
-                      ? 'bg-slate-900 text-white rounded px-2 py-1'
-                      : 'border border-slate-300 rounded px-2 py-1 hover:bg-slate-50'
-                  }
-                >
-                  Manual
-                </button>
-              </div>
-            </div>
-
-            {openInvoiceRows.length === 0 ? (
-              <div className="text-xs text-slate-500 border border-dashed border-slate-300 rounded p-3">
-                No outstanding invoices. Record this as an advance from the Advances page instead.
-              </div>
-            ) : (
-              <div className="border border-slate-200 rounded overflow-hidden">
-                <table className="w-full text-xs">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="text-left px-2 py-1.5">Invoice</th>
-                      <th className="text-left px-2 py-1.5">Date</th>
-                      <th className="text-right px-2 py-1.5">Outstanding</th>
-                      <th className="text-right px-2 py-1.5 w-32">
-                        {allocMode === 'auto' ? 'Auto-apply' : 'Apply ₹'}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {openInvoiceRows.map((r) => {
-                      const isPreselect = preselectInvoiceId === r.inv.id;
-                      const autoPaise = autoAllocations[r.inv.id] ?? 0;
-                      const currentManual = allocations[r.inv.id] ?? '';
-                      return (
-                        <tr
-                          key={r.inv.id}
-                          className={`border-t border-slate-100 ${
-                            isPreselect ? 'bg-emerald-50/50' : ''
-                          }`}
-                        >
-                          <td className="px-2 py-1.5 font-mono">{r.inv.invoice_number}</td>
-                          <td className="px-2 py-1.5">{fmtDateShort(r.inv.invoice_date)}</td>
-                          <td className="px-2 py-1.5 text-right">
-                            <Money paise={r.outstanding_paise} />
-                          </td>
-                          <td className="px-2 py-1.5 text-right">
-                            {allocMode === 'auto' ? (
-                              autoPaise > 0 ? (
-                                <Money paise={autoPaise} />
-                              ) : (
-                                <span className="text-slate-400">—</span>
-                              )
-                            ) : (
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                max={r.outstanding_paise / 100}
-                                value={currentManual}
-                                onChange={(e) => {
-                                  const v = e.target.value;
-                                  setAllocations((prev) => {
-                                    const next = { ...prev };
-                                    if (v === '' || Number(v) === 0) delete next[r.inv.id];
-                                    else next[r.inv.id] = v;
-                                    return next;
-                                  });
-                                }}
-                                placeholder="0.00"
-                                className="w-24 border border-slate-300 rounded px-1.5 py-0.5 text-right"
-                              />
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            <div className="mt-2 text-xs text-slate-600 flex justify-between">
-              <span>
-                Allocated total: <Money paise={effectiveAllocTotal} />
-              </span>
-              <span>
-                Unallocated (must be 0):{' '}
-                <strong className={unallocatedPaise !== 0 ? 'text-rose-700' : ''}>
-                  <Money paise={Math.max(0, unallocatedPaise)} />
-                </strong>
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {error && (
-          <div className="mx-4 mb-3 text-xs text-rose-600 whitespace-pre-wrap border border-rose-200 bg-rose-50 rounded px-2 py-1.5">
-            {error}
-          </div>
-        )}
-
-        <div className="px-4 py-3 border-t border-slate-200 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={saving}
-            onClick={onSave}
-            className="text-sm bg-emerald-700 text-white rounded px-3 py-1.5 hover:bg-emerald-800 disabled:opacity-50"
-          >
-            {saving ? 'Saving...' : 'Save Payment'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
