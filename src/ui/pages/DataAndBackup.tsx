@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { currentBusinessId } from '../../lib/business';
 import BackupSettings from '../settings/BackupSettings';
-import { connectDrive } from '../../drive/connectDrive';
+import { reconnectWithUserGesture } from '../../sync/bootProvider';
 import { hasGoogleClientId } from '../../auth/gis';
 import { log } from '../../lib/log';
 
@@ -48,10 +48,24 @@ export default function DataAndBackup() {
     }
     setReconnecting(true);
     try {
-      log.info('DataAndBackup', 'reconnect: opening GIS popup', { businessId });
-      const res = await connectDrive({ businessId, prompt: 'consent' });
-      log.info('DataAndBackup', 'reconnect: success', { email: res.identity.email });
-      setReconnectMessage(`Reconnected as ${res.identity.email}. Sync will resume.`);
+      log.info('DataAndBackup', 'reconnect: delegating to bootProvider', { businessId });
+      // Delegate to bootProvider — it opens the GIS popup, builds the Drive
+      // provider, initializes the business, stops the stale sync worker, and
+      // installs a fresh one bound to the new provider. Calling connectDrive
+      // directly (previous behavior) only refreshed the OAuth token; the app
+      // kept the stale DISCONNECTED provider + old worker, so the yellow
+      // "needs to reconnect" banner and the DISCONNECTED status never
+      // cleared even though sign-in succeeded.
+      const ok = await reconnectWithUserGesture();
+      if (ok) {
+        log.info('DataAndBackup', 'reconnect: success — provider adopted', { businessId });
+        setReconnectMessage('Reconnected. Sync will resume in the background.');
+      } else {
+        log.warn('DataAndBackup', 'reconnect: bootProvider reported failure', { businessId });
+        setReconnectError(
+          'Reconnect did not complete. See the banner above for details, or try again.',
+        );
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn('DataAndBackup', 'reconnect failed', { error: msg });
