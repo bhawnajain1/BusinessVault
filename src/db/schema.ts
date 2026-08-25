@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const DB_NAME = 'businessvault';
 
@@ -104,4 +104,21 @@ export const STORES_V4: Record<string, string> = {
   ...STORES_V3,
   invoices:
     'id, business_id, [business_id+invoice_number], [business_id+customer_id], [business_id+invoice_date], [business_id+status], [business_id+financial_year], [business_id+deleted_at], updated_at',
+};
+
+// v5: Payment/Advance lifecycle indexes for the Recycle Bin + revision chain.
+//
+// - payments gets [business_id+deleted_at] (RECYCLED bin enumeration) and
+//   [business_id+superseded_at] (revision-history lookup + fast "hide
+//   superseded from main list" filter). Existing rows keep both fields
+//   undefined and stay ACTIVE, so no data migration is needed.
+// - advances gets [business_id+deleted_at] for the same reason. Advances are
+//   never independently visible in the Recycle Bin UI — the index is for
+//   receivables/payables math that needs to skip recycled rows cheaply.
+export const STORES_V5: Record<string, string> = {
+  ...STORES_V4,
+  payments:
+    'id, business_id, [business_id+payment_number], [business_id+party_type+party_id], [business_id+payment_date], [business_id+direction], [business_id+deleted_at], [business_id+superseded_at], updated_at',
+  advances:
+    'id, business_id, [business_id+party_type+party_id], [business_id+advance_date], [business_id+deleted_at], updated_at',
 };
