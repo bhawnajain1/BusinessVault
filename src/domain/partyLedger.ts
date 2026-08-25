@@ -325,10 +325,18 @@ export interface DerivedPayables {
   totals: SupplierPayable;
 }
 
-// Purchase-return / debit note detection: this app's schema does NOT record
-// `reverses_purchase_id` on Purchase, but ReturnService writes debit notes as
-// negative-total purchase rows with supplier_bill_number prefixed 'RET-' and
-// notes starting 'Debit note for bill '. Detect via total_paise < 0.
+// Purchase-return / debit note handling.
+//
+// Modern path (post-PR 3): a debit note is a negative-total Purchase row with
+// `reverses_purchase_id` pointing at the original bill. computePayables attaches
+// the debit note directly to that bill — symmetric to how computeReceivables
+// handles credit notes via reverses_invoice_id.
+//
+// Legacy path: existing installs may have debit notes written before the FK
+// existed (negative total_paise, no reverses_purchase_id). We detect those by
+// (total_paise < 0 AND !reverses_purchase_id) and fall back to the old
+// supplier-level FIFO pool for that subset only. New debit notes go through
+// the direct-attach path immediately.
 export function computePayables(
   purchases: Purchase[],
   asOfYmd: string,
@@ -336,57 +344,72 @@ export function computePayables(
   suppliers: Supplier[] = [],
 ): DerivedPayables {
   const usable = purchases.filter((p) => p.status !== 'cancelled');
-  const originals = usable.filter((p) => p.total_paise > 0);
-  const debitNotes = usable.filter((p) => p.total_paise < 0);
+  const originals = usable.filter(
+    (p) => p.total_paise > 0 && !p.reverses_purchase_id,
+  );
+  const attachedDebitNotes = usable.filter((p) => !!p.reverses_purchase_id);
+  const legacyDebitNotes = usable.filter(
+    (p) => p.total_paise < 0 && !p.reverses_purchase_id,
+  );
 
-  // Debit notes here don't carry a pointer to their original bill; we can only
-  // aggregate them at the supplier level, not the bill level. Reflect this
-  // limitation by treating debit-note reductions as supplier-level credits
-  // applied to the earliest outstanding bill (Grug: keep simple, degrade
-  // gracefully). If the schema gains reverses_purchase_id later, refactor.
-  const debitPoolBySupplier = new Map<string, number>();
-  for (const dn of debitNotes) {
-    debitPoolBySupplier.set(
-      dn.supplier_id,
-      (debitPoolBySupplier.get(dn.supplier_id) ?? 0) + Math.abs(dn.total_paise),
-    );
+  const debitsByOriginalId = new Map<string, Purchase[]>();
+  for (const dn of attachedDebitNotes) {
+    if (!dn.reverses_purchase_id) continue;
+    const arr = debitsByOriginalId.get(dn.reverses_purchase_id) ?? [];
+    arr.push(dn);
+    debitsByOriginalId.set(dn.reverses_purchase_id, arr);
   }
 
-  // Sort each supplier's bills oldest-first so the debit-note pool consumes
-  // in FIFO order.
+  // Legacy fallback: supplier-level FIFO pool. Only used to allocate debit
+  // notes that predate the FK. Once a business's data is fully re-emitted
+  // through the modern path, this pool is empty.
+  const legacyPoolBySupplier = new Map<string, number>();
+  for (const dn of legacyDebitNotes) {
+    legacyPoolBySupplier.set(
+      dn.supplier_id,
+      (legacyPoolBySupplier.get(dn.supplier_id) ?? 0) + Math.abs(dn.total_paise),
+    );
+  }
   const originalsSorted = [...originals].sort((a, b) =>
     a.bill_date < b.bill_date ? -1 : a.bill_date > b.bill_date ? 1 : 0,
   );
 
   const perPurchase: PurchaseOutstanding[] = [];
   for (const p of originalsSorted) {
-    // Pull whatever's left from this supplier's debit-note pool onto this bill.
-    const pool = debitPoolBySupplier.get(p.supplier_id) ?? 0;
-    const grossBeforeDebit = p.total_paise - p.paid_paise;
-    const applyDebit = Math.min(Math.max(grossBeforeDebit, 0), pool);
-    debitPoolBySupplier.set(p.supplier_id, pool - applyDebit);
+    const attached = debitsByOriginalId.get(p.id) ?? [];
+    // Legacy pool: consume oldest bill first, only for suppliers that have
+    // unattached legacy debit notes.
+    const pool = legacyPoolBySupplier.get(p.supplier_id) ?? 0;
+    const attachedReduction = attached.reduce(
+      (acc, dn) => acc + Math.abs(dn.total_paise),
+      0,
+    );
+    const grossBeforeLegacy = p.total_paise - p.paid_paise - attachedReduction;
+    const applyLegacy = Math.min(Math.max(grossBeforeLegacy, 0), pool);
+    if (applyLegacy > 0) {
+      legacyPoolBySupplier.set(p.supplier_id, pool - applyLegacy);
+    }
+    const virtualLegacyDn: Purchase[] =
+      applyLegacy > 0
+        ? [{ ...p, total_paise: -applyLegacy, id: `${p.id}-DN-legacy` }]
+        : [];
     const row = computePurchaseRow(
       p,
-      // Fake a single Purchase carrying just the applied debit amount.
-      applyDebit > 0
-        ? [
-            {
-              ...p,
-              total_paise: -applyDebit,
-              id: `${p.id}-DN-virtual`,
-            },
-          ]
-        : [],
+      [...attached, ...virtualLegacyDn],
       asOfYmd,
     );
     perPurchase.push(row);
   }
 
-  // Leftover debit-note pool becomes a supplier advance (money owed BACK to us).
+  // Any leftover legacy debit-note credit that couldn't be applied to a bill
+  // becomes a supplier advance (money the supplier owes back to us).
   const leftoverAdvanceBySupplier = new Map<string, number>();
-  for (const [supplierId, remaining] of debitPoolBySupplier.entries()) {
+  for (const [supplierId, remaining] of legacyPoolBySupplier.entries()) {
     if (remaining > 0) leftoverAdvanceBySupplier.set(supplierId, remaining);
   }
+  // Similarly, if an attached debit note exceeds its original's remaining
+  // balance, computePurchaseRow already caps outstanding at 0 and folds the
+  // excess into advance_paise on that row (see grossOutstanding < 0 branch).
 
   const bucket = new Map<string, SupplierPayable>();
   const grand: SupplierPayable = {

@@ -283,6 +283,8 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'paid_paise', type: 'number' },
       { name: 'balance_paise', type: 'number' },
       { name: 'status', type: 'string' },
+      { name: 'reversed_by_purchase_id', type: 'string_or_null' },
+      { name: 'reverses_purchase_id', type: 'string_or_null' },
       { name: 'notes', type: 'string' },
       { name: 'attachment_id', type: 'string_or_null' },
       { name: 'journal_entry_id', type: 'string' },

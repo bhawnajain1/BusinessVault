@@ -155,7 +155,35 @@ const HANDLERS: Record<string, EventHandler> = {
 
   'purchase:create': put<Purchase>((db) => db.purchases),
   'purchase:created': put<Purchase>((db) => db.purchases),
-  'purchase:update': put<Purchase>((db) => db.purchases),
+  // purchase:update either carries a full Purchase row OR a partial back-pointer
+  // update from ReturnService.createPurchaseReturn ({id, reversed_by_purchase_id,
+  // entity_version}). Detect the partial shape and merge into the existing row
+  // so we don't clobber every other field. Mirrors invoice:update above.
+  'purchase:update': async (evt, ctx) => {
+    const p = asRecord(evt.payload, evt.event_id);
+    const isBackPointerMerge =
+      p.reversed_by_purchase_id !== undefined &&
+      p.business_id === undefined &&
+      p.total_paise === undefined;
+    if (isBackPointerMerge) {
+      const id = String(p.id ?? '');
+      const existing = await ctx.db.purchases.get(id);
+      if (!existing) {
+        ctx.diagnostics.push(
+          `purchase:update ${id} (back-pointer merge): purchase not found`,
+        );
+        return;
+      }
+      existing.reversed_by_purchase_id =
+        (p.reversed_by_purchase_id as string | null | undefined) ?? null;
+      if (typeof p.entity_version === 'number') {
+        existing.entity_version = p.entity_version;
+      }
+      await ctx.db.purchases.put(existing);
+      return;
+    }
+    await ctx.db.purchases.put(p as unknown as Purchase);
+  },
   'purchase:updated': put<Purchase>((db) => db.purchases),
 
   'purchase_line:create': put<PurchaseLine>((db) => db.purchase_lines),

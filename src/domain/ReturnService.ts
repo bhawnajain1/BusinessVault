@@ -358,7 +358,13 @@ export class ReturnService {
             `Original journal entry not found: ${original.journal_entry_id}`,
           );
         }
-        // Refuse duplicate return
+        // Refuse duplicate return. Either the FK is already set on the original,
+        // or a legacy debit note exists (pre-FK) whose JE reverses the original's JE.
+        if (original.reversed_by_purchase_id) {
+          throw new Error(
+            `Purchase ${original.id} has already been reversed by ${original.reversed_by_purchase_id}`,
+          );
+        }
         const existingReversal = await db.journal_entries
           .where('business_id')
           .equals(input.businessId)
@@ -400,6 +406,8 @@ export class ReturnService {
           paid_paise: 0,
           balance_paise: -original.total_paise,
           status: 'received',
+          reversed_by_purchase_id: null,
+          reverses_purchase_id: original.id,
           notes: `Debit note for bill ${original.bill_number}. Reason: ${input.reason}`,
           journal_entry_id: reverseJeId,
           created_at: now,
@@ -482,6 +490,17 @@ export class ReturnService {
 
         await db.purchases.add(debitNote);
         for (const l of returnLines) await db.purchase_lines.add(l);
+
+        // Mark the original with a back-pointer so computePayables can attach
+        // the debit note directly (no more supplier-level FIFO pool). Mirrors
+        // the sales-return path above which sets reversed_by_invoice_id.
+        await db.purchases.put({
+          ...original,
+          reversed_by_purchase_id: debitNoteId,
+          updated_at: now,
+          entity_version: original.entity_version + 1,
+        });
+
         for (const m of movements) {
           await db.stock_movements.add(m);
           const stockKey = `${input.businessId}:${m.item_id}:${m.warehouse_id}`;
@@ -517,6 +536,19 @@ export class ReturnService {
           payload: debitNote,
           timestamp: now,
           idempotencyKey: input.idempotencyKey,
+        });
+        await appendSyncEvent(db, {
+          businessId: input.businessId,
+          deviceId: input.deviceId,
+          entityType: 'purchase',
+          entityId: original.id,
+          operation: 'updated',
+          payload: {
+            id: original.id,
+            reversed_by_purchase_id: debitNoteId,
+            entity_version: original.entity_version + 1,
+          },
+          timestamp: now,
         });
         for (const m of movements) {
           await appendSyncEvent(db, {

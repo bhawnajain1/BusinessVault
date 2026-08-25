@@ -193,6 +193,8 @@ export class PurchaseService {
       paid_paise: 0,
       balance_paise: total,
       status: 'received',
+      reversed_by_purchase_id: null,
+      reverses_purchase_id: null,
       notes: input.notes ?? '',
       attachment_id: input.attachmentId ?? null,
       journal_entry_id: journalId,

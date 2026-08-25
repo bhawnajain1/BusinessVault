@@ -129,6 +129,8 @@ function mkPur(
     paid_paise: o.paid_paise ?? 0,
     balance_paise: o.total_paise - (o.paid_paise ?? 0),
     status: o.status ?? 'received',
+    reversed_by_purchase_id: o.reversed_by_purchase_id ?? null,
+    reverses_purchase_id: o.reverses_purchase_id ?? null,
     notes: '',
     attachment_id: null,
     journal_entry_id: '',
@@ -271,11 +273,11 @@ describe('computePayables', () => {
     expect(ap.totals.outstanding_paise).toBe(130_00);
   });
 
-  it('applies supplier-level debit-note pool FIFO to bills', () => {
+  it('applies supplier-level debit-note pool FIFO to bills (legacy pre-FK debit notes)', () => {
     const bills = [
       mkPur({ id: 'B1', total_paise: 100_00, bill_date: '2026-01-01' }),
       mkPur({ id: 'B2', total_paise: 100_00, bill_date: '2026-01-05' }),
-      mkPur({ id: 'DN1', total_paise: -30_00 }), // debit note
+      mkPur({ id: 'DN1', total_paise: -30_00 }), // legacy debit note, no FK
     ];
     const ap = computePayables(bills, '2026-02-01');
     // Total gross owed = 200, debit pool = 30 → 170 outstanding, oldest bill absorbs it first.
@@ -283,6 +285,47 @@ describe('computePayables', () => {
     const b1 = ap.perPurchase.find((p) => p.purchase_id === 'B1')!;
     expect(b1.outstanding_paise).toBe(70_00);
     expect(b1.debit_note_paise).toBe(30_00);
+  });
+
+  it('attaches debit note directly to its bill via reverses_purchase_id', () => {
+    // Modern path (post-PR 3): the debit note carries a pointer to the original,
+    // so it reduces THAT bill regardless of bill_date. B2 is the newer bill;
+    // legacy pool would have applied the debit to B1 (oldest first). Directly-
+    // attached should go to B2.
+    const bills = [
+      mkPur({ id: 'B1', total_paise: 100_00, bill_date: '2026-01-01' }),
+      mkPur({ id: 'B2', total_paise: 100_00, bill_date: '2026-01-05' }),
+      mkPur({
+        id: 'DN1',
+        total_paise: -30_00,
+        reverses_purchase_id: 'B2',
+      }),
+    ];
+    const ap = computePayables(bills, '2026-02-01');
+    expect(ap.totals.outstanding_paise).toBe(170_00);
+    const b1 = ap.perPurchase.find((p) => p.purchase_id === 'B1')!;
+    const b2 = ap.perPurchase.find((p) => p.purchase_id === 'B2')!;
+    expect(b1.outstanding_paise).toBe(100_00);
+    expect(b1.debit_note_paise).toBe(0);
+    expect(b2.outstanding_paise).toBe(70_00);
+    expect(b2.debit_note_paise).toBe(30_00);
+  });
+
+  it('directly-attached debit note exceeding its bill flips into advance', () => {
+    // Overshooting an attached debit note (return more than the bill's remaining
+    // balance) yields advance_paise, not negative outstanding.
+    const bills = [
+      mkPur({ id: 'B1', total_paise: 50_00 }),
+      mkPur({
+        id: 'DN1',
+        total_paise: -80_00,
+        reverses_purchase_id: 'B1',
+      }),
+    ];
+    const ap = computePayables(bills, '2026-02-01');
+    const b1 = ap.perPurchase.find((p) => p.purchase_id === 'B1')!;
+    expect(b1.outstanding_paise).toBe(0);
+    expect(b1.advance_paise).toBe(30_00);
   });
 
   it('leftover debit-note pool becomes supplier advance', () => {

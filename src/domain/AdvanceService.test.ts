@@ -103,6 +103,8 @@ function makeBill(id: string, total: number): Purchase {
     paid_paise: 0,
     balance_paise: total,
     status: 'received',
+    reversed_by_purchase_id: null,
+    reverses_purchase_id: null,
     notes: '',
     attachment_id: null,
     journal_entry_id: 'je-' + id,

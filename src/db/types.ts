@@ -325,6 +325,13 @@ export interface Purchase {
   paid_paise: number; // money: integer paise
   balance_paise: number; // money: integer paise
   status: PurchaseStatus;
+  // Symmetric to Invoice.{reversed_by_invoice_id,reverses_invoice_id}. A
+  // purchase-return debit note sets reverses_purchase_id = original.id and the
+  // original's reversed_by_purchase_id points back. computePayables uses these
+  // to attach debit notes to their referenced bill directly instead of the old
+  // supplier-level FIFO pool.
+  reversed_by_purchase_id: string | null;
+  reverses_purchase_id: string | null;
   notes: string;
   attachment_id: string | null;
   journal_entry_id: string;

@@ -91,6 +91,8 @@ function makeBill(id: string, total: number, paid = 0): Purchase {
     paid_paise: paid,
     balance_paise: total - paid,
     status: paid > 0 ? 'partial' : 'received',
+    reversed_by_purchase_id: null,
+    reverses_purchase_id: null,
     notes: '',
     attachment_id: null,
     journal_entry_id: 'je-bill-' + id,
