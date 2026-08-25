@@ -1,5 +1,5 @@
-import { useCallback, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../../db';
 import type { Supplier } from '../../db/types';
 import { createSupplierService } from '../../domain/SupplierService';
@@ -48,12 +48,34 @@ function paiseToRupees(p: number): string {
 
 export default function SuppliersPage() {
   const { businessId, deviceId, loading } = useActiveBusiness();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<Supplier | null>(null);
   const [form, setForm] = useState<SupplierForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+
+  // Open edit drawer if navigated with ?edit=<id>. Consumed once, then stripped.
+  useEffect(() => {
+    if (!businessId) return;
+    const editId = searchParams.get('edit');
+    if (!editId) return;
+    let cancelled = false;
+    (async () => {
+      const row = await db.suppliers.get(editId);
+      if (cancelled || !row) return;
+      openEdit(row);
+      const next = new URLSearchParams(searchParams);
+      next.delete('edit');
+      setSearchParams(next, { replace: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [businessId, searchParams]);
 
   const fetchPage = useCallback(
     async ({
@@ -261,7 +283,7 @@ export default function SuppliersPage() {
         fetchPage={fetchPage}
         fetchPageDeps={[reloadKey]}
         rowKey={(r) => r.id}
-        onRowClick={openEdit}
+        onRowClick={(r) => navigate(`/suppliers/${r.id}`)}
         searchPlaceholder="Search name / phone / email / GSTIN"
         onExport={exportCsv}
       />
