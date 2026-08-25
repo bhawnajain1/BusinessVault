@@ -865,6 +865,7 @@ describe('PaymentService.softDeletePayment', () => {
       advance_id: advs[0].id,
       invoice_id: 'inv-2',
       amount_paise: 8000,
+      applied_on: '2026-08-20',
     });
 
     await expect(
