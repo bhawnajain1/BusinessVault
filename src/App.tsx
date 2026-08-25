@@ -19,6 +19,9 @@ const InvoicePrint = lazy(() => import('./ui/invoices/InvoicePrint'));
 const InvoiceForm = lazy(() => import('./ui/invoices/InvoiceForm'));
 const DeletedInvoices = lazy(() => import('./ui/invoices/DeletedInvoicesPage'));
 const Payments = lazy(() => import('./ui/pages/Payments'));
+const PaymentsRecycleBin = lazy(
+  () => import('./ui/payments/PaymentsRecycleBinPage'),
+);
 const Advances = lazy(() => import('./ui/pages/Advances'));
 const PartyLedger = lazy(() => import('./ui/parties/PartyLedgerPage'));
 const CustomerDetail = lazy(() => import('./ui/customers/CustomerDetailPage'));
@@ -65,6 +68,10 @@ export default function App() {
           <Route path="/purchases" element={<Purchases />} />
           <Route path="/purchases/:id" element={<PurchaseDetail />} />
           <Route path="/payments" element={<Payments />} />
+          <Route
+            path="/payments/recycle-bin"
+            element={<PaymentsRecycleBin />}
+          />
           <Route path="/advances" element={<Advances />} />
           <Route path="/expenses" element={<Expenses />} />
           <Route path="/accounting" element={<TrialBalancePage />} />
