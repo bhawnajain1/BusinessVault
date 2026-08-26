@@ -4,6 +4,58 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.0 — 2026-08-26
+
+### Release: feedback_1_to_7.md series complete
+
+The 28-section consolidated feedback landed across PRs [#40](https://github.com/bhawnajain1/BusinessVault/pull/40)–[#50](https://github.com/bhawnajain1/BusinessVault/pull/50) over ten shippable phases. This 1.0.0 release cuts the line: every feedback item that had a defined acceptance criterion is now implemented, tested against the §24 regression assertions, and gated by `npm run release:gate` (§26).
+
+**§28 Final Report**
+
+- Previous application version: `0.20.0`
+- New application version: `1.0.0`
+- Dexie schema version: `8` (last bumped in §2 Signature — no schema changes needed for this release)
+- Backup format version: `1` (added in §20)
+
+**Features implemented (Feedback #1–#7 + platform mandates §8–§26)**
+
+| Section | Feature | Ships in |
+|---|---|---|
+| §1  | Invoice Round Off (auto / none / manual, banker's rounding, journal-integrated) | [`0.11.0`](https://github.com/bhawnajain1/BusinessVault/commit/b16edc7) |
+| §2  | Authorised Signature (upload, per-invoice snapshot, historical preservation) | `0.14.0` |
+| §3  | Editable Invoice Number (uniqueness guard, `audit_log` trail) | `0.13.0` |
+| §4  | Invoice Number Reuse (recycled numbers released back into pool, gap-filling) | `0.13.0` |
+| §5,§6,§7 | Sales Return audit + gap-fill (per-line economics, restore-summary rebuild) | `0.15.0` |
+| §8  | Low-Stock / Reorder Alerts (threshold crossing, toast, sound, notification centre) | `0.16.0` |
+| §9  | Recycle-Bin Accounting Bug (mirror-journal reversal, restore un-mirror) | `0.12.0` |
+| §12 | GSTIN → State auto-detection (all four party forms, manual-override latch) | `0.17.0` |
+| §13,§14,§15,§16 | Correlation IDs + Diagnostic Bundle (structured logs, redaction, downloadable JSON) | `0.18.0` |
+| §17 | Reconciliation After High-Risk Operations (`reconcileAfter` wired into all edit/recycle/restore paths) | `0.19.0` |
+| §19 | Application Version Bump (single source `package.json.version` → Vite `__APP_VERSION__` → Header + Diagnostic + Drive manifest) | Per-PR |
+| §20 | Google Drive Backup / Restore (sales_returns, sales_return_items, attachments, audit_log now snapshotted) | `0.19.0` |
+| §21,§22,§24 | Test suite + Cross-feature integration + Regression assertions | `0.20.0` |
+| §26 | Release Gate (`scripts/release-gate.mjs` — typecheck + lint + unit + integration + build) | `0.20.0` |
+
+**Tests (results from `npm run release:gate`)**
+
+- Typecheck: PASS
+- Lint: PASS
+- Unit tests: PASS (all `src/**` .test.ts pass)
+- Integration tests: PASS (all `tests/**` .spec.ts pass — including the Sharma Electronics disaster-recovery E2E)
+- Regression assertions: PASS (21 unit cases in `src/testing/regressionAssertions.test.ts`)
+- Migration tests: PASS (v6/v7/v8 migrations covered in the existing schema migration test suite)
+- Drive backup/restore: PASS (`tests/e2e/google-drive-disaster-recovery.spec.ts` reconstructs bit-exactly from Drive alone)
+- Production build: PASS (`vite build` succeeds)
+
+**Also fixed in this release**
+
+- **Stale post-GIS OAuth test.** `tests/e2e/interruption.spec.ts` scenario 5 was asserting pre-GIS behaviour (worker auto-reconnects on `OAUTH_EXPIRED`). Post-GIS the worker never auto-reconnects (no client secret, user gesture required) — the test now asserts the current contract: a `DriveNeedsReconnect` error surfaces via `onStateChange` as DISCONNECTED/ERROR so Settings can render the banner, and local Dexie writes keep working.
+
+**Known limitations**
+
+- `dist/assets/TrialBalancePage-*.js` weighs in at 954 kB minified (274 kB gzip). Warned but not blocked by Vite. Fixing needs `manualChunks` in `vite.config.ts`; deferred as it's a size-optimisation, not a correctness issue.
+- `payment.edit` / `payment.recycle` / `payment.restore` op strings are accepted by `reconcileAfter` but not currently wired — those code paths don't exist yet in `PaymentService`. The op strings are reserved so future work can wire them without a signature change.
+
 ## 0.20.0 — 2026-08-26
 
 ### §22 §24 §26 — Reusable regression assertions, cross-feature integration, release gate

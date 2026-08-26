@@ -562,15 +562,18 @@ describe('§39 interruption scenarios', () => {
     expect(refreshCalls).toBe(1);
   });
 
-  it('5. revoked permission — refresh returns 400 invalid_grant, provider DISCONNECTED, local ops keep working', async () => {
+  it('5. revoked permission — DriveNeedsReconnect surfaces to health, local ops keep working', async () => {
+    // Post-GIS: the sync worker NEVER auto-calls provider.connect() — the
+    // browser-only OAuth flow can't run without a user gesture. When the
+    // provider throws a `needs to be reconnected` error, the worker instead
+    // pauses the job and surfaces the state via onStateChange so Data &
+    // Backup Settings can render the DISCONNECTED banner and prompt the
+    // user to click Reconnect (which then runs the GIS flow with a gesture).
     const provider = new FakeProvider();
-    // Provider throws OAUTH_EXPIRED → worker calls provider.connect() which
-    // itself throws (simulating a refresh whose refresh_token was revoked).
     provider.queueWriteFailure({
-      message: 'OAUTH_EXPIRED invalid_grant token was revoked',
+      message: 'DriveNeedsReconnectError: needs to be reconnected',
       count: 1,
     });
-    provider.connectShouldThrow = 'invalid_grant permission_revoked';
 
     await db.sync_events.bulkAdd([makeEvent()]);
 
@@ -589,12 +592,9 @@ describe('§39 interruption scenarios', () => {
     await handle.tick();
     handle.stop();
 
-    // Provider connect was attempted (reconnect on OAUTH_EXPIRED).
-    expect(provider.reconnectCount).toBeGreaterThanOrEqual(1);
-    // Its state is now DISCONNECTED — the connect threw invalid_grant.
-    expect(provider.lastConnectionState).toBe('DISCONNECTED');
-    // Worker health reflects a disconnected provider (worker classifies the
-    // 'invalid_grant' message as DISCONNECTED per its regex).
+    // Worker did NOT try to reconnect (post-GIS behaviour — user gesture required).
+    expect(provider.reconnectCount).toBe(0);
+    // Worker health surfaces DISCONNECTED or ERROR so Settings can react.
     expect(['DISCONNECTED', 'ERROR']).toContain(lastStatus);
 
     // Local ops keep working — Dexie writes still succeed.
