@@ -3,10 +3,16 @@ import 'fake-indexeddb/auto';
 import { ulid } from 'ulid';
 import { BusinessVaultDB } from '../db/database';
 import type { Account, Business, Customer, Item, ItemStock, Warehouse } from '../db/types';
-import { InvoiceService } from './InvoiceService';
+import { InvoiceService, InvoiceNumberConflictError } from './InvoiceService';
 import { trialBalance, profitAndLoss, balanceSheet } from './AccountingService';
 import { gstSummary } from './gst';
 import { computeReceivables } from './partyLedger';
+import {
+  allocateInvoiceNumber,
+  getNextAvailableInvoiceNumber,
+  isInvoiceNumberAvailable,
+  validateInvoiceNumber,
+} from './invoiceNumbering';
 
 let db: BusinessVaultDB;
 let service: InvoiceService;
@@ -1146,5 +1152,276 @@ describe('InvoiceService — round-off modes (feedback §1)', () => {
     } else if (inv.round_off_paise < 0) {
       expect(roundOffLine!.debit_paise).toBe(-inv.round_off_paise);
     }
+  });
+});
+
+describe('InvoiceService — editable invoice number (feedback §3 §4)', () => {
+  it('validateInvoiceNumber accepts well-formed numbers and rejects garbage', () => {
+    expect(validateInvoiceNumber('INV-000123').ok).toBe(true);
+    expect(validateInvoiceNumber('INV-000123', 'INV').ok).toBe(true);
+    const wrongPrefix = validateInvoiceNumber('INV-000123', 'SI');
+    expect(wrongPrefix.ok).toBe(false);
+    expect(validateInvoiceNumber('').ok).toBe(false);
+    expect(validateInvoiceNumber('   ').ok).toBe(false);
+    expect(validateInvoiceNumber('nonumber').ok).toBe(false);
+    expect(validateInvoiceNumber('INV-').ok).toBe(false);
+    expect(validateInvoiceNumber('a'.repeat(50)).ok).toBe(false);
+  });
+
+  it('isInvoiceNumberAvailable ignores recycled and superseded rows', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000001',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    expect(await isInvoiceNumberAvailable(db, businessId, 'INV-000001')).toBe(false);
+    expect(await isInvoiceNumberAvailable(db, businessId, 'INV-999999')).toBe(true);
+    // A live invoice's own row must exclude itself when asked with excludeInvoiceId.
+    expect(await isInvoiceNumberAvailable(db, businessId, 'INV-000001', inv.id)).toBe(true);
+    // After soft-delete the number is released (§4).
+    await service.deleteInvoice(inv.id, 'testing');
+    expect(await isInvoiceNumberAvailable(db, businessId, 'INV-000001')).toBe(true);
+  });
+
+  it('getNextAvailableInvoiceNumber reuses the lowest recycled gap before the counter', async () => {
+    const inv1 = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000001',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000002',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    // Counter is at 1 (never bumped by explicit numbers). Bump it so the
+    // gap-scan is meaningful — allocate once from the counter side.
+    await db.businesses.update(businessId, { invoice_next_seq: 3 });
+
+    // No gaps yet — next auto should be INV-000003.
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('INV-000003');
+
+    // Recycle INV-000001; that number should now be the lowest gap.
+    await service.deleteInvoice(inv1.id, 'testing');
+    expect(await getNextAvailableInvoiceNumber(db, businessId)).toBe('INV-000001');
+  });
+
+  it('allocateInvoiceNumber consumes the recycled gap without bumping the counter', async () => {
+    const inv1 = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000001',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000002',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await db.businesses.update(businessId, { invoice_next_seq: 3 });
+    await service.deleteInvoice(inv1.id, 'testing');
+
+    const next = await allocateInvoiceNumber(db, businessId);
+    expect(next).toBe('INV-000001');
+    // Counter untouched — gap was below invoice_next_seq.
+    const biz = await db.businesses.get(businessId);
+    expect(biz?.invoice_next_seq).toBe(3);
+  });
+
+  it('editing an invoice with a new number: renames the reissue and writes an audit_log row', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000001',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    const updated = await service.updateInvoice(inv.id, {
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+      invoice_number: 'INV-000042',
+    });
+
+    expect(updated.invoice_number).toBe('INV-000042');
+    // Original still exists and is marked as superseded (by its credit note).
+    const original = await db.invoices.get(inv.id);
+    expect(original?.reversed_by_invoice_id).toBeTruthy();
+    expect(original?.invoice_number).toBe('INV-000001');
+    // The reissue is a fresh invoice with the new number.
+    expect(updated.id).not.toBe(inv.id);
+    // Audit row was written.
+    const audit = await db.audit_log
+      .where('[business_id+entity_type+entity_id]')
+      .equals([businessId, 'invoice', inv.id])
+      .toArray();
+    const renameRow = audit.find((a) => a.action === 'invoice.number_changed');
+    expect(renameRow).toBeDefined();
+    expect((renameRow?.before as { invoice_number: string }).invoice_number).toBe(
+      'INV-000001',
+    );
+    expect((renameRow?.after as { invoice_number: string }).invoice_number).toBe(
+      'INV-000042',
+    );
+    // No Sales Return was created — the rename is edit-only.
+    const returns = await db.sales_returns
+      .where('business_id')
+      .equals(businessId)
+      .toArray();
+    expect(returns).toHaveLength(0);
+  });
+
+  it('editing an invoice with the SAME number preserves it and writes no rename audit', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000001',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    const updated = await service.updateInvoice(inv.id, {
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+      invoice_number: 'INV-000001',
+    });
+    expect(updated.invoice_number).toBe('INV-000001');
+    const audit = await db.audit_log
+      .where('[business_id+entity_type+entity_id]')
+      .equals([businessId, 'invoice', inv.id])
+      .toArray();
+    expect(audit.find((a) => a.action === 'invoice.number_changed')).toBeUndefined();
+  });
+
+  it('editing to a colliding live number is rejected', async () => {
+    const inv1 = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000001',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000002',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    await expect(
+      service.updateInvoice(inv1.id, {
+        business_id: businessId,
+        device_id: deviceId,
+        invoice_date: '2026-08-19',
+        customer_id: customerId,
+        customer_state_code: '29',
+        place_of_supply: '29',
+        is_interstate: false,
+        financial_year: '2026-27',
+        lines: [intrastateLine()],
+        invoice_number: 'INV-000002',
+      }),
+    ).rejects.toThrow(/already in use/);
+  });
+
+  it('restoreInvoice throws InvoiceNumberConflictError when the number has been reused', async () => {
+    const inv1 = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000001',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    // Recycle it, then a fresh invoice reuses INV-000001 (auto-allocation
+    // would pick up the released gap).
+    await service.deleteInvoice(inv1.id, 'testing');
+    await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-000001',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+    // Now try to restore inv1 — its number is taken.
+    await expect(service.restoreInvoice(inv1.id)).rejects.toBeInstanceOf(
+      InvoiceNumberConflictError,
+    );
   });
 });

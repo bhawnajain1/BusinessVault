@@ -3,6 +3,7 @@ import { ulid } from 'ulid';
 import { db as defaultDb, type BusinessVaultDB } from '../db';
 import type {
   Account,
+  AuditLogEntry,
   Invoice,
   InvoiceLine,
   InvoiceStatus,
@@ -14,7 +15,27 @@ import type {
 } from '../db/types';
 import { canonicalJson, sha256Hex, GENESIS_HASH } from '../journal/event';
 import { bankersRound, roundOffToNearestRupee } from './gst';
+import {
+  isInvoiceNumberAvailable,
+  validateInvoiceNumber,
+} from './invoiceNumbering';
 import { log } from '../lib/log';
+
+// Thrown when restoreInvoice finds that the recycled invoice's number has
+// already been reused by a live invoice (§4). UI catches this and prompts the
+// user to pick a fresh number before retrying restore.
+export class InvoiceNumberConflictError extends Error {
+  readonly invoiceId: string;
+  readonly conflictingNumber: string;
+  constructor(invoiceId: string, conflictingNumber: string) {
+    super(
+      `Invoice number "${conflictingNumber}" has already been reused. Assign a new number to restore this invoice.`,
+    );
+    this.name = 'InvoiceNumberConflictError';
+    this.invoiceId = invoiceId;
+    this.conflictingNumber = conflictingNumber;
+  }
+}
 
 // ---------- Account codes (system chart of accounts) ----------
 // These must exist in the accounts table before an invoice can be created.
@@ -302,11 +323,12 @@ export class InvoiceService {
         // The Dexie index [business_id+invoice_number] isn't marked unique (`&`),
         // so enforce uniqueness in code inside the tx. Superseded originals
         // (reversed_by_invoice_id set) don't count — updateInvoice re-uses their
-        // number for the reissue by design.
+        // number for the reissue by design. Recycled rows (deleted_at != null)
+        // also don't count — §4 releases their number back into the pool.
         const dupe = await this.db.invoices
           .where('[business_id+invoice_number]')
           .equals([input.business_id, input.invoice_number])
-          .filter((row) => !row.reversed_by_invoice_id)
+          .filter((row) => !row.reversed_by_invoice_id && !row.deleted_at)
           .first();
         if (dupe) {
           throw new Error(
@@ -903,6 +925,25 @@ export class InvoiceService {
     if (!invoice) throw new Error(`Invoice not found: ${invoiceId}`);
     if (!invoice.deleted_at) return; // idempotent
 
+    // §4 restore-conflict guard: while this invoice was recycled, its number
+    // was released back into the pool and a subsequent auto-allocation or
+    // manual entry may have reused it. If any LIVE invoice now bears the
+    // same number, throwing here forces the caller to pick a fresh number
+    // (via updateInvoice-then-restore, or a bespoke rename+restore flow).
+    const numberFree = await isInvoiceNumberAvailable(
+      this.db,
+      invoice.business_id,
+      invoice.invoice_number,
+      invoice.id,
+    );
+    if (!numberFree) {
+      log.warn('invoice', 'restore blocked by number conflict', {
+        invoiceId,
+        conflictingNumber: invoice.invoice_number,
+      });
+      throw new InvoiceNumberConflictError(invoiceId, invoice.invoice_number);
+    }
+
     const now = new Date().toISOString();
     const cascadeTag = `cascade:${invoiceId}`;
 
@@ -1066,12 +1107,44 @@ export class InvoiceService {
    */
   async updateInvoice(
     invoiceId: string,
-    input: Omit<CreateInvoiceInput, 'invoice_number' | 'idempotencyKey'>,
+    input: Omit<CreateInvoiceInput, 'invoice_number' | 'idempotencyKey'> & {
+      // §3: the edit screen may rename the invoice. When absent (or equal
+      // to the original), the reissue keeps the original number — legacy
+      // behaviour. When set to a different string, we validate uniqueness
+      // via isInvoiceNumberAvailable and write an audit_log row.
+      invoice_number?: string;
+    },
   ): Promise<Invoice> {
     const original = await this.db.invoices.get(invoiceId);
     if (!original) throw new Error(`Invoice not found: ${invoiceId}`);
     if (original.reversed_by_invoice_id) {
       throw new Error('Cannot edit an already-superseded invoice');
+    }
+
+    // §3 invoice-number rename. Determine the target number for the reissue.
+    // If the caller passed a new one, validate it and record the audit trail.
+    const proposedNumber = (input.invoice_number ?? '').trim();
+    const isRename =
+      proposedNumber.length > 0 && proposedNumber !== original.invoice_number;
+    if (isRename) {
+      const biz = await this.db.businesses.get(original.business_id);
+      const prefix = biz?.invoice_prefix || 'INV';
+      const format = validateInvoiceNumber(proposedNumber, prefix);
+      if (!format.ok) throw new Error(format.error);
+      // Exclude the row being edited from the uniqueness check — createInvoice
+      // will supersede it in the same call, so its existing number would
+      // otherwise appear as a collision against its own new number.
+      const free = await isInvoiceNumberAvailable(
+        this.db,
+        original.business_id,
+        proposedNumber,
+        original.id,
+      );
+      if (!free) {
+        throw new Error(
+          `Invoice number ${proposedNumber} is already in use. Pick a different number.`,
+        );
+      }
     }
 
     // Edit guard (SellReturnRequirement.md §7 + §10): if any invoice line
@@ -1161,9 +1234,41 @@ export class InvoiceService {
     }
 
     await this.reverseInvoicePosting(invoiceId, 'edit');
+    const nextNumber = isRename ? proposedNumber : original.invoice_number;
+
+    // Emit the rename audit row BEFORE reissuing, so an interrupted reissue
+    // still leaves a record of the user's intent. Payload contains both
+    // numbers so downstream consumers don't need to re-load the original.
+    if (isRename) {
+      const now = new Date().toISOString();
+      const auditEntry: AuditLogEntry = {
+        id: ulid(),
+        business_id: original.business_id,
+        device_id: input.device_id,
+        actor: input.device_id,
+        action: 'invoice.number_changed',
+        entity_type: 'invoice',
+        entity_id: invoiceId,
+        before: { invoice_number: original.invoice_number },
+        after: { invoice_number: nextNumber },
+        at: now,
+      };
+      await this.db.audit_log.add(auditEntry);
+      log.info('invoice', 'invoice number renamed', {
+        invoiceId,
+        from: original.invoice_number,
+        to: nextNumber,
+      });
+    }
+
+    // Strip our extra invoice_number key so we don't pass it through as the
+    // "id" for the reissue — createInvoice takes it via its own invoice_number
+    // field which we set explicitly here.
+    const { invoice_number: _ignored, ...rest } = input;
+    void _ignored;
     return this.createInvoice({
-      ...input,
-      invoice_number: original.invoice_number,
+      ...rest,
+      invoice_number: nextNumber,
     });
   }
 

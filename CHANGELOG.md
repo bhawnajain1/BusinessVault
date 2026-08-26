@@ -4,6 +4,33 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 0.13.0 — 2026-08-26
+
+### Editable invoice number + recycled-number reuse (feedback_1_to_7.md §3, §4)
+
+- **§3** The Edit Invoice screen now allows changing the Invoice #. Uniqueness
+  is validated within the business + prefix series; a rename writes an
+  `invoice.number_changed` row to `audit_log` (with before/after) so the
+  history is preserved. Renaming does NOT create a Sales Return — the edit
+  path continues to reissue via the append-only reversal + fresh-invoice
+  shape, just under the new number.
+- **§4** A recycled invoice's number is released back into the pool.
+  `allocateInvoiceNumber` now scans for the lowest recycled gap below
+  `invoice_next_seq` and reuses it before incrementing the counter. The
+  `createInvoice` uniqueness guard was widened to ignore rows with
+  `deleted_at != null` in addition to already-superseded rows.
+- New centralised helpers in `src/domain/invoiceNumbering.ts`:
+  - `getNextAvailableInvoiceNumber(db, businessId)` — read-only preview of
+    the next auto-allocation candidate.
+  - `isInvoiceNumberAvailable(db, businessId, number, excludeInvoiceId?)` —
+    true iff no LIVE invoice uses the number.
+  - `validateInvoiceNumber(number, expectedPrefix?)` — format check
+    (`PREFIX-<digits>`) with optional series match.
+- Restore-conflict handling: `restoreInvoice` now throws a typed
+  `InvoiceNumberConflictError` when the recycled invoice's number has been
+  reused by a live invoice, so the UI can prompt the user to pick a fresh
+  number before retrying restore.
+
 ## 0.12.0 — 2026-08-26
 
 ### Recycle Bin accounting (feedback_1_to_7.md §9)

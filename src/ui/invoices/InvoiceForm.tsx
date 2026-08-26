@@ -334,7 +334,13 @@ export default function InvoiceForm() {
 
       let saved;
       if (editingId) {
-        saved = await svc.updateInvoice(editingId, commonInput);
+        // §3: pass the (possibly edited) invoice number through. If it matches
+        // the original, updateInvoice keeps the existing number; otherwise it
+        // validates uniqueness and writes an audit row.
+        saved = await svc.updateInvoice(editingId, {
+          ...commonInput,
+          invoice_number: originalInvoiceNumber ?? undefined,
+        });
       } else {
         const invoiceNumber =
           invoiceNumberOverride.trim() || (await allocateInvoiceNumber(db, businessId));
@@ -401,6 +407,7 @@ export default function InvoiceForm() {
     terms,
     editingId,
     invoiceNumberOverride,
+    originalInvoiceNumber,
     navigate,
     svc,
     paymentSvc,
@@ -440,8 +447,9 @@ export default function InvoiceForm() {
 
       {editingId && (
         <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-          Saving will void the original invoice and issue a new one under the same invoice
-          number. The original stays in the audit trail (marked as reversed).
+          Saving will void the original invoice and issue a new one. Change the
+          Invoice # above to rename it — the change is recorded in the audit
+          log. The original stays in the audit trail (marked as reversed).
         </div>
       )}
 
@@ -489,19 +497,25 @@ export default function InvoiceForm() {
             className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </label>
-        {!editingId && (
-          <label className="flex flex-col">
-            <span className="block text-[12px] text-fg-muted mb-1">
-              Invoice # (leave blank to auto-assign)
-            </span>
-            <input
-              value={invoiceNumberOverride}
-              onChange={(e) => setInvoiceNumberOverride(e.target.value)}
-              placeholder={`${business.invoice_prefix || 'INV'}-000123`}
-              className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
-            />
-          </label>
-        )}
+        <label className="flex flex-col">
+          <span className="block text-[12px] text-fg-muted mb-1">
+            {editingId
+              ? 'Invoice # (change to rename)'
+              : 'Invoice # (leave blank to auto-assign)'}
+          </span>
+          <input
+            value={editingId ? (originalInvoiceNumber ?? '') : invoiceNumberOverride}
+            onChange={(e) => {
+              if (editingId) {
+                setOriginalInvoiceNumber(e.target.value);
+              } else {
+                setInvoiceNumberOverride(e.target.value);
+              }
+            }}
+            placeholder={`${business.invoice_prefix || 'INV'}-000123`}
+            className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </label>
         <div className="flex flex-col justify-end text-xs text-fg-muted">
           {customer && (
             <>
