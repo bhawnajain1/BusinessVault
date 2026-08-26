@@ -655,6 +655,384 @@ describe('SalesReturnService.createSalesReturn', () => {
     });
   });
 
+  // ------- PR3: audit_log + real cancel reversal ---------------------------
+
+  it('T15: audit_log — sales_return.created row is written on createSalesReturn', async () => {
+    const inv = await makeInvoice('INV-A15');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Audit trail',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 2_000_000 }],
+    });
+
+    const auditRows = await db.audit_log
+      .where('[business_id+entity_type+entity_id]')
+      .equals([businessId, 'sales_return', sr.id])
+      .toArray();
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0].action).toBe('sales_return.created');
+    expect(auditRows[0].actor).toBe(deviceId);
+    const after = auditRows[0].after as Record<string, unknown>;
+    expect(after.return_number).toBe(sr.return_number);
+    expect(after.total_paise).toBe(sr.total_paise);
+    expect(after.reason).toBe('Audit trail');
+  });
+
+  it('T16: cancelSalesReturn posts a balanced reversal JE that swaps debits/credits and links via reverses_id', async () => {
+    const inv = await makeInvoice('INV-A16');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Reverse me',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 3_000_000 }],
+    });
+    const originalJe = await db.journal_entries.get(sr.journal_entry_id);
+    expect(originalJe).toBeDefined();
+
+    await retSvc.cancelSalesReturn(sr.id, businessId, 'cancel test');
+
+    // Original JE now has reversed_by_id set
+    const origAfter = await db.journal_entries.get(sr.journal_entry_id);
+    expect(origAfter!.reversed_by_id).not.toBeNull();
+
+    // Reversal JE exists, balanced, links back via reverses_id
+    const revJe = await db.journal_entries.get(origAfter!.reversed_by_id!);
+    expect(revJe).toBeDefined();
+    expect(revJe!.reverses_id).toBe(sr.journal_entry_id);
+    expect(revJe!.total_debit_paise).toBe(revJe!.total_credit_paise);
+    expect(revJe!.entry_number).toContain(sr.return_number);
+    expect(revJe!.entry_number.endsWith('-CX')).toBe(true);
+
+    // Every reversal line is a swapped-side copy of an original line
+    const origLines = await db.journal_lines
+      .where('entry_id')
+      .equals(sr.journal_entry_id)
+      .toArray();
+    const revLines = await db.journal_lines
+      .where('entry_id')
+      .equals(revJe!.id)
+      .toArray();
+    expect(revLines).toHaveLength(origLines.length);
+    const origByAcct = new Map(origLines.map((l) => [l.account_id, l]));
+    for (const rl of revLines) {
+      const ol = origByAcct.get(rl.account_id);
+      expect(ol).toBeDefined();
+      expect(rl.debit_paise).toBe(ol!.credit_paise);
+      expect(rl.credit_paise).toBe(ol!.debit_paise);
+    }
+  });
+
+  it('T17: cancelSalesReturn reverses stock movements and item_stock', async () => {
+    const inv = await makeInvoice('INV-A17');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+
+    const stockBefore = await db.item_stock
+      .where('[business_id+item_id+warehouse_id]')
+      .equals([businessId, itemId, warehouseId])
+      .first();
+    const qtyBefore = stockBefore!.qty_micros;
+
+    // Return 5 units: stock goes UP by 5 units.
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Reversal stock test',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 5_000_000 }],
+    });
+    const stockAfterReturn = await db.item_stock
+      .where('[business_id+item_id+warehouse_id]')
+      .equals([businessId, itemId, warehouseId])
+      .first();
+    expect(stockAfterReturn!.qty_micros).toBe(qtyBefore + 5_000_000);
+
+    // Cancel: stock should go back DOWN by 5 units.
+    await retSvc.cancelSalesReturn(sr.id, businessId, 'undo stock');
+    const stockAfterCancel = await db.item_stock
+      .where('[business_id+item_id+warehouse_id]')
+      .equals([businessId, itemId, warehouseId])
+      .first();
+    expect(stockAfterCancel!.qty_micros).toBe(qtyBefore);
+
+    // A negative-qty sale_return movement should exist referencing the SR.
+    const reversalMovements = await db.stock_movements
+      .where('[business_id+ref_type+ref_id]')
+      .equals([businessId, 'reversal', sr.id])
+      .toArray();
+    const negMv = reversalMovements.find((m) => m.qty_micros < 0);
+    expect(negMv).toBeDefined();
+    expect(negMv!.movement_type).toBe('sale_return');
+    expect(negMv!.qty_micros).toBe(-5_000_000);
+  });
+
+  it('T18: cancelSalesReturn restores invoice balance for the applied portion', async () => {
+    const inv = await makeInvoice('INV-A18');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+    const balanceBefore = inv.balance_paise;
+
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Balance restore',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 4_000_000 }],
+    });
+    // Fully unpaid invoice: entire return offsets balance.
+    const invAfterReturn = await db.invoices.get(inv.id);
+    expect(invAfterReturn!.balance_paise).toBe(balanceBefore - sr.total_paise);
+
+    await retSvc.cancelSalesReturn(sr.id, businessId, 'undo');
+    const invAfterCancel = await db.invoices.get(inv.id);
+    expect(invAfterCancel!.balance_paise).toBe(balanceBefore);
+  });
+
+  it('T19: cancelSalesReturn zeros an unapplied customer-credit advance', async () => {
+    const inv = await makeInvoice('INV-A19');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+    // Simulate: invoice is fully paid. A subsequent return produces an
+    // advance for the full return amount.
+    await db.invoices.update(inv.id, {
+      paid_paise: 118_000,
+      balance_paise: 0,
+      status: 'paid',
+    });
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Credit test',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 2_000_000 }],
+    });
+    const advBefore = (
+      await db.advances
+        .where('business_id')
+        .equals(businessId)
+        .filter((a) => a.reference === `sales_return:${sr.return_number}`)
+        .toArray()
+    )[0];
+    expect(advBefore).toBeDefined();
+    expect(advBefore.remaining_paise).toBeGreaterThan(0);
+
+    await retSvc.cancelSalesReturn(sr.id, businessId, 'undo credit');
+    const advAfter = await db.advances.get(advBefore.id);
+    expect(advAfter!.remaining_paise).toBe(0);
+    expect(advAfter!.notes).toContain('reversed');
+  });
+
+  it('T20: cancelSalesReturn refuses when the credit advance has been partially applied', async () => {
+    const inv = await makeInvoice('INV-A20');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+    await db.invoices.update(inv.id, {
+      paid_paise: 118_000,
+      balance_paise: 0,
+      status: 'paid',
+    });
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Partial-applied test',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 2_000_000 }],
+    });
+    const adv = (
+      await db.advances
+        .where('business_id')
+        .equals(businessId)
+        .filter((a) => a.reference === `sales_return:${sr.return_number}`)
+        .toArray()
+    )[0];
+    // Simulate partial application by hand — mirroring what AdvanceService would do.
+    await db.advances.update(adv.id, {
+      remaining_paise: adv.amount_paise - 1000,
+    });
+
+    await expect(
+      retSvc.cancelSalesReturn(sr.id, businessId, 'should refuse'),
+    ).rejects.toThrow(/already applied/);
+  });
+
+  it('T21: cancelSalesReturn writes a sales_return.cancelled audit_log row', async () => {
+    const inv = await makeInvoice('INV-A21');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Audit cancel',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 1_000_000 }],
+    });
+    await retSvc.cancelSalesReturn(sr.id, businessId, 'why not');
+
+    const auditRows = await db.audit_log
+      .where('[business_id+entity_type+entity_id]')
+      .equals([businessId, 'sales_return', sr.id])
+      .toArray();
+    // create + cancel
+    expect(auditRows).toHaveLength(2);
+    const cancelRow = auditRows.find((r) => r.action === 'sales_return.cancelled');
+    expect(cancelRow).toBeDefined();
+    const after = cancelRow!.after as Record<string, unknown>;
+    expect(after.status).toBe('cancelled');
+    expect(after.reason).toBe('why not');
+    expect(after.reversal_journal_entry_id).not.toBeNull();
+  });
+
+  it('T22: cancelSalesReturn is idempotent — second cancel is a no-op', async () => {
+    const inv = await makeInvoice('INV-A22');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Idem cancel',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 1_000_000 }],
+    });
+    await retSvc.cancelSalesReturn(sr.id, businessId, 'first');
+
+    const jesBefore = await db.journal_entries
+      .where('business_id')
+      .equals(businessId)
+      .toArray();
+    const stockBefore = await db.stock_movements
+      .where('business_id')
+      .equals(businessId)
+      .toArray();
+    const auditBefore = await db.audit_log
+      .where('business_id')
+      .equals(businessId)
+      .toArray();
+
+    await retSvc.cancelSalesReturn(sr.id, businessId, 'second');
+
+    const jesAfter = await db.journal_entries
+      .where('business_id')
+      .equals(businessId)
+      .toArray();
+    const stockAfter = await db.stock_movements
+      .where('business_id')
+      .equals(businessId)
+      .toArray();
+    const auditAfter = await db.audit_log
+      .where('business_id')
+      .equals(businessId)
+      .toArray();
+
+    expect(jesAfter.length).toBe(jesBefore.length);
+    expect(stockAfter.length).toBe(stockBefore.length);
+    expect(auditAfter.length).toBe(auditBefore.length);
+  });
+
+  it('T23: cancelSalesReturn correctly splits reversal on a partially-paid invoice (mixed settlement)', async () => {
+    // Invoice ₹1416 total, ₹1000 paid → balance ₹416.
+    // SR for ₹708 (half the invoice): ₹416 offsets balance, ₹292 becomes credit advance.
+    // Cancel: ₹416 restored to invoice balance AND advance zeroed.
+    const inv = await makeInvoice('INV-A23');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+    await db.invoices.update(inv.id, {
+      paid_paise: 100_000,
+      balance_paise: inv.balance_paise - 100_000,
+      status: 'partial',
+    });
+    const invBefore = await db.invoices.get(inv.id);
+    const balanceBeforeSr = invBefore!.balance_paise;
+
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Mixed settlement',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 3_000_000 }],
+    });
+
+    // After create: split fields recorded on header.
+    expect(sr.apply_to_balance_paise + sr.customer_credit_paise).toBe(sr.total_paise);
+    if (sr.total_paise > balanceBeforeSr) {
+      expect(sr.apply_to_balance_paise).toBe(balanceBeforeSr);
+      expect(sr.customer_credit_paise).toBe(sr.total_paise - balanceBeforeSr);
+    }
+    const invAfterSr = await db.invoices.get(inv.id);
+    expect(invAfterSr!.balance_paise).toBe(balanceBeforeSr - sr.apply_to_balance_paise);
+
+    const advBefore = (
+      await db.advances
+        .where('business_id')
+        .equals(businessId)
+        .filter((a) => a.reference === `sales_return:${sr.return_number}`)
+        .toArray()
+    )[0];
+    if (sr.customer_credit_paise > 0) {
+      expect(advBefore).toBeDefined();
+      expect(advBefore.amount_paise).toBe(sr.customer_credit_paise);
+    }
+
+    await retSvc.cancelSalesReturn(sr.id, businessId, 'undo mixed');
+
+    // Balance restored to pre-SR value AND advance zeroed.
+    const invAfterCancel = await db.invoices.get(inv.id);
+    expect(invAfterCancel!.balance_paise).toBe(balanceBeforeSr);
+    if (advBefore) {
+      const advAfter = await db.advances.get(advBefore.id);
+      expect(advAfter!.remaining_paise).toBe(0);
+    }
+  });
+
+  it('T24: cancelSalesReturn uses persisted apply_to_balance_paise, not the advance amount', async () => {
+    // Regression guard for the AC-F1 latent defect: if the credit advance
+    // record is unreachable (simulated by deleting it), cancel must still
+    // restore the correct balance by reading sr.apply_to_balance_paise.
+    const inv = await makeInvoice('INV-A24');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+    await db.invoices.update(inv.id, {
+      paid_paise: 100_000,
+      balance_paise: inv.balance_paise - 100_000,
+      status: 'partial',
+    });
+    const invBefore = await db.invoices.get(inv.id);
+    const balanceBeforeSr = invBefore!.balance_paise;
+
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'AC-F1 regression',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 3_000_000 }],
+    });
+    // Only run the assertion when the mix actually produced a credit advance.
+    if (sr.customer_credit_paise === 0) return;
+
+    const adv = (
+      await db.advances
+        .where('business_id')
+        .equals(businessId)
+        .filter((a) => a.reference === `sales_return:${sr.return_number}`)
+        .toArray()
+    )[0];
+    // Simulate the failure mode: advance record's reference has been mutated
+    // so the cancel-time lookup can't find it. If cancel relied on the
+    // advance amount, balance would over-restore by customer_credit_paise.
+    await db.advances.update(adv.id, { reference: 'lost' });
+
+    await retSvc.cancelSalesReturn(sr.id, businessId, 'undo with lost advance');
+    const invAfterCancel = await db.invoices.get(inv.id);
+    expect(invAfterCancel!.balance_paise).toBe(balanceBeforeSr);
+  });
+
   it('E2E invariant: original invoice totals are IMMUTABLE across a partial return + a subsequent edit', async () => {
     const inv = await makeInvoice('INV-INV1');
     const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();

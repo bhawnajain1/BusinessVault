@@ -12,6 +12,7 @@ const Categories = lazy(() => import('./ui/pages/Categories'));
 const Warehouses = lazy(() => import('./ui/pages/Warehouses'));
 const StockMovements = lazy(() => import('./ui/pages/StockMovements'));
 const Returns = lazy(() => import('./ui/pages/Returns'));
+const SalesReturnDetail = lazy(() => import('./ui/returns/SalesReturnDetail'));
 const Purchases = lazy(() => import('./ui/pages/Purchases'));
 const PurchaseDetail = lazy(() => import('./ui/purchases/PurchaseDetail'));
 const InvoiceDetail = lazy(() => import('./ui/invoices/InvoiceDetail'));
@@ -30,6 +31,7 @@ const GstSummaryPage = lazy(() => import('./ui/reports/GstSummaryPage'));
 const StockValuationPage = lazy(() => import('./ui/reports/StockValuationPage'));
 const AuditLogPage = lazy(() => import('./ui/reports/AuditLogPage'));
 const ReceivablesPayablesPage = lazy(() => import('./ui/reports/ReceivablesPayablesPage'));
+const SalesReturnsReportPage = lazy(() => import('./ui/reports/SalesReturnsReportPage'));
 const ReportsIndex = lazy(() => import('./ui/pages/Reports'));
 const DataAndBackup = lazy(() => import('./ui/pages/DataAndBackup'));
 const Restore = lazy(() => import('./ui/pages/Restore'));
@@ -62,6 +64,7 @@ export default function App() {
           <Route path="/warehouses" element={<Warehouses />} />
           <Route path="/stock-movements" element={<StockMovements />} />
           <Route path="/returns" element={<Returns />} />
+          <Route path="/returns/:id" element={<SalesReturnDetail />} />
           <Route path="/purchases" element={<Purchases />} />
           <Route path="/purchases/:id" element={<PurchaseDetail />} />
           <Route path="/payments" element={<Payments />} />
@@ -77,6 +80,7 @@ export default function App() {
           <Route path="/reports/stock-valuation" element={<StockValuationPage />} />
           <Route path="/reports/audit-log" element={<AuditLogPage />} />
           <Route path="/reports/receivables-payables" element={<ReceivablesPayablesPage />} />
+          <Route path="/reports/sales-returns" element={<SalesReturnsReportPage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/settings/backup" element={<DataAndBackup />} />
           <Route path="/restore" element={<Restore />} />

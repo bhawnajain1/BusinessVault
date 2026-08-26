@@ -251,7 +251,14 @@ export default function Returns() {
                 return (
                   <tr key={sr.id} className="border-t border-border">
                     <td className="px-3 py-1.5 text-fg-muted">{sr.return_date}</td>
-                    <td className="px-3 py-1.5 font-mono text-xs">{sr.return_number}</td>
+                    <td className="px-3 py-1.5 font-mono text-xs">
+                      <Link
+                        to={`/returns/${sr.id}`}
+                        className="text-blue-700 hover:underline"
+                      >
+                        {sr.return_number}
+                      </Link>
+                    </td>
                     <td className="px-3 py-1.5 font-mono text-xs">
                       {original ? (
                         <Link
@@ -282,14 +289,12 @@ export default function Returns() {
                       <Money paise={sr.total_paise} />
                     </td>
                     <td className="px-3 py-1.5 text-right">
-                      {original && (
-                        <Link
-                          to={`/invoices/${original.id}`}
-                          className="text-xs text-blue-700 hover:underline"
-                        >
-                          View
-                        </Link>
-                      )}
+                      <Link
+                        to={`/returns/${sr.id}`}
+                        className="text-xs text-blue-700 hover:underline"
+                      >
+                        View
+                      </Link>
                     </td>
                   </tr>
                 );

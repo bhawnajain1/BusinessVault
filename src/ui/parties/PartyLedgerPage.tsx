@@ -30,7 +30,8 @@ interface LedgerRow {
     | 'debit_note'
     | 'payment'
     | 'advance'
-    | 'advance_applied';
+    | 'advance_applied'
+    | 'sales_return_credit';
   description: string;
   debit_paise: number; // increases outstanding
   credit_paise: number; // decreases outstanding
@@ -48,6 +49,7 @@ function tsCompare(a: LedgerRow, b: LedgerRow): number {
     purchase: 0,
     credit_note: 1,
     debit_note: 1,
+    sales_return_credit: 2,
     advance: 2,
     advance_applied: 3,
     payment: 4,
@@ -336,7 +338,15 @@ export default function PartyLedgerPage() {
               <tr key={idx} className="border-t border-slate-100 align-top">
                 <td className="px-2 py-1.5">{r.date}</td>
                 <td className="px-2 py-1.5 font-mono text-xs">{r.ref || '—'}</td>
-                <td className="px-2 py-1.5 text-xs text-slate-500">{r.kind}</td>
+                <td className="px-2 py-1.5 text-xs text-slate-500">
+                  {r.kind === 'sales_return_credit' ? (
+                    <span className="inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-medium">
+                      Sales return credit
+                    </span>
+                  ) : (
+                    r.kind
+                  )}
+                </td>
                 <td className="px-2 py-1.5">{r.description}</td>
                 <td className="px-2 py-1.5 text-right">
                   {r.debit_paise ? <Money paise={r.debit_paise} /> : ''}
@@ -416,11 +426,14 @@ function buildCustomerRows(
   }
 
   for (const adv of advs) {
+    const isReturnCredit = adv.reference?.startsWith('sales_return:') ?? false;
     out.push({
       date: adv.advance_date,
       ref: adv.advance_number,
-      kind: 'advance',
-      description: `Advance received (${adv.method})${adv.reference ? ` · ${adv.reference}` : ''}`,
+      kind: isReturnCredit ? 'sales_return_credit' : 'advance',
+      description: isReturnCredit
+        ? `Sales return credit${adv.reference ? ` · ${adv.reference}` : ''}`
+        : `Advance received (${adv.method})${adv.reference ? ` · ${adv.reference}` : ''}`,
       debit_paise: 0,
       credit_paise: adv.amount_paise,
     });

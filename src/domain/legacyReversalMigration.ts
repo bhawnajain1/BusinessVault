@@ -349,6 +349,11 @@ async function materializeSalesReturn(
     cess_paise: Math.abs(cn.cess_paise),
     round_off_paise: Math.abs(cn.round_off_paise),
     total_paise: Math.abs(cn.total_paise),
+    // Legacy CN reversals had no advance-credit concept — the full amount
+    // reduced the invoice's balance. Preserve that on the header so a future
+    // cancel path reconstructs the correct split.
+    apply_to_balance_paise: Math.abs(cn.total_paise),
+    customer_credit_paise: 0,
     status: 'posted',
     reason: extractReasonFromNotes(cn.notes) ?? 'Legacy Sales Return (migrated)',
     notes: `Migrated from legacy credit-note invoice ${cn.invoice_number}.`,

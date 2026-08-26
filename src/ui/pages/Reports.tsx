@@ -36,6 +36,11 @@ const REPORTS: ReadonlyArray<{ to: string; title: string; blurb: string }> = [
     title: 'Receivables & Payables',
     blurb: 'Open balances by customer and supplier — who owes you, who you owe.',
   },
+  {
+    to: '/reports/sales-returns',
+    title: 'Sales Returns',
+    blurb: 'Returns register with roll-ups by reason and by customer.',
+  },
 ];
 
 export default function ReportsIndex() {

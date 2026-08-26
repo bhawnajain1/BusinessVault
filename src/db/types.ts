@@ -653,6 +653,13 @@ export interface SalesReturn {
   cess_paise: number;
   round_off_paise: number;
   total_paise: number;
+  // Split of total_paise at create time: how much reduced the invoice's
+  // outstanding balance vs. how much became a new customer-credit advance.
+  // Persisted on the header so cancel can reverse each portion exactly,
+  // even if the credit-advance record ever becomes unreachable (e.g. a
+  // partial Drive restore that replays SR events but not the advance event).
+  apply_to_balance_paise: number;
+  customer_credit_paise: number;
   status: SalesReturnStatus;
   reason: string;
   notes: string;

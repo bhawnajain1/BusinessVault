@@ -2,6 +2,7 @@ import Dexie from 'dexie';
 import { ulid } from 'ulid';
 import { db as defaultDb, type BusinessVaultDB } from '../db';
 import type {
+  AuditLogEntry,
   Invoice,
   InvoiceLine,
   ItemStock,
@@ -48,10 +49,9 @@ import { log } from '../lib/log';
 //     correct without a special-case query layer.
 //
 //   - Positive stock movements bring goods back into inventory (movement_type
-//     = 'sale_return', ref_type = 'sales_return', ref_id = salesReturnId).
-//     ref_type is 'sales_return' (not 'invoice') so `getReturnedQtyMicros`
-//     and legacy migration can distinguish v5 native return movements from
-//     the pre-v5 CN-invoice ones.
+//     = 'sale_return', ref_type = 'reversal', ref_id = salesReturnId). On
+//     cancel we mirror them with qty_micros < 0 rows keyed the same way, so
+//     signed SUM(qty_micros) is the invariant — never COUNT.
 //
 //   - Reversing journal entry mirrors ReturnService's shape but scaled to
 //     the returned lines only. Balanced. Posted in the same tx.
@@ -62,11 +62,12 @@ import { log } from '../lib/log';
 //     invoice-scoped rebuild.
 //
 //   - Sync events written for the header + each item + each movement + the
-//     JE + JE lines + (if any) the customer-credit advance. The audit event
-//     `SALES_RETURN_CREATED` is emitted as the 'created' operation on
-//     entity_type='sales_return' — no separate audit_log wiring needed here;
-//     PR3 splits audit_log entries per §5, but the sync_event on
-//     'sales_return' already gives us the traceable event.
+//     JE + JE lines + (if any) the customer-credit advance.
+//
+//   - PR3 also writes an `audit_log` row per operation (`sales_return.created`
+//     / `sales_return.cancelled`). This is the human-readable trail per
+//     spec §5 — complement, not replacement, for the sync_event chain.
+//     Written in the same tx so audit + domain state commit atomically.
 
 export class SalesReturnValidationError extends Error {
   constructor(message: string) {
@@ -211,6 +212,7 @@ export class SalesReturnService {
         this.db.journal_entries,
         this.db.journal_lines,
         this.db.sync_events,
+        this.db.audit_log,
       ],
       async () => {
         // Idempotency: if this key already produced a sales_return, return it.
@@ -446,6 +448,8 @@ export class SalesReturnService {
           cess_paise: cessPaise,
           round_off_paise: roundOffPaise,
           total_paise: totalPaise,
+          apply_to_balance_paise: applyToBalance,
+          customer_credit_paise: customerCreditAmount,
           status: 'posted',
           reason: input.reason.trim(),
           notes: input.notes ?? '',
@@ -850,6 +854,30 @@ export class SalesReturnService {
           });
         }
 
+        await writeAuditInTx(this.db, {
+          business_id: input.business_id,
+          device_id: input.device_id,
+          action: 'sales_return.created',
+          entity_type: 'sales_return',
+          entity_id: salesReturnId,
+          before: null,
+          after: {
+            return_number: returnNumber,
+            return_date: input.return_date,
+            original_invoice_id: input.original_invoice_id,
+            original_invoice_number: inv.invoice_number,
+            customer_id: inv.customer_id,
+            reason: input.reason.trim(),
+            item_count: items.length,
+            total_paise: totalPaise,
+            apply_to_balance_paise: applyToBalance,
+            customer_credit_paise: customerCreditAmount,
+            credit_advance_id: creditAdvanceId,
+            journal_entry_id: journalEntryId,
+          },
+          at: now,
+        });
+
         log.info('salesReturn', 'createSalesReturn completed', {
           salesReturnId,
           returnNumber,
@@ -869,12 +897,23 @@ export class SalesReturnService {
     );
   }
 
-  // Cancel a posted Sales Return. Sets status='cancelled' (soft) — the
-  // return + its items remain in the DB for audit, but rebuildSummary will
-  // ignore them so available_to_return snaps back up. Journal reversal for
-  // the cancellation itself is out of scope for PR2 (spec §11 mentions it
-  // as a future enhancement); this operation is intended for correcting
-  // typos before the customer has been refunded.
+  // Cancel a posted Sales Return.
+  //
+  // PR3 (spec §11): a real reversal — not just a status flip. In one tx:
+  //   1. Flip status to 'cancelled'.
+  //   2. Post an offsetting JE that mirrors the original SR JE with debits
+  //      and credits swapped. Link with reverses_id/reversed_by_id.
+  //   3. Reverse the stock movements (negative-qty rows referencing the
+  //      cancelled SR; item_stock qty decremented back).
+  //   4. Restore the invoice balance for whatever portion was applied.
+  //   5. If a customer-credit Advance was created and NONE has been applied,
+  //      soft-delete it (set remaining=0, deleted_at). If any has been
+  //      applied, refuse — user must unapply the advance first.
+  //   6. Rebuild invoice_line_return_summary so available_to_return snaps
+  //      back up.
+  //   7. audit_log row (`sales_return.cancelled`).
+  //
+  // Idempotent: if status is already 'cancelled', returns the row unchanged.
   async cancelSalesReturn(
     salesReturnId: string,
     businessId: string,
@@ -886,13 +925,25 @@ export class SalesReturnService {
       hasReason: !!reason,
     });
     const now = new Date().toISOString();
+
+    // Reversal JE is built by copying account_ids from the ORIGINAL journal
+    // lines and swapping D/C — we never resolve account codes here.
+
     return await this.db.transaction(
       'rw',
       [
         this.db.sales_returns,
         this.db.sales_return_items,
         this.db.invoice_line_return_summary,
+        this.db.invoices,
+        this.db.stock_movements,
+        this.db.item_stock,
+        this.db.items,
+        this.db.advances,
+        this.db.journal_entries,
+        this.db.journal_lines,
         this.db.sync_events,
+        this.db.audit_log,
       ],
       async () => {
         const sr = await this.db.sales_returns.get(salesReturnId);
@@ -920,6 +971,55 @@ export class SalesReturnService {
           return sr;
         }
 
+        // -------- customer-credit advance safety check ---------------------
+        // Find the advance created by this SR (if any). If any of it has
+        // been applied to another invoice, refuse — user must unapply first.
+        const relatedAdvances = await this.db.advances
+          .where('business_id')
+          .equals(businessId)
+          .filter((a) => a.reference === `sales_return:${sr.return_number}`)
+          .toArray();
+        let advanceToReverse: (typeof relatedAdvances)[number] | null = null;
+        if (relatedAdvances.length > 0) {
+          advanceToReverse = relatedAdvances[0];
+          const applied =
+            advanceToReverse.amount_paise - advanceToReverse.remaining_paise;
+          if (applied > 0) {
+            log.warn(
+              'salesReturn',
+              'cancelSalesReturn rejected: credit advance partially applied',
+              {
+                salesReturnId,
+                advanceId: advanceToReverse.id,
+                amountPaise: advanceToReverse.amount_paise,
+                remainingPaise: advanceToReverse.remaining_paise,
+                appliedPaise: applied,
+              },
+            );
+            throw new SalesReturnValidationError(
+              `Cannot cancel: customer credit ${advanceToReverse.advance_number} has ₹${(applied / 100).toFixed(2)} already applied to other invoices. Unapply first, then retry cancel.`,
+            );
+          }
+        }
+
+        // -------- fetch what we need to reverse ----------------------------
+        const items = await this.db.sales_return_items
+          .where('sales_return_id')
+          .equals(salesReturnId)
+          .toArray();
+        const originalMovements = await this.db.stock_movements
+          .where('[business_id+ref_type+ref_id]')
+          .equals([businessId, 'reversal', salesReturnId])
+          .filter(
+            (m) => m.movement_type === 'sale_return' && m.qty_micros > 0,
+          )
+          .toArray();
+        const originalJe = await this.db.journal_entries.get(sr.journal_entry_id);
+        const originalJlines = originalJe
+          ? await this.db.journal_lines.where('entry_id').equals(originalJe.id).toArray()
+          : [];
+
+        // -------- 1. flip status -------------------------------------------
         const updated: SalesReturn = {
           ...sr,
           status: 'cancelled',
@@ -930,11 +1030,232 @@ export class SalesReturnService {
           entity_version: sr.entity_version + 1,
         };
         await this.db.sales_returns.put(updated);
+
+        // -------- 2. reverse the JE ----------------------------------------
+        // Build swapped lines: debit becomes credit and vice versa. Same
+        // accounts, same party linkage. Post with reverses_id pointing at
+        // the original SR JE.
+        let revJeId: string | null = null;
+        if (originalJe) {
+          revJeId = ulid();
+          const revLines: JournalLine[] = originalJlines
+            .sort((a, b) => a.line_no - b.line_no)
+            .map((l, idx) => ({
+              id: ulid(),
+              business_id: businessId,
+              entry_id: revJeId!,
+              line_no: idx + 1,
+              account_id: l.account_id,
+              debit_paise: l.credit_paise,
+              credit_paise: l.debit_paise,
+              party_type: l.party_type,
+              party_id: l.party_id,
+              description: `Cancel: ${l.description}`,
+            }));
+          const revDebits = revLines.reduce((s, l) => s + l.debit_paise, 0);
+          const revCredits = revLines.reduce((s, l) => s + l.credit_paise, 0);
+          if (revDebits !== revCredits) {
+            throw new SalesReturnValidationError(
+              `cancellation journal not balanced: debits=${revDebits} credits=${revCredits}`,
+            );
+          }
+          const revJe: JournalEntry = {
+            id: revJeId,
+            business_id: businessId,
+            entry_number: `JE-SR-${sr.return_number}-CX`,
+            entry_date: now.slice(0, 10),
+            narration: `Cancel sales return ${sr.return_number}${reason ? `: ${reason.trim()}` : ''}`,
+            ref_type: 'reversal',
+            ref_id: salesReturnId,
+            reversed_by_id: null,
+            reverses_id: originalJe.id,
+            total_debit_paise: revDebits,
+            total_credit_paise: revCredits,
+            posted: 1,
+            created_at: now,
+            updated_at: now,
+            entity_version: 1,
+          };
+          await this.db.journal_entries.add(revJe);
+          await this.db.journal_lines.bulkAdd(revLines);
+          // Mark the original JE as reversed_by so it's clear from either end.
+          await this.db.journal_entries.update(originalJe.id, {
+            reversed_by_id: revJeId,
+            updated_at: now,
+            entity_version: originalJe.entity_version + 1,
+          });
+          await writeEventInTx(this.db, {
+            business_id: businessId,
+            device_id: sr.device_id || 'system',
+            entity_type: 'journal_entry',
+            entity_id: revJe.id,
+            operation: 'posted',
+            entity_version: 1,
+            timestamp: now,
+            payload: revJe,
+          });
+          for (const l of revLines) {
+            await writeEventInTx(this.db, {
+              business_id: businessId,
+              device_id: sr.device_id || 'system',
+              entity_type: 'journal_line',
+              entity_id: l.id,
+              operation: 'created',
+              entity_version: 1,
+              timestamp: now,
+              payload: l,
+            });
+          }
+          log.info('salesReturn', 'posted cancellation reversal JE', {
+            salesReturnId,
+            reversalJeId: revJeId,
+            originalJeId: originalJe.id,
+            lineCount: revLines.length,
+          });
+        }
+
+        // -------- 3. reverse the stock movements ---------------------------
+        // Negative-qty sale_return movements referencing the same SR. Item
+        // stock decremented back. movement_type stays 'sale_return' with
+        // ref_type='reversal' — matches the "return-linked" search shape,
+        // and the reverses-cancellation nature is carried by the sign +
+        // notes text.
+        for (const orig of originalMovements) {
+          const revMv: StockMovement = {
+            id: ulid(),
+            business_id: businessId,
+            item_id: orig.item_id,
+            warehouse_id: orig.warehouse_id,
+            movement_type: 'sale_return',
+            qty_micros: -orig.qty_micros,
+            unit_cost_paise: orig.unit_cost_paise,
+            ref_type: 'reversal',
+            ref_id: salesReturnId,
+            occurred_at: now,
+            notes: `Cancel: ${orig.notes}`,
+          };
+          await this.db.stock_movements.add(revMv);
+          const item = await this.db.items.get(orig.item_id);
+          if (item && item.track_inventory === 1) {
+            const stockKey = `${businessId}:${orig.item_id}:${orig.warehouse_id}`;
+            const existing = await this.db.item_stock.get(stockKey);
+            if (existing) {
+              await this.db.item_stock.put({
+                ...existing,
+                qty_micros: existing.qty_micros - orig.qty_micros,
+                updated_at: now,
+              });
+            } else {
+              const legacy = await this.db.item_stock
+                .where('[business_id+item_id+warehouse_id]')
+                .equals([businessId, orig.item_id, orig.warehouse_id])
+                .first();
+              if (legacy) {
+                await this.db.item_stock.update(legacy.id, {
+                  qty_micros: legacy.qty_micros - orig.qty_micros,
+                  updated_at: now,
+                });
+              }
+              // If neither stock row exists, we don't create one — the
+              // original movement wrote it, and its absence now means
+              // someone deleted it externally. Log and continue rather
+              // than fabricate.
+            }
+          }
+          await writeEventInTx(this.db, {
+            business_id: businessId,
+            device_id: sr.device_id || 'system',
+            entity_type: 'stock_movement',
+            entity_id: revMv.id,
+            operation: 'created',
+            entity_version: 1,
+            timestamp: now,
+            payload: revMv,
+          });
+        }
+
+        // -------- 4. restore invoice balance -------------------------------
+        // Split is persisted on the SR header at create time, so we don't
+        // depend on the credit-advance record being reachable here. If the
+        // header is a pre-existing row without the field (migrated data),
+        // fall back to reconstructing from the advance amount.
+        const balancePortion =
+          sr.apply_to_balance_paise ??
+          sr.total_paise - (advanceToReverse ? advanceToReverse.amount_paise : 0);
+        if (balancePortion > 0) {
+          const inv = await this.db.invoices.get(sr.original_invoice_id);
+          if (inv) {
+            const newBalance = inv.balance_paise + balancePortion;
+            const nextStatus = computeStatusAfterCancel(inv, newBalance);
+            log.info('salesReturn', 'restoring invoice balance on cancel', {
+              invoiceId: inv.id,
+              fromBalance: inv.balance_paise,
+              toBalance: newBalance,
+              restoredPaise: balancePortion,
+              fromStatus: inv.status,
+              toStatus: nextStatus,
+            });
+            await this.db.invoices.update(inv.id, {
+              balance_paise: newBalance,
+              status: nextStatus,
+              updated_at: now,
+              entity_version: inv.entity_version + 1,
+            });
+            await writeEventInTx(this.db, {
+              business_id: businessId,
+              device_id: sr.device_id || 'system',
+              entity_type: 'invoice',
+              entity_id: inv.id,
+              operation: 'updated',
+              entity_version: inv.entity_version + 1,
+              timestamp: now,
+              payload: {
+                id: inv.id,
+                balance_paise: newBalance,
+                status: nextStatus,
+                cancelled_sales_return_id: salesReturnId,
+              },
+            });
+          }
+        }
+
+        // -------- 5. reverse the credit advance ----------------------------
+        if (advanceToReverse) {
+          await this.db.advances.update(advanceToReverse.id, {
+            remaining_paise: 0,
+            notes: `${advanceToReverse.notes}\n[reversed: sales return ${sr.return_number} cancelled]`.trim(),
+            updated_at: now,
+            entity_version: advanceToReverse.entity_version + 1,
+          });
+          await writeEventInTx(this.db, {
+            business_id: businessId,
+            device_id: sr.device_id || 'system',
+            entity_type: 'advance',
+            entity_id: advanceToReverse.id,
+            operation: 'updated',
+            entity_version: advanceToReverse.entity_version + 1,
+            timestamp: now,
+            payload: {
+              id: advanceToReverse.id,
+              remaining_paise: 0,
+              reversed_by_sales_return_cancel: salesReturnId,
+            },
+          });
+          log.info('salesReturn', 'zeroed credit advance on cancel', {
+            salesReturnId,
+            advanceId: advanceToReverse.id,
+            advanceNumber: advanceToReverse.advance_number,
+            amountPaise: advanceToReverse.amount_paise,
+          });
+        }
+        // -------- 6. rebuild summary --------------------------------------
         await rebuildInvoiceLineReturnSummary(
           this.db,
           businessId,
           sr.original_invoice_id,
         );
+
+        // -------- sync event for the SR status change --------------------
         await writeEventInTx(this.db, {
           business_id: businessId,
           device_id: sr.device_id || 'system',
@@ -947,13 +1268,41 @@ export class SalesReturnService {
             id: salesReturnId,
             status: 'cancelled',
             reason,
+            reversal_journal_entry_id: revJeId,
           },
         });
+
+        // -------- 7. audit log --------------------------------------------
+        await writeAuditInTx(this.db, {
+          business_id: businessId,
+          device_id: sr.device_id || 'system',
+          action: 'sales_return.cancelled',
+          entity_type: 'sales_return',
+          entity_id: salesReturnId,
+          before: {
+            status: 'posted',
+            return_number: sr.return_number,
+            total_paise: sr.total_paise,
+          },
+          after: {
+            status: 'cancelled',
+            reason: reason?.trim() ?? '',
+            reversal_journal_entry_id: revJeId,
+            restored_invoice_balance_paise: balancePortion,
+            reversed_credit_advance_id: advanceToReverse?.id ?? null,
+            item_count: items.length,
+          },
+          at: now,
+        });
+
         log.info('salesReturn', 'cancelSalesReturn completed', {
           salesReturnId,
           returnNumber: sr.return_number,
           originalInvoiceId: sr.original_invoice_id,
           entityVersion: updated.entity_version,
+          reversalJeId: revJeId,
+          balanceRestoredPaise: balancePortion,
+          creditAdvanceReversed: !!advanceToReverse,
         });
         return updated;
       },
@@ -981,6 +1330,49 @@ function computeStatusAfterReturn(
   if (inv.paid_paise > 0 && newBalance > 0) return 'partial';
   if (newBalance <= 0) return 'paid';
   return inv.status === 'draft' ? 'draft' : 'issued';
+}
+
+function computeStatusAfterCancel(
+  inv: Invoice,
+  newBalance: number,
+): Invoice['status'] {
+  // Balance is going UP (return was reversed). If invoice was 'paid'
+  // because return zeroed it, it should now be 'partial' or 'issued'.
+  if (inv.status === 'cancelled') return 'cancelled';
+  if (inv.status === 'draft') return 'draft';
+  if (newBalance <= 0) return 'paid';
+  if (inv.paid_paise > 0) return 'partial';
+  return 'issued';
+}
+
+interface WriteAuditInput {
+  business_id: string;
+  device_id: string;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  before: unknown;
+  after: unknown;
+  at: string;
+}
+
+async function writeAuditInTx(
+  db: BusinessVaultDB,
+  input: WriteAuditInput,
+): Promise<void> {
+  const entry: AuditLogEntry = {
+    id: ulid(),
+    business_id: input.business_id,
+    device_id: input.device_id,
+    actor: input.device_id,
+    action: input.action,
+    entity_type: input.entity_type,
+    entity_id: input.entity_id,
+    before: input.before,
+    after: input.after,
+    at: input.at,
+  };
+  await db.audit_log.add(entry);
 }
 
 interface WriteEventInput {
