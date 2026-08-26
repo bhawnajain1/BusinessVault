@@ -4,6 +4,8 @@ import Header from './Header';
 import Sidebar from './Sidebar';
 import StorageBootBanner from './StorageBootBanner';
 import { BackupHealthProvider } from './BackupHealthContext';
+import NotificationProvider from './notifications/NotificationProvider';
+import LowStockToast from './notifications/LowStockToast';
 import { useActiveBusiness } from './hooks/useActiveBusiness';
 import { runLegacyMigrationsForBusiness } from '../boot/runLegacyMigrations';
 import { log } from '../lib/log';
@@ -43,21 +45,26 @@ export default function AppShell() {
 
   return (
     <BackupHealthProvider>
-      <style>{PRINT_CSS}</style>
-      <div className="app-shell-root flex h-screen flex-col bg-app text-fg">
-        <div data-print-hide>
-          <Header />
-          <StorageBootBanner />
-        </div>
-        <div className="app-shell-body flex flex-1 overflow-hidden">
+      <NotificationProvider>
+        <style>{PRINT_CSS}</style>
+        <div className="app-shell-root flex h-screen flex-col bg-app text-fg">
           <div data-print-hide>
-            <Sidebar />
+            <Header />
+            <StorageBootBanner />
           </div>
-          <main className="app-shell-main flex-1 overflow-y-auto bg-app">
-            <Outlet />
-          </main>
+          <div className="app-shell-body flex flex-1 overflow-hidden">
+            <div data-print-hide>
+              <Sidebar />
+            </div>
+            <main className="app-shell-main flex-1 overflow-y-auto bg-app">
+              <Outlet />
+            </main>
+          </div>
         </div>
-      </div>
+        <div data-print-hide>
+          <LowStockToast />
+        </div>
+      </NotificationProvider>
     </BackupHealthProvider>
   );
 }

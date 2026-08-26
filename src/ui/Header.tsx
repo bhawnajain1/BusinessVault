@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import CloudIndicator from './CloudIndicator';
+import NotificationBell from './notifications/NotificationBell';
 
 // Baked in at build time from the FEEDBACK_EMAIL GitHub Actions secret. Kept
 // out of source so scrapers on the public Pages build don't harvest the
@@ -58,6 +59,7 @@ export default function Header() {
             Feedback
           </a>
         )}
+        <NotificationBell />
         <CloudIndicator />
       </div>
     </header>

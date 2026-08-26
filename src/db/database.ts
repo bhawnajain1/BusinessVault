@@ -274,5 +274,93 @@ export class BusinessVaultDB extends Dexie {
         pokeSyncWorker();
       });
     });
+
+    // §8 Low-Stock Alerts — hook item_stock writes to capture pre/post qty
+    // per (item, warehouse), then fire threshold-crossing detection AFTER
+    // the surrounding transaction commits. Doing the detection post-commit
+    // means (a) an alert-detection failure can never roll back a stock
+    // write, and (b) we read the fully-committed row set when summing the
+    // cross-warehouse total. Snake-case field names in the row payloads are
+    // what Dexie exposes here; using the shared LowStockPending tuple type
+    // avoids any(-ed) casts elsewhere.
+    interface LowStockPending {
+      businessId: string;
+      itemId: string;
+      warehouseId: string;
+      prev: number;
+      next: number;
+    }
+    type LowStockTx = typeof Dexie.currentTransaction & {
+      __bvLowStockPending?: LowStockPending[];
+      __bvLowStockRegistered?: boolean;
+    };
+    const registerLowStockFlush = (tx: LowStockTx) => {
+      if (tx.__bvLowStockRegistered) return;
+      tx.__bvLowStockRegistered = true;
+      tx.on('complete', () => {
+        const pending = tx.__bvLowStockPending ?? [];
+        // Coalesce multiple hits on the same (item, warehouse) inside one
+        // transaction — e.g. an invoice with two lines on the same item.
+        // We want the true tx-wide prev (from the first hit) and the final
+        // committed next (from the last hit).
+        const collapsed = new Map<string, LowStockPending>();
+        for (const p of pending) {
+          const key = `${p.itemId}|${p.warehouseId}`;
+          const seen = collapsed.get(key);
+          if (seen) {
+            seen.next = p.next;
+          } else {
+            collapsed.set(key, { ...p });
+          }
+        }
+        if (collapsed.size === 0) return;
+        // Dynamic import to avoid an import cycle:
+        //   database.ts → lowStockAlerts.ts → log.ts → db/index.ts → database.ts
+        // The `void` chain runs post-commit, so a microtask delay from
+        // import() is a non-issue.
+        void import('../domain/lowStockAlerts').then(({ detectAndDispatchLowStock }) => {
+          for (const p of collapsed.values()) {
+            if (p.prev === p.next) continue;
+            void detectAndDispatchLowStock(this, {
+              businessId: p.businessId,
+              itemId: p.itemId,
+              warehouseId: p.warehouseId,
+              prevWarehouseQtyMicros: p.prev,
+              newWarehouseQtyMicros: p.next,
+            });
+          }
+        });
+      });
+    };
+
+    this.item_stock.hook('creating', (_pk, obj) => {
+      const tx = Dexie.currentTransaction as LowStockTx | null;
+      if (!tx) return;
+      registerLowStockFlush(tx);
+      const list = (tx.__bvLowStockPending ??= []);
+      list.push({
+        businessId: obj.business_id,
+        itemId: obj.item_id,
+        warehouseId: obj.warehouse_id,
+        prev: 0,
+        next: obj.qty_micros,
+      });
+    });
+
+    this.item_stock.hook('updating', (mods, _pk, obj) => {
+      const m = mods as Partial<{ qty_micros: number }>;
+      if (m.qty_micros === undefined) return; // qty untouched, no crossing
+      const tx = Dexie.currentTransaction as LowStockTx | null;
+      if (!tx) return;
+      registerLowStockFlush(tx);
+      const list = (tx.__bvLowStockPending ??= []);
+      list.push({
+        businessId: obj.business_id,
+        itemId: obj.item_id,
+        warehouseId: obj.warehouse_id,
+        prev: obj.qty_micros,
+        next: m.qty_micros,
+      });
+    });
   }
 }

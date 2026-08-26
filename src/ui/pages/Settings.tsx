@@ -14,6 +14,13 @@ import {
   SignatureValidationError,
 } from '../../domain/BusinessProfileService';
 import { log } from '../../lib/log';
+import {
+  isLowStockAlertsEnabled,
+  isLowStockSoundEnabled,
+  setLowStockAlertsEnabled,
+  setLowStockSoundEnabled,
+} from '../../lib/lowStockPrefs';
+import { playLowStockSound } from '../../lib/lowStockSound';
 
 interface Counts {
   units: number;
@@ -117,6 +124,40 @@ export default function Settings() {
   const [signatureError, setSignatureError] = useState<string | null>(null);
   const [signatureBusy, setSignatureBusy] = useState(false);
   const signatureInputRef = useRef<HTMLInputElement | null>(null);
+
+  // §8 Low-Stock Alerts — device-local preferences (localStorage-backed).
+  // Kept as local state so the toggles feel instant; the setters push to
+  // storage synchronously. See src/lib/lowStockPrefs.ts.
+  const [lowStockAlerts, setLowStockAlertsState] = useState<boolean>(() =>
+    isLowStockAlertsEnabled(),
+  );
+  const [lowStockSound, setLowStockSoundState] = useState<boolean>(() =>
+    isLowStockSoundEnabled(),
+  );
+  const [testSoundBusy, setTestSoundBusy] = useState(false);
+
+  function handleLowStockAlertsToggle(enabled: boolean) {
+    setLowStockAlertsEnabled(enabled);
+    setLowStockAlertsState(enabled);
+    log.info('settings', 'low stock alerts toggled', { enabled });
+  }
+  function handleLowStockSoundToggle(enabled: boolean) {
+    setLowStockSoundEnabled(enabled);
+    setLowStockSoundState(enabled);
+    log.info('settings', 'low stock sound toggled', { enabled });
+  }
+  async function handleTestSound() {
+    setTestSoundBusy(true);
+    log.info('settings', 'test sound clicked');
+    try {
+      // `force=true` resumes a suspended AudioContext because this call
+      // happens inside a direct click handler — the browser policy that
+      // gates the automatic path allows this one.
+      await playLowStockSound(true);
+    } finally {
+      setTestSoundBusy(false);
+    }
+  }
 
   // Refresh the preview URL whenever the business's `signature_ref` changes.
   // We hold the object URL in state so React can render it AND clean it up on
@@ -584,6 +625,52 @@ export default function Settings() {
             {signatureError && (
               <div className="text-xs text-rose-600">{signatureError}</div>
             )}
+          </div>
+        </div>
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-1">Notifications</h2>
+        <p className="text-xs text-slate-500 mb-3">
+          Alert when an item's stock drops below its reorder level. Alerts fire
+          only on threshold-crossing — once an item is low, it won't beep again
+          until stock goes back up and dips a second time.
+        </p>
+        <div className="flex flex-col gap-2 text-sm text-slate-700">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={lowStockAlerts}
+              onChange={(e) => handleLowStockAlertsToggle(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span>Low Stock Alerts</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={lowStockSound}
+              onChange={(e) => handleLowStockSoundToggle(e.target.checked)}
+              disabled={!lowStockAlerts}
+              className="h-4 w-4"
+            />
+            <span className={lowStockAlerts ? '' : 'text-slate-400'}>
+              Notification sound
+            </span>
+          </label>
+          <div>
+            <button
+              type="button"
+              onClick={() => void handleTestSound()}
+              disabled={testSoundBusy || !lowStockSound || !lowStockAlerts}
+              className="mt-1 text-xs border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100 disabled:opacity-50"
+            >
+              {testSoundBusy ? 'Playing…' : 'Test sound'}
+            </button>
+            <p className="mt-1 text-xs text-slate-500">
+              Browsers may block sound until you interact with the page — press
+              Test sound once to unlock automatic alerts for this tab.
+            </p>
           </div>
         </div>
       </section>

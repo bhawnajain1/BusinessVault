@@ -4,6 +4,43 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 0.16.0 — 2026-08-26
+
+### Low-stock / reorder alerts (feedback_1_to_7.md §8)
+
+- **Threshold-crossing detection.** Any stock movement — invoice line
+  posted, sale-return restore, purchase received, adjustment — that pulls
+  an item's cross-warehouse total from above its `reorder_level_micros` to
+  at-or-below it fires a `bv:low-stock` window event. Follow-up decrements
+  while still under the threshold do NOT re-fire; only the crossing itself
+  does. Going back above the threshold fires a `cleared` event.
+- **Zero touch on stock-writing services.** The detector rides on
+  `item_stock` Dexie hooks in `src/db/database.ts` — every service that
+  writes to `item_stock` (InventoryService, InvoiceService, PurchaseService,
+  SalesReturnService, ReturnService, rebuildFromDrive) gets crossing
+  detection for free, without any coupling to alert logic.
+- **Notification centre.** New bell icon in the app header with an unread
+  badge and a dropdown of recent alerts. Ephemeral (in-memory, per-tab) —
+  the durable "what is currently low" view lives in Reports > Stock
+  Valuation, which is the right place for that concern.
+- **Toast + attention sound.** A crossing pops a bottom-right toast that
+  auto-dismisses in 6 s and offers "View Item" / "Dismiss". A short two-
+  tone WebAudio beep plays alongside — no asset bundled. Browser autoplay
+  restrictions are handled gracefully: when the AudioContext is suspended
+  the beep is skipped (logged, not thrown), and Settings > Test Sound
+  gives the user a way to unlock alerts during a genuine click gesture.
+- **Skip rules.** Services (`is_service=1`), items with
+  `track_inventory=0`, and items with `reorder_level_micros=0` (unset
+  threshold) never generate alerts.
+- **Settings > Notifications.** Three device-local controls, backed by
+  localStorage (no schema bump — this is UX state, not business data):
+  Low Stock Alerts toggle, Notification Sound toggle, Test Sound button.
+  Defaults ON per spec.
+- **Tests.** `src/domain/lowStockAlerts.test.ts` covers 12 cases:
+  crossing, non-re-fire while low, clear-when-recovered, out-of-stock
+  branding, service skip, non-tracked skip, unset-threshold skip,
+  cross-warehouse aggregation, missing-item safety, and snapshot loader.
+
 ## 0.15.0 — 2026-08-26
 
 ### Sales Return audit + gap-fill (feedback_1_to_7.md §5, §6, §7)
