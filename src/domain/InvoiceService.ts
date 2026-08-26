@@ -20,6 +20,7 @@ import {
   validateInvoiceNumber,
 } from './invoiceNumbering';
 import { log } from '../lib/log';
+import { reconcileAfter } from './reconciliation';
 
 // Thrown when restoreInvoice finds that the recycled invoice's number has
 // already been reused by a live invoice (§4). UI catches this and prompts the
@@ -925,6 +926,11 @@ export class InvoiceService {
         });
       },
     );
+    // §17 post-op reconciliation. Never throws — result lands in audit_log
+    // if the mirror journal we just posted didn't balance.
+    await reconcileAfter(invoice.business_id, 'invoice.recycle', {
+      db: this.db,
+    });
   }
 
   /**
@@ -1112,6 +1118,10 @@ export class InvoiceService {
         });
       },
     );
+    // §17: mirror-of-mirror we just posted must balance the delete's mirror.
+    await reconcileAfter(invoice.business_id, 'invoice.restore', {
+      db: this.db,
+    });
   }
 
   /**
@@ -1283,10 +1293,17 @@ export class InvoiceService {
     // field which we set explicitly here.
     const { invoice_number: _ignored, ...rest } = input;
     void _ignored;
-    return this.createInvoice({
+    const reissued = await this.createInvoice({
       ...rest,
       invoice_number: nextNumber,
     });
+    // §17 post-op reconciliation. The edit path is a reverse + reissue —
+    // net effect on TB should be the new invoice's total. If the mirror
+    // and new posting drift, this surfaces it.
+    await reconcileAfter(original.business_id, 'invoice.edit', {
+      db: this.db,
+    });
+    return reissued;
   }
 
   async listInvoices(filter: ListFilter, pagination: Pagination = {}): Promise<Invoice[]> {

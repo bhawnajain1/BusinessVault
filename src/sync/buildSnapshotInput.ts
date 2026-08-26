@@ -8,6 +8,17 @@ import { TABLE_SPECS } from '../restore/tableSchema';
 import { writeCsv } from '../csv/csvCodec';
 import { sha256Hex } from '../journal/event';
 import { CURRENT_SCHEMA_VERSION } from '../db/migrations/index';
+import { log } from '../lib/log';
+
+// §20 backup-format version. Bump when the on-disk CSV shape changes in a
+// way that older readers can't handle (adding a new column that older
+// restores don't understand is a MINOR bump; renaming/removing a column
+// is a MAJOR bump).
+export const BACKUP_FORMAT_VERSION = 1;
+
+declare const __APP_VERSION__: string;
+const APP_VERSION =
+  typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0';
 
 // Build a WriteSnapshotInput by dumping every domain table for `businessId` to
 // CSV using the on-disk column layout in TABLE_SPECS. This is what the
@@ -27,6 +38,13 @@ export async function buildSnapshotInput(
 ): Promise<WriteSnapshotInput> {
   const files: SnapshotCsvFile[] = [];
   const counts: Record<string, number> = {};
+
+  log.info('snapshot.build.start', 'snapshot: assembling CSV files', {
+    businessId,
+    kind,
+    asOf,
+    tableCount: TABLE_SPECS.length,
+  });
 
   for (const spec of TABLE_SPECS) {
     const table = (db as unknown as Record<
@@ -62,6 +80,26 @@ export async function buildSnapshotInput(
           applications_json: JSON.stringify((r as { applications: unknown[] }).applications),
         };
       }
+      if (spec.store === 'audit_log') {
+        // audit_log.before / audit_log.after are `unknown` domain objects
+        // (or null). sanitizeCsvCell doesn't know how to stringify plain
+        // objects (falls through to '[object Object]'), so pre-serialize
+        // them here and let coerceRow's 'json' branch parse on restore.
+        const row = r as { before?: unknown; after?: unknown };
+        return {
+          ...r,
+          before: row.before == null ? '' : JSON.stringify(row.before),
+          after: row.after == null ? '' : JSON.stringify(row.after),
+        };
+      }
+      if (spec.store === 'attachments') {
+        // Never embed the blob bytes in CSV — they ship out-of-band via
+        // the `attachment_upload` provider job and land on the row as
+        // `drive_file_id`. Drop the Blob field explicitly so it can't
+        // sneak into the CSV via any stray column lookup.
+        const { blob: _blob, ...rest } = r as { blob?: unknown };
+        return rest;
+      }
       return r;
     });
 
@@ -77,6 +115,12 @@ export async function buildSnapshotInput(
     counts[spec.file] = prepared.length;
   }
 
+  log.info('snapshot.build.success', 'snapshot: CSV assembly complete', {
+    businessId,
+    fileCount: files.length,
+    totalRows: Object.values(counts).reduce((a, b) => a + b, 0),
+  });
+
   return {
     businessId,
     kind,
@@ -84,6 +128,8 @@ export async function buildSnapshotInput(
     files,
     manifest: {
       schemaVersion: CURRENT_SCHEMA_VERSION,
+      applicationVersion: APP_VERSION,
+      backupFormatVersion: BACKUP_FORMAT_VERSION,
       businessId,
       businessName,
       counts,

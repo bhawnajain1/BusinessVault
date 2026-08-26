@@ -16,6 +16,7 @@ import type {
 } from '../db/types';
 import { GENESIS_HASH, canonicalJson, sha256Hex } from '../journal/event';
 import { SYSTEM_ACCOUNT_CODES, findAccountByCode } from './coa';
+import { reconcileAfter } from './reconciliation';
 
 // UI-facing payment split — three tendered methods plus "credit" (unpaid).
 // Credit does NOT produce a Payment row; the invoice balance already reflects it.
@@ -407,7 +408,7 @@ export class PaymentService {
     };
     const reversedHash = await sha256Hex(canonicalJson(reversedPayload));
 
-    return await this.db.transaction(
+    const refunded = await this.db.transaction(
       'rw',
       [
         this.db.payments,
@@ -482,6 +483,12 @@ export class PaymentService {
         return refund;
       },
     );
+    // §17: verify reversing JE balances the original and invoice
+    // paid_paise / advance remaining figures agree post-refund.
+    await reconcileAfter(input.business_id, 'payment.refund', {
+      db: this.db,
+    });
+    return refunded;
   }
 
   async listPaymentsForInvoice(

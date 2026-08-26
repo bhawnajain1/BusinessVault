@@ -490,6 +490,11 @@ function tableNames(): string[] {
     'journal_entries',
     'journal_lines',
     'advances',
+    // §20 additions.
+    'sales_returns',
+    'sales_return_items',
+    'attachments',
+    'audit_log',
     'sync_events',
   ];
 }

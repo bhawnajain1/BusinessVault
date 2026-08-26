@@ -4,6 +4,60 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 0.19.0 — 2026-08-26
+
+### Drive backup coverage + post-op reconciliation (feedback_1_to_7.md §17, §20)
+
+- **§20 Drive backup — four missing tables now snapshotted.**
+  `src/restore/tableSchema.ts` grows specs for `sales_returns`,
+  `sales_return_items`, `attachments`, and `audit_log`. The Snapshot
+  Now button and the (unwired) scheduler both pick these up
+  automatically since `buildSnapshotInput` iterates `TABLE_SPECS`.
+  Restore already loops the same specs — a Drive restore now
+  reconstructs Sales Returns, attachment metadata, and the audit
+  trail bit-exactly from CSV. Attachment BLOB bytes continue to ship
+  out-of-band via `attachment_upload` sync jobs and are referenced
+  from the row's `drive_file_id`; the CSV row itself is scrubbed of
+  the raw `blob` field so it can never sneak into the CSV.
+- **§20 manifest fields.** The snapshot manifest now emits
+  `applicationVersion` (from Vite's `__APP_VERSION__` define,
+  `'0.0.0'` fallback under Node test) and `backupFormatVersion`
+  (new constant `BACKUP_FORMAT_VERSION = 1`) alongside the existing
+  `schemaVersion`. Older snapshots without these fields still restore
+  cleanly — the reader treats missing values as unknown.
+- **§20 audit_log JSON round-trip.** `audit_log.before` and
+  `audit_log.after` are pre-JSON.stringified at snapshot write time
+  and coerced back through `tableSchema.coerceRow`'s `'json'` branch
+  on read, so the columns round-trip through CSV without turning into
+  `[object Object]`.
+- **§17 reconciliation helper.** New `src/domain/reconciliation.ts`
+  exposes `reconcileAfter(businessId, op, opts)` — runs
+  `accountingSelfCheck` + a receivables consistency check, and on
+  failure both writes a durable `reconciliation.failed` row to
+  `audit_log` and emits a structured `log.warn`. Never throws —
+  callers are on their happy path and a post-hoc invariant tripping
+  must not roll back the domain op; the audit_log + debug bundle
+  entries are how failures surface to support.
+- **§17 wiring.** Reconciliation now runs after every high-risk op
+  that has an implemented code path:
+  - `InvoiceService.deleteInvoice` (invoice recycle)
+  - `InvoiceService.restoreInvoice` (invoice restore)
+  - `InvoiceService.updateInvoice` (invoice edit — reverse + reissue)
+  - `SalesReturnService.createSalesReturn` (sales_return.create)
+  - `SalesReturnService.cancelSalesReturn` (sales_return.cancel)
+  - `PurchaseService.update` (purchase reverse + reissue)
+  - `PaymentService.refundPayment` (payment.refund)
+  - `rebuildFromDrive` was already wired (kept for parity).
+  Payment edit / recycle / restore have no implementation to wire —
+  the reconcileAfter helper accepts those op strings for when those
+  paths land.
+- **Tests.** `src/domain/reconciliation.test.ts` (4 cases: balanced
+  journal → ok, unbalanced journal → failure + audit_log row, empty
+  journal → ok, log breadcrumbs land). `src/sync/buildSnapshotInput.test.ts`
+  gains 2 cases: manifest carries applicationVersion + schemaVersion +
+  backupFormatVersion, and the four new CSVs are emitted with
+  audit_log JSON preserved (never `[object Object]`).
+
 ## 0.18.0 — 2026-08-26
 
 ### Correlation IDs + Diagnostic Report bundle (feedback_1_to_7.md §13, §14, §15, §16)

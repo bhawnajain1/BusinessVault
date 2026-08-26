@@ -18,6 +18,7 @@ import { SYSTEM_ACCOUNT_CODES, findAccountByCode } from './coa';
 import { allocateSalesReturnNumber } from './salesReturnNumbering';
 import { rebuildInvoiceLineReturnSummary } from './invoiceLineReturnSummary';
 import { log } from '../lib/log';
+import { reconcileAfter } from './reconciliation';
 
 // SalesReturnService — the ONLY code path that creates a native Sales Return
 // (schema v5). Distinct from InvoiceService.updateInvoice's internal
@@ -196,7 +197,7 @@ export class SalesReturnService {
     const now = new Date().toISOString();
 
     // -------- the atomic tx ------------------------------------------------
-    return await this.db.transaction(
+    const created = await this.db.transaction(
       'rw',
       [
         this.db.businesses,
@@ -897,6 +898,12 @@ export class SalesReturnService {
         return sr;
       },
     );
+    // §17: verify TB + receivables after the SR posted (both the journal
+    // and the invoice.paid_paise decrement participate). Never throws.
+    await reconcileAfter(input.business_id, 'sales_return.create', {
+      db: this.db,
+    });
+    return created;
   }
 
   // Cancel a posted Sales Return.
@@ -931,7 +938,7 @@ export class SalesReturnService {
     // Reversal JE is built by copying account_ids from the ORIGINAL journal
     // lines and swapping D/C — we never resolve account codes here.
 
-    return await this.db.transaction(
+    const cancelled = await this.db.transaction(
       'rw',
       [
         this.db.sales_returns,
@@ -1309,6 +1316,10 @@ export class SalesReturnService {
         return updated;
       },
     );
+    // §17: verify TB balances after the reversal JE + invoice-balance
+    // restore. Never throws.
+    await reconcileAfter(businessId, 'sales_return.cancel', { db: this.db });
+    return cancelled;
   }
 }
 

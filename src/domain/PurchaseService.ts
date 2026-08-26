@@ -10,6 +10,7 @@ import type {
 } from '../db/types';
 import { appendSyncEvent } from './syncEventLog';
 import { bankersRound, roundOffToNearestRupee } from './gst';
+import { reconcileAfter } from './reconciliation';
 
 export interface PurchaseServiceDeps {
   db: BusinessVaultDB;
@@ -714,7 +715,13 @@ export class PurchaseService {
       throw new Error('Cannot edit a cancelled purchase');
     }
     await this.reversePurchasePosting(purchaseId, input.deviceId, 'edit');
-    return this.create(input);
+    const reissued = await this.create(input);
+    // §17: reverse + reissue is a two-JE dance; verify TB net effect
+    // equals the new bill and inventory identity holds.
+    await reconcileAfter(original.business_id, 'purchase.recycle', {
+      db: this.db,
+    });
+    return reissued;
   }
 
   async get(id: string): Promise<Purchase | undefined> {
