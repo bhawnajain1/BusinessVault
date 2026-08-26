@@ -8,7 +8,14 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Drawer from '../components/Drawer';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
-import { INDIAN_STATES, findStateByCode, stateFromGstin } from '../../lib/indianStates';
+import { INDIAN_STATES } from '../../lib/indianStates';
+import {
+  applyGstinChange,
+  applyStateChange,
+  inferManuallySet,
+  type GstinStatePair,
+} from '../../lib/gstinStateSync';
+import GstinStateBadge from '../components/GstinStateBadge';
 
 interface CustomerRollup {
   total_sales_paise: number;
@@ -478,21 +485,42 @@ function CustomerFormFields({
   form: CustomerForm;
   setForm: (f: CustomerForm) => void;
 }) {
+  // Manual-latch stays local to the form's lifetime — no need to persist
+  // it. Initialised from what's already on the record so an already-loaded
+  // customer whose state disagrees with their GSTIN doesn't get silently
+  // "corrected" on the first keystroke elsewhere in the form.
+  const [manuallySet, setManuallySet] = useState<boolean>(() =>
+    inferManuallySet(form.gstin, form.stateCode),
+  );
   function set<K extends keyof CustomerForm>(k: K, v: CustomerForm[K]) {
     setForm({ ...form, [k]: v });
   }
+  function pairFromForm(): GstinStatePair {
+    return {
+      gstin: form.gstin,
+      stateCode: form.stateCode,
+      stateName: form.state,
+      stateManuallySet: manuallySet,
+    };
+  }
   function onGstinChange(raw: string) {
-    const g = raw.toUpperCase();
-    const derived = stateFromGstin(g);
-    if (derived) {
-      setForm({ ...form, gstin: g, state: derived.name, stateCode: derived.code });
-    } else {
-      setForm({ ...form, gstin: g });
-    }
+    const next = applyGstinChange(pairFromForm(), raw);
+    setManuallySet(next.stateManuallySet);
+    setForm({
+      ...form,
+      gstin: next.gstin,
+      state: next.stateName,
+      stateCode: next.stateCode,
+    });
   }
   function onStateChange(code: string) {
-    const s = findStateByCode(code);
-    setForm({ ...form, state: s?.name ?? '', stateCode: code });
+    const next = applyStateChange(pairFromForm(), code);
+    setManuallySet(next.stateManuallySet);
+    setForm({
+      ...form,
+      state: next.stateName,
+      stateCode: next.stateCode,
+    });
   }
   const labelCls = 'block text-[12px] text-fg-muted mb-1';
   const inputCls =
@@ -536,6 +564,7 @@ function CustomerFormFields({
           placeholder="15-char GSTIN (state auto-fills from first 2 digits)"
           className={`${inputCls} uppercase`}
         />
+        <GstinStateBadge gstin={form.gstin} stateCode={form.stateCode} />
       </label>
       <label>
         <span className={labelCls}>State</span>

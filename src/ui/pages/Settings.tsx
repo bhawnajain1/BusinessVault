@@ -3,7 +3,14 @@ import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { Business } from '../../db/types';
 import { currentBusinessId } from '../../lib/business';
-import { INDIAN_STATES, findStateByCode, stateFromGstin } from '../../lib/indianStates';
+import { INDIAN_STATES } from '../../lib/indianStates';
+import {
+  applyGstinChange,
+  applyStateChange,
+  inferManuallySet,
+  type GstinStatePair,
+} from '../../lib/gstinStateSync';
+import GstinStateBadge from '../components/GstinStateBadge';
 import { seedDefaultMasters } from '../../domain/defaults';
 import { seedChartOfAccounts } from '../../domain/coa';
 import { appendSyncEvent } from '../../domain/syncEventLog';
@@ -40,6 +47,7 @@ export default function Settings() {
   const [saved, setSaved] = useState(false);
   const [counts, setCounts] = useState<Counts | null>(null);
   const [seedError, setSeedError] = useState<string | null>(null);
+  const [stateManuallySet, setStateManuallySet] = useState(false);
 
   async function loadCounts(businessId: string) {
     const [units, categories, warehouses, customers, suppliers, items, invoices, accounts] =
@@ -68,6 +76,7 @@ export default function Settings() {
       setBusiness(b);
       if (b) {
         setForm(b);
+        setStateManuallySet(inferManuallySet(b.gstin ?? '', b.state_code ?? ''));
         await loadCounts(b.id);
       }
     })();
@@ -430,33 +439,43 @@ export default function Settings() {
             <input
               value={form.gstin ?? ''}
               onChange={(e) => {
-                const g = e.target.value.toUpperCase();
-                const derived = stateFromGstin(g);
-                if (derived) {
-                  setForm((f) => ({
-                    ...f,
-                    gstin: g,
-                    state: derived.name,
-                    state_code: derived.code,
-                  }));
-                } else {
-                  set('gstin', g);
-                }
+                const pair: GstinStatePair = {
+                  gstin: form.gstin ?? '',
+                  stateCode: form.state_code ?? '',
+                  stateName: form.state ?? '',
+                  stateManuallySet,
+                };
+                const next = applyGstinChange(pair, e.target.value);
+                setStateManuallySet(next.stateManuallySet);
+                setForm((f) => ({
+                  ...f,
+                  gstin: next.gstin,
+                  state: next.stateName,
+                  state_code: next.stateCode,
+                }));
               }}
               placeholder="15-char GSTIN"
               className="w-full border border-slate-300 rounded px-2 py-1.5 uppercase"
             />
+            <GstinStateBadge gstin={form.gstin ?? ''} stateCode={form.state_code ?? ''} />
           </label>
           <label>
             <span className="block text-slate-700 mb-1">State</span>
             <select
               value={form.state_code ?? ''}
               onChange={(e) => {
-                const s = findStateByCode(e.target.value);
+                const pair: GstinStatePair = {
+                  gstin: form.gstin ?? '',
+                  stateCode: form.state_code ?? '',
+                  stateName: form.state ?? '',
+                  stateManuallySet,
+                };
+                const next = applyStateChange(pair, e.target.value);
+                setStateManuallySet(next.stateManuallySet);
                 setForm((f) => ({
                   ...f,
-                  state: s?.name ?? '',
-                  state_code: e.target.value,
+                  state: next.stateName,
+                  state_code: next.stateCode,
                 }));
               }}
               className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white"

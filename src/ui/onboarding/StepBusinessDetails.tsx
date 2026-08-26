@@ -1,6 +1,13 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { isValidGstin } from '../../lib/gst';
 import { INDIAN_STATES, type OnboardingForm } from './state';
+import {
+  applyGstinChange,
+  applyStateChange,
+  inferManuallySet,
+  type GstinStatePair,
+} from '../../lib/gstinStateSync';
+import GstinStateBadge from '../components/GstinStateBadge';
 
 interface Props {
   form: OnboardingForm;
@@ -25,15 +32,48 @@ const MONTHS: ReadonlyArray<{ n: number; label: string }> = [
 ];
 
 export default function StepBusinessDetails({ form, onChange, onBack, onNext }: Props) {
+  // Seed the manual-latch from the *initial* form. The initial onboarding form
+  // pre-fills state='Karnataka'/state_code='29' with an empty GSTIN — that's a
+  // legitimate default from initialForm(), not a manual choice, so the latch
+  // starts OFF and the first valid GSTIN typed will auto-fill state.
+  const [stateManuallySet, setStateManuallySet] = useState(() =>
+    inferManuallySet(form.gstin, form.state_code),
+  );
+
   const gstinError = useMemo(() => {
     const g = form.gstin.trim();
     if (g === '') return null;
     if (!isValidGstin(g)) return 'Invalid GSTIN (must be 15 chars with valid check digit)';
-    if (g.slice(0, 2) !== form.state_code) return `GSTIN state prefix ${g.slice(0, 2)} does not match selected state (${form.state_code})`;
+    // Mismatch is now surfaced by GstinStateBadge as a warning that lets the
+    // user proceed after acknowledging. Onboarding still refuses to advance
+    // because Continue is gated on state_code being set at all.
     return null;
-  }, [form.gstin, form.state_code]);
+  }, [form.gstin]);
 
   const canProceed = gstinError === null && form.state_code !== '';
+
+  function pair(): GstinStatePair {
+    return {
+      gstin: form.gstin,
+      stateCode: form.state_code,
+      stateName: form.state,
+      stateManuallySet,
+    };
+  }
+  function onGstinChange(raw: string) {
+    const next = applyGstinChange(pair(), raw);
+    setStateManuallySet(next.stateManuallySet);
+    onChange({
+      gstin: next.gstin,
+      state: next.stateName,
+      state_code: next.stateCode,
+    });
+  }
+  function onStateChange(code: string) {
+    const next = applyStateChange(pair(), code);
+    setStateManuallySet(next.stateManuallySet);
+    onChange({ state: next.stateName, state_code: next.stateCode });
+  }
 
   return (
     <div className="max-w-2xl mx-auto p-6">
@@ -52,11 +92,12 @@ export default function StepBusinessDetails({ form, onChange, onBack, onNext }: 
             className="mt-1 w-full rounded border border-slate-300 px-3 py-2 uppercase"
             placeholder="29AABCS1234A1Z5"
             value={form.gstin}
-            onChange={(e) => onChange({ gstin: e.target.value.toUpperCase() })}
+            onChange={(e) => onGstinChange(e.target.value)}
           />
           {gstinError && (
             <p className="mt-1 text-xs text-red-600">{gstinError}</p>
           )}
+          <GstinStateBadge gstin={form.gstin} stateCode={form.state_code} />
         </div>
 
         <div>
@@ -64,10 +105,7 @@ export default function StepBusinessDetails({ form, onChange, onBack, onNext }: 
           <select
             className="mt-1 w-full rounded border border-slate-300 px-3 py-2 bg-white"
             value={form.state_code}
-            onChange={(e) => {
-              const s = INDIAN_STATES.find((x) => x.code === e.target.value);
-              if (s) onChange({ state_code: s.code, state: s.name });
-            }}
+            onChange={(e) => onStateChange(e.target.value)}
           >
             {INDIAN_STATES.map((s) => (
               <option key={s.code} value={s.code}>

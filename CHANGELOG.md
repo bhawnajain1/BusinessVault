@@ -4,6 +4,34 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 0.17.0 — 2026-08-26
+
+### GSTIN → State auto-detection (feedback_1_to_7.md §12)
+
+- **Auto-fill state from GSTIN in every party form.** Business onboarding
+  (Step 2), Settings → Business Profile, Customers, and Suppliers now
+  derive State/UT from the GSTIN's first two characters as the user types.
+  Empty state field + valid 2-digit prefix → state auto-fills; keystroke
+  changes to the prefix follow along.
+- **Manual override wins.** Once the user picks a state from the dropdown,
+  subsequent GSTIN edits do NOT overwrite that choice — instead an inline
+  `⚠ GSTIN begins with 08 (Rajasthan), but selected State is Maharashtra
+  (27). Please verify.` warning appears next to the field. Clearing either
+  the GSTIN or the state re-enables auto-detect (that's how the user tells
+  the form to resume auto-fill).
+- **Detected badge.** A `✓ Detected from GSTIN: Rajasthan (08)` confirmation
+  renders whenever the derived and selected state agree, so the shopkeeper
+  can see the tax logic downstream will read the right code.
+- **Centralised state-code map.** All four form surfaces plus the badge
+  component now share the same helpers in `src/lib/gstinStateSync.ts` and
+  `src/ui/components/GstinStateBadge.tsx`, and the duplicate map that
+  lived in `ui/onboarding/state.ts` re-exports the canonical one from
+  `src/lib/indianStates.ts` — one authority for the 40 codes.
+- **Tests.** `src/lib/gstinStateSync.test.ts` covers 16 cases: prefix
+  auto-fill, follow-along on prefix change, manual-override latch,
+  clear-to-reset-latch, incomplete-prefix passthrough, mismatch detection,
+  and legacy-record inference at load time.
+
 ## 0.16.0 — 2026-08-26
 
 ### Low-stock / reorder alerts (feedback_1_to_7.md §8)

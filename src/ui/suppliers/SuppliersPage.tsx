@@ -8,7 +8,14 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Drawer from '../components/Drawer';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
-import { INDIAN_STATES, findStateByCode, stateFromGstin } from '../../lib/indianStates';
+import { INDIAN_STATES } from '../../lib/indianStates';
+import {
+  applyGstinChange,
+  applyStateChange,
+  inferManuallySet,
+  type GstinStatePair,
+} from '../../lib/gstinStateSync';
+import GstinStateBadge from '../components/GstinStateBadge';
 
 interface SupplierForm {
   name: string;
@@ -51,9 +58,38 @@ export default function SuppliersPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<Supplier | null>(null);
   const [form, setForm] = useState<SupplierForm>(EMPTY_FORM);
+  const [manuallySetState, setManuallySetState] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+
+  function pairFromForm(): GstinStatePair {
+    return {
+      gstin: form.gstin,
+      stateCode: form.stateCode,
+      stateName: form.state,
+      stateManuallySet: manuallySetState,
+    };
+  }
+  function onGstinChange(raw: string) {
+    const next = applyGstinChange(pairFromForm(), raw);
+    setManuallySetState(next.stateManuallySet);
+    setForm({
+      ...form,
+      gstin: next.gstin,
+      state: next.stateName,
+      stateCode: next.stateCode,
+    });
+  }
+  function onStateChange(code: string) {
+    const next = applyStateChange(pairFromForm(), code);
+    setManuallySetState(next.stateManuallySet);
+    setForm({
+      ...form,
+      state: next.stateName,
+      stateCode: next.stateCode,
+    });
+  }
 
   const fetchPage = useCallback(
     async ({
@@ -127,6 +163,7 @@ export default function SuppliersPage() {
   function openNew() {
     setEditing(null);
     setForm(EMPTY_FORM);
+    setManuallySetState(false);
     setSaveError(null);
     setDrawerOpen(true);
   }
@@ -145,6 +182,7 @@ export default function SuppliersPage() {
       notes: row.notes,
       active: row.active === 1,
     });
+    setManuallySetState(inferManuallySet(row.gstin ?? '', row.state_code));
     setSaveError(null);
     setDrawerOpen(true);
   }
@@ -319,27 +357,17 @@ export default function SuppliersPage() {
             <span className="block text-[12px] text-fg-muted mb-1">GSTIN</span>
             <input
               value={form.gstin}
-              onChange={(e) => {
-                const g = e.target.value.toUpperCase();
-                const derived = stateFromGstin(g);
-                if (derived) {
-                  setForm({ ...form, gstin: g, state: derived.name, stateCode: derived.code });
-                } else {
-                  setForm({ ...form, gstin: g });
-                }
-              }}
+              onChange={(e) => onGstinChange(e.target.value)}
               placeholder="15-char GSTIN (state auto-fills from first 2 digits)"
               className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle uppercase focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
+            <GstinStateBadge gstin={form.gstin} stateCode={form.stateCode} />
           </label>
           <label>
             <span className="block text-[12px] text-fg-muted mb-1">State</span>
             <select
               value={form.stateCode}
-              onChange={(e) => {
-                const s = findStateByCode(e.target.value);
-                setForm({ ...form, state: s?.name ?? '', stateCode: e.target.value });
-              }}
+              onChange={(e) => onStateChange(e.target.value)}
               className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             >
               <option value="">— Select state —</option>
