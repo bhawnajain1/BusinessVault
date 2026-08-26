@@ -12,7 +12,12 @@
 import { log } from '../lib/log';
 import { env } from '../lib/env';
 
-export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+// Space-delimited scope list. `drive.file` alone does NOT authorize the
+// oauth2/v3/userinfo endpoint — that returned 401 "Invalid Credentials"
+// and broke first-time Connect. Adding openid + email + profile lets the
+// same access token read the connected account's identity.
+export const DRIVE_FILE_SCOPE =
+  'openid email profile https://www.googleapis.com/auth/drive.file';
 
 interface GisTokenClient {
   requestAccessToken(opts?: { prompt?: '' | 'consent' | 'select_account' }): void;
