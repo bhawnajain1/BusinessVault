@@ -1,7 +1,7 @@
 {
   "name": "businessvault",
   "private": true,
-  "version": "0.19.0",
+  "version": "0.20.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "test:unit": "vitest run src",
     "test:e2e": "vitest run tests",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "release:gate": "node scripts/release-gate.mjs"
   },
   "dependencies": {
     "dexie": "4.4.4",

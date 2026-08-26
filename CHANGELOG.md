@@ -4,6 +4,47 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 0.20.0 — 2026-08-26
+
+### §22 §24 §26 — Reusable regression assertions, cross-feature integration, release gate
+
+- **§24 Regression assertion library.** New
+  `src/testing/regressionAssertions.ts` exposes eight named invariants —
+  `assertAccountingBalanced`, `assertInvoiceDueNonNegative`,
+  `assertPaymentAllocationsBounded`, `assertSalesReturnQtyBounded`,
+  `assertInventoryIdentity`, `assertReceivablesConsistent`,
+  `assertPayablesConsistent`, `assertRoundOffIdentity`,
+  `assertNoDuplicateInvoiceNumbers` — plus `runFullRegressionSuite` which
+  aggregates every assertion for a business into one pass/fail result. Every
+  helper throws a typed `RegressionAssertionError` carrying the failing check
+  slug and the numeric evidence, so a failure lands with actionable info,
+  not just a boolean. Unit-tested in
+  `src/testing/regressionAssertions.test.ts` (21 cases: each helper's happy
+  path + at least one violation path, plus the aggregator).
+- **§22 Cross-feature integration tests.** New
+  `tests/cross-feature-integration.spec.ts` exercises real service call
+  chains (no mocks) with `runFullRegressionSuite` after every step:
+  - Round Off + Recycle + Restore — rounded invoice stays balanced through
+    two full delete → restore cycles (catches mirror-journal drift on the
+    round-off account specifically).
+  - Round Off + Payment — paying a rounded invoice in full settles it to
+    exactly zero balance with no fractional drift across A/R.
+- **Fix (uncovered by §24).** `InvoiceService.createInvoice` was writing
+  `journal_entries.total_debit_paise` / `total_credit_paise` as the invoice's
+  `totalPaise`, ignoring the round-off Dr line that
+  `buildInvoiceJournalLines` appended when the pre-round sum exceeded the
+  rounded total. Per-line dr/cr sums balanced (17 paise on both sides), but
+  the stored header was off by the same 17 paise. `accountingSelfCheck` and
+  therefore §17 `reconcileAfter` would have tripped on any rounded invoice —
+  no shipped tests exercised that combination. Fix: recompute the header
+  totals from the actual `linesToPost` right before the write, so the header
+  is guaranteed consistent with its lines.
+- **§26 Release gate.** New `scripts/release-gate.mjs` runs the five
+  mandatory pre-release checks in sequence — typecheck, lint, unit tests,
+  integration tests, production build — and prints a per-check pass/fail
+  table with per-check wall time. Non-zero exit iff any check failed.
+  Wired into `npm run release:gate`.
+
 ## 0.19.0 — 2026-08-26
 
 ### Drive backup coverage + post-op reconciliation (feedback_1_to_7.md §17, §20)

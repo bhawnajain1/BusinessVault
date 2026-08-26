@@ -445,6 +445,20 @@ export class InvoiceService {
           journalEntry.total_debit_paise += totalCogsPaise;
           journalEntry.total_credit_paise += totalCogsPaise;
         }
+        // Recompute the header's dr/cr sums from the ACTUAL lines about to
+        // land, not from `totalPaise` — buildInvoiceJournalLines may have
+        // appended a round-off Dr line (when the pre-round sum exceeded the
+        // rounded total) that isn't reflected in `totalPaise`. If we don't
+        // do this, the header disagrees with the line-sum on rounded
+        // invoices, and §17 reconciliation / §24 regression assertions trip.
+        journalEntry.total_debit_paise = linesToPost.reduce(
+          (a, l) => a + l.debit_paise,
+          0,
+        );
+        journalEntry.total_credit_paise = linesToPost.reduce(
+          (a, l) => a + l.credit_paise,
+          0,
+        );
         await this.db.journal_entries.add(journalEntry);
         await this.db.journal_lines.bulkAdd(linesToPost);
         assertBalanced(linesToPost);
