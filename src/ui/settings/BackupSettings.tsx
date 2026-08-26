@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { db } from '../../db';
 import { useBackupHealth } from '../BackupHealthContext';
 import type { BackupHealthStatus } from '../../sync/syncWorker';
@@ -68,6 +68,33 @@ const STATUS_TONE: Record<BackupHealthStatus, string> = {
   INTEGRITY_FAILURE: 'bg-rose-100 text-rose-800 ring-rose-400',
 };
 
+// Pure derivation of the pill/banner status. Exported so the regression test
+// can pin down the DISCONNECTED-banner bug without mounting a React tree.
+//
+// Precedence:
+//   1. Live provider says DISCONNECTED → banner shows Reconnect. This wins
+//      even over health.status because the provider knows the OAuth state
+//      first-hand.
+//   2. Integrity report says the on-disk snapshot is corrupt → INTEGRITY_FAILURE.
+//   3. Otherwise, trust the polled health.status (HEALTHY / SYNCING / OFFLINE /
+//      ERROR / CONFLICT) — the sync worker is the authority on job outcomes.
+//
+// Bug this replaces: when the effect that populated `conn` ran once at mount
+// (during a page reload triggered by GIS reconnect), it captured a snapshot
+// BEFORE the provider registry had the new provider, leaving `conn.state` =
+// 'DISCONNECTED' forever. The banner then never cleared even after sync
+// resumed. Fix: poll the provider every 2s (elsewhere in this file) so this
+// derivation gets fresh input.
+export function deriveDisplayStatus(
+  conn: ConnectionStatus | null,
+  healthStatus: BackupHealthStatus,
+  integrity: IntegrityReport | null,
+): BackupHealthStatus {
+  if (conn?.state === 'DISCONNECTED') return 'DISCONNECTED';
+  if (integrity && !integrity.ok) return 'INTEGRITY_FAILURE';
+  return healthStatus;
+}
+
 interface Props {
   businessId: string;
   onReconnect?: () => void;
@@ -83,35 +110,92 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [showExport, setShowExport] = useState(false);
 
+  // Re-read the business row + provider connection status every 2s. A one-shot
+  // read at mount would leave the DISCONNECTED banner stuck if the user
+  // reconnected Drive AFTER the effect ran — the provider registry swap in
+  // adoptConnectedProvider() has no way to signal us. Polling matches the
+  // BackupHealthContext pattern already used for `health` above.
   useEffect(() => {
     let cancelled = false;
-    void (async (): Promise<void> => {
+    let previousState: ConnectionStatus['state'] | 'no-provider' | null = null;
+    log.debug('BackupSettings', 'mount: starting connection poll', { businessId });
+    const readOnce = async (): Promise<void> => {
       const b = await db.businesses.get(businessId);
-      if (!cancelled) setBusiness(b ?? null);
+      if (cancelled) return;
+      setBusiness(b ?? null);
       const provider = getActiveProvider();
       if (provider) {
         try {
           const c = await provider.connectionStatus();
-          if (!cancelled) setConn(c);
+          if (!cancelled) {
+            setConn(c);
+            if (previousState !== c.state) {
+              log.info('BackupSettings', 'connectionStatus changed', {
+                businessId,
+                previous: previousState,
+                next: c.state,
+                account: c.account,
+              });
+              previousState = c.state;
+            }
+          }
         } catch (e) {
-          if (!cancelled) setConn({ state: 'ERROR', error: (e as Error).message });
+          if (!cancelled) {
+            const msg = (e as Error).message;
+            setConn({ state: 'ERROR', error: msg });
+            if (previousState !== 'ERROR') {
+              log.warn('BackupSettings', 'connectionStatus threw', {
+                businessId,
+                previous: previousState,
+                error: msg,
+              });
+              previousState = 'ERROR';
+            }
+          }
         }
       } else {
-        if (!cancelled) setConn({ state: 'DISCONNECTED' });
+        if (!cancelled) {
+          setConn({ state: 'DISCONNECTED' });
+          if (previousState !== 'no-provider') {
+            log.info('BackupSettings', 'no active provider', {
+              businessId,
+              previous: previousState,
+            });
+            previousState = 'no-provider';
+          }
+        }
       }
-    })();
+    };
+    void readOnce();
+    const id = setInterval(() => {
+      void readOnce();
+    }, 2000);
     return () => {
       cancelled = true;
+      clearInterval(id);
+      log.debug('BackupSettings', 'unmount: stopping connection poll', { businessId });
     };
   }, [businessId]);
 
-  // Derive display status: prefer health.status, but override to DISCONNECTED
-  // when there's no provider / connection state says so.
-  const status: BackupHealthStatus = useMemo(() => {
-    if (conn?.state === 'DISCONNECTED') return 'DISCONNECTED';
-    if (integrity && !integrity.ok) return 'INTEGRITY_FAILURE';
-    return health.status;
-  }, [conn, integrity, health.status]);
+  const status: BackupHealthStatus = useMemo(
+    () => deriveDisplayStatus(conn, health.status, integrity),
+    [conn, integrity, health.status],
+  );
+
+  const lastLoggedStatusRef = useRef<BackupHealthStatus | null>(null);
+  useEffect(() => {
+    if (lastLoggedStatusRef.current !== status) {
+      log.info('BackupSettings', 'displayed status changed', {
+        businessId,
+        previous: lastLoggedStatusRef.current,
+        next: status,
+        conn_state: conn?.state ?? null,
+        health_status: health.status,
+        integrity_ok: integrity?.ok ?? null,
+      });
+      lastLoggedStatusRef.current = status;
+    }
+  }, [businessId, conn, health.status, integrity, status]);
 
   const email = conn?.account ?? business?.drive_connected_email ?? '(not connected)';
   const folderName = business?.name ?? '';

@@ -4,6 +4,34 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 0.17.1 — 2026-08-26
+
+### Fix: Data & Backup "DISCONNECTED" banner stuck after successful reconnect
+
+- **Bug.** After completing Google Drive Reconnect from Settings → Data &
+  Backup, the yellow "Google Drive backup disconnected" banner and the
+  `DISCONNECTED` status pill remained on-screen even though Drive was
+  actually connected and events were syncing (Last event sync updated,
+  Pending = 0). Root cause: `BackupSettings.tsx` read
+  `provider.connectionStatus()` **once at mount time**. The reconnect flow
+  triggers a page reload, and on the first render immediately after the
+  reload the sync-worker registry could still be empty for a brief moment.
+  The `conn` state captured `DISCONNECTED` and never re-read — even after
+  the worker registered its restored provider a second later.
+- **Fix.** `BackupSettings.tsx` now polls `getActiveProvider().connectionStatus()`
+  every 2 s (mirroring the `useBackupHealth` polling pattern already used
+  for the sync-worker health value on the same screen). The status pill and
+  banner now reflect current reality within one poll cycle of any change.
+- **Testing.** New `src/ui/settings/BackupSettings.test.ts` pins down the
+  `deriveDisplayStatus(conn, healthStatus, integrity)` precedence contract
+  (extracted as a pure exported helper so future refactors can't reintroduce
+  the stale-input regression). Includes an explicit "CONNECTED + HEALTHY
+  must NOT display DISCONNECTED" assertion that replays the 2026-08-26 bug.
+- **Debug logs.** Added structured `log.info` on every provider
+  connection-state transition and every displayed-status transition, so
+  future reports of this shape land with a clear trail in the exported
+  debug bundle.
+
 ## 0.17.0 — 2026-08-26
 
 ### GSTIN → State auto-detection (feedback_1_to_7.md §12)
