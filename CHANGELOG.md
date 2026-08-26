@@ -4,6 +4,50 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 0.18.0 — 2026-08-26
+
+### Correlation IDs + Diagnostic Report bundle (feedback_1_to_7.md §13, §14, §15, §16)
+
+- **§14 correlation IDs.** New `src/lib/operationId.ts` exposes
+  `newOperationId()` (26-char Crockford-base32 ULID; time-sortable prefix)
+  and `withOperation(event, opts, body)` — a thin wrapper that generates
+  or reuses an `operationId`, logs `<event>.start` / `<event>.success` /
+  `<event>.failure` bracketing the body, and rethrows on error. Any
+  nested `log.info` inside the body that threads through the same
+  `operationId` links to the outer operation in the diagnostic bundle.
+  Callers pass `{ operationId }` down through service boundaries so a
+  single Recycle / Restore / Backup / Restore-from-Drive traces to one
+  contiguous log run.
+- **§16 diagnostic bundle.** Settings → Support / Diagnostics now shows
+  an **Export Diagnostic Report** button. Clicking it produces a
+  timestamped `businessvault-diagnostic-<iso>.json` download containing:
+  - App version + build mode (production / development)
+  - Dexie schema version + business `schema_version`
+  - Browser / platform / language user-agent context
+  - Business metadata (id, name, state_code, drive_connected — never
+    signature blob or OAuth tokens)
+  - Trial-Balance reconciliation snapshot (debits/credits paise +
+    balanced boolean) and receivables total
+  - Last 100 `audit_log` rows for the current business, reverse-chrono
+  - Last 24 h of `debug_logs`, plus grepped `drive.backup` and
+    `drive.restore` sub-buckets so a Drive-flow report lands with just
+    the relevant events at the top
+- **§15 redaction.** The bundle re-uses the existing `log.ts`
+  `SENSITIVE_KEY_RE` / `STACK_TOKEN_RE` / `LONG_TOKEN_RE` redaction —
+  every entry it emits has already been scrubbed of `access_token`,
+  `refresh_token`, `password`, `secret`, `api_key`, and any raw
+  base64/hex tokens > 24 chars. A regression test asserts that a fake
+  OAuth exchange log never surfaces in the exported JSON.
+- **§13 log discipline.** All new code paths use `log.info` at entry /
+  branch / exit with a stable `source` string so a support ticket can
+  be triaged from the exported bundle alone, without asking the user to
+  reproduce.
+- **Tests.** `src/lib/operationId.test.ts` (5 cases: fresh ULID,
+  monotonic time prefix, id generation, id reuse, start/success/failure
+  logging, nested link) and `src/lib/diagnosticBundle.test.ts` (6 cases:
+  empty state, business present, Drive-linked shape, audit reverse-chrono,
+  backup/restore bucketing, sensitive-key redaction).
+
 ## 0.17.1 — 2026-08-26
 
 ### Fix: Data & Backup "DISCONNECTED" banner stuck after successful reconnect

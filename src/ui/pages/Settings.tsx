@@ -16,6 +16,7 @@ import { seedChartOfAccounts } from '../../domain/coa';
 import { appendSyncEvent } from '../../domain/syncEventLog';
 import { getDeviceId } from '../../lib/device';
 import { downloadDebugLogs } from '../../lib/downloadLogs';
+import { downloadDiagnosticReport } from '../../lib/diagnosticBundle';
 import {
   BusinessProfileService,
   SignatureValidationError,
@@ -782,6 +783,30 @@ export default function Settings() {
             className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
           >
             Download last 7 days
+          </button>
+        </div>
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-3">
+          Support / Diagnostics
+        </h2>
+        <p className="text-xs text-slate-600 mb-3">
+          Bundles the last 24 hours of debug logs together with app version,
+          schema version, browser info, recent audit entries, recent Drive
+          backup/restore events, and a trial-balance / receivables snapshot —
+          all in one JSON file for support triage. OAuth tokens, passwords,
+          and signature blobs are stripped before export.
+        </p>
+        <div className="flex gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => {
+              void downloadDiagnosticReport();
+            }}
+            className="text-sm border border-indigo-300 bg-indigo-50 text-indigo-700 rounded px-3 py-1.5 hover:bg-indigo-100"
+          >
+            Export Diagnostic Report
           </button>
         </div>
       </section>
