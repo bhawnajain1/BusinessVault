@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { Business } from '../../db/types';
@@ -9,6 +9,11 @@ import { seedChartOfAccounts } from '../../domain/coa';
 import { appendSyncEvent } from '../../domain/syncEventLog';
 import { getDeviceId } from '../../lib/device';
 import { downloadDebugLogs } from '../../lib/downloadLogs';
+import {
+  BusinessProfileService,
+  SignatureValidationError,
+} from '../../domain/BusinessProfileService';
+import { log } from '../../lib/log';
 
 interface Counts {
   units: number;
@@ -63,6 +68,12 @@ export default function Settings() {
 
   async function save() {
     if (!business) return;
+    log.info('settings', 'business profile save requested', {
+      businessId: business.id,
+      changedKeys: Object.keys(form).filter(
+        (k) => (form as Record<string, unknown>)[k] !== (business as unknown as Record<string, unknown>)[k],
+      ),
+    });
     setSaving(true);
     setSaved(false);
     try {
@@ -92,8 +103,177 @@ export default function Settings() {
       setBusiness(patched);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      log.info('settings', 'business profile save committed', {
+        businessId: business.id,
+        entityVersion: patched.entity_version,
+      });
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Signature block state — mirrors BusinessProfileService operations.
+  const [signaturePreviewUrl, setSignaturePreviewUrl] = useState<string | null>(null);
+  const [signatureError, setSignatureError] = useState<string | null>(null);
+  const [signatureBusy, setSignatureBusy] = useState(false);
+  const signatureInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Refresh the preview URL whenever the business's `signature_ref` changes.
+  // We hold the object URL in state so React can render it AND clean it up on
+  // unmount / next-change; a raw `URL.createObjectURL()` inline would leak.
+  useEffect(() => {
+    let revoked: string | null = null;
+    let cancelled = false;
+    (async () => {
+      const ref = business?.signature_ref ?? null;
+      if (!ref) {
+        setSignaturePreviewUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return null;
+        });
+        return;
+      }
+      const att = await db.attachments.get(ref);
+      if (cancelled) return;
+      if (!att || !att.blob) {
+        log.warn('settings', 'signature preview missing blob', {
+          businessId: business?.id,
+          signatureRef: ref,
+          hasRow: !!att,
+        });
+        setSignaturePreviewUrl(null);
+        return;
+      }
+      const url = URL.createObjectURL(att.blob);
+      revoked = url;
+      setSignaturePreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+    })();
+    return () => {
+      cancelled = true;
+      if (revoked) URL.revokeObjectURL(revoked);
+    };
+  }, [business?.id, business?.signature_ref]);
+
+  async function handleSignatureUpload(file: File) {
+    if (!business) return;
+    setSignatureError(null);
+    setSignatureBusy(true);
+    log.info('settings', 'signature upload start', {
+      businessId: business.id,
+      filename: file.name,
+      sizeBytes: file.size,
+    });
+    try {
+      const svc = new BusinessProfileService(db);
+      const { business: patched } = await svc.uploadSignature(business.id, file);
+      const deviceId = await getDeviceId();
+      await appendSyncEvent(db, {
+        businessId: patched.id,
+        deviceId,
+        entityType: 'business',
+        entityId: patched.id,
+        operation: 'updated',
+        payload: patched,
+        timestamp: patched.updated_at,
+      });
+      setBusiness(patched);
+      setForm((f) => ({
+        ...f,
+        signature_ref: patched.signature_ref,
+        show_signature_on_invoice: patched.show_signature_on_invoice,
+      }));
+    } catch (e) {
+      const msg =
+        e instanceof SignatureValidationError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : String(e);
+      log.warn('settings', 'signature upload failed', {
+        businessId: business.id,
+        error: msg,
+      });
+      setSignatureError(msg);
+    } finally {
+      setSignatureBusy(false);
+      if (signatureInputRef.current) signatureInputRef.current.value = '';
+    }
+  }
+
+  async function handleSignatureRemove() {
+    if (!business) return;
+    setSignatureError(null);
+    setSignatureBusy(true);
+    log.info('settings', 'signature remove start', { businessId: business.id });
+    try {
+      const svc = new BusinessProfileService(db);
+      const patched = await svc.removeSignature(business.id);
+      const deviceId = await getDeviceId();
+      await appendSyncEvent(db, {
+        businessId: patched.id,
+        deviceId,
+        entityType: 'business',
+        entityId: patched.id,
+        operation: 'updated',
+        payload: patched,
+        timestamp: patched.updated_at,
+      });
+      setBusiness(patched);
+      setForm((f) => ({
+        ...f,
+        signature_ref: null,
+        show_signature_on_invoice: 0,
+      }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log.warn('settings', 'signature remove failed', {
+        businessId: business.id,
+        error: msg,
+      });
+      setSignatureError(msg);
+    } finally {
+      setSignatureBusy(false);
+    }
+  }
+
+  async function handleShowSignatureToggle(enabled: boolean) {
+    if (!business) return;
+    setSignatureError(null);
+    setSignatureBusy(true);
+    log.info('settings', 'signature toggle start', {
+      businessId: business.id,
+      enabled,
+    });
+    try {
+      const svc = new BusinessProfileService(db);
+      const patched = await svc.setShowSignatureOnInvoice(business.id, enabled);
+      const deviceId = await getDeviceId();
+      await appendSyncEvent(db, {
+        businessId: patched.id,
+        deviceId,
+        entityType: 'business',
+        entityId: patched.id,
+        operation: 'updated',
+        payload: patched,
+        timestamp: patched.updated_at,
+      });
+      setBusiness(patched);
+      setForm((f) => ({
+        ...f,
+        show_signature_on_invoice: patched.show_signature_on_invoice,
+      }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log.warn('settings', 'signature toggle failed', {
+        businessId: business.id,
+        error: msg,
+      });
+      setSignatureError(msg);
+    } finally {
+      setSignatureBusy(false);
     }
   }
 
@@ -339,6 +519,72 @@ export default function Settings() {
             {saving ? 'Saving…' : 'Save changes'}
           </button>
           {saved && <span className="text-sm text-emerald-600">Saved.</span>}
+        </div>
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-1">Authorised Signature</h2>
+        <p className="text-xs text-slate-500 mb-3">
+          Upload a scanned signature (PNG, JPG, or WebP, up to 2 MB and 2000×2000 px).
+          Enable the toggle to print it on new invoices. Historical invoices keep the
+          signature they were issued with — replacing this image will NOT change them.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-4 sm:items-start">
+          <div className="border border-slate-200 rounded bg-slate-50 w-[220px] h-[110px] flex items-center justify-center overflow-hidden">
+            {signaturePreviewUrl ? (
+              <img
+                src={signaturePreviewUrl}
+                alt="Authorised signature"
+                className="max-h-full max-w-full object-contain"
+              />
+            ) : (
+              <span className="text-xs text-slate-400">No signature uploaded</span>
+            )}
+          </div>
+          <div className="flex-1 flex flex-col gap-2">
+            <div className="flex flex-wrap gap-2">
+              <input
+                ref={signatureInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void handleSignatureUpload(f);
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => signatureInputRef.current?.click()}
+                disabled={signatureBusy}
+                className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+              >
+                {business.signature_ref ? 'Replace signature' : 'Upload signature'}
+              </button>
+              {business.signature_ref && (
+                <button
+                  type="button"
+                  onClick={() => void handleSignatureRemove()}
+                  disabled={signatureBusy}
+                  className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={(business.show_signature_on_invoice ?? 0) === 1}
+                disabled={signatureBusy || !business.signature_ref}
+                onChange={(e) => void handleShowSignatureToggle(e.target.checked)}
+              />
+              Show signature on new invoices
+            </label>
+            {signatureError && (
+              <div className="text-xs text-rose-600">{signatureError}</div>
+            )}
+          </div>
         </div>
       </section>
 

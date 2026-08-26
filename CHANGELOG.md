@@ -4,6 +4,32 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 0.14.0 — 2026-08-26
+
+### Authorised Signature on invoices (feedback_1_to_7.md §2)
+
+- **Settings → Business Profile** gains an *Authorised Signature* block:
+  upload / preview / replace / remove, plus a *Show signature on new invoices*
+  toggle. Uploads accept PNG, JPG, or WebP up to 2 MB and 2000×2000 px; the
+  service (`src/domain/BusinessProfileService.ts`) validates MIME, size, and
+  pixel dimensions and rejects with a `SignatureValidationError`.
+- Signature images are stored as attachments with `ref_type='signature'`,
+  `ref_id=<business_id>`. Every upload creates a **fresh** attachment row so
+  historical invoices resolve to the signature that was current the day they
+  were issued — replacing the signature never rewrites history.
+- New invoices snapshot the current signature onto
+  `invoice.signature_attachment_id` at creation time (only when the toggle is
+  on). The invoice print surface (`InvoicePrint.tsx`) now renders the pinned
+  attachment blob instead of the current business signature — so reprinting
+  an old invoice still shows the exact image that appeared on the original.
+- Schema is bumped to v8. Existing rows are backfilled (`signature_ref=null`,
+  `show_signature_on_invoice=0`, `signature_attachment_id=null`) both at
+  Dexie open time and at snapshot-restore time.
+- New tests: `src/domain/BusinessProfileService.test.ts` covers validation,
+  attachment write on first upload, fresh-row-on-replace (no mutation of the
+  old row), signature-off toggling, and the historical-preservation
+  invariant (INV-001 keeps V1, INV-002 pins V2, toggle-off yields null).
+
 ## 0.13.0 — 2026-08-26
 
 ### Editable invoice number + recycled-number reuse (feedback_1_to_7.md §3, §4)

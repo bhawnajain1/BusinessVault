@@ -84,7 +84,14 @@ export type RefType =
   | 'item'
   | 'product'
   | 'advance'
-  | 'advance_application';
+  | 'advance_application'
+  // §2 Authorised Signature: signature image assets are attachments with
+  // ref_type='signature', ref_id=business_id. Each upload creates a fresh
+  // Attachment row so `logical_path` carries a generation id and older
+  // invoices keep resolving to their historical signature. Business.signature_ref
+  // points at the CURRENT generation; invoice.signature_attachment_id (set at
+  // invoice creation) is the immutable historical reference.
+  | 'signature';
 
 export type SyncJobKind =
   | 'journal_flush'
@@ -114,6 +121,18 @@ export interface Business {
   current_financial_year: string;
   currency: string;
   logo_ref: string | null;
+  // §2: id of the CURRENT signature Attachment (ref_type='signature',
+  // ref_id=business.id). null when no signature has been uploaded yet, or
+  // the user has removed it. Historical invoices resolve their signature
+  // via invoice.signature_attachment_id, not this field — so replacing the
+  // signature never mutates old-invoice output.
+  signature_ref?: string | null;
+  // §2: whether newly-created invoices should snapshot the current
+  // signature_ref onto invoice.signature_attachment_id. When 0, new
+  // invoices are created with signature_attachment_id=null. Toggling off
+  // does NOT rewrite existing invoices — historical preservation is a
+  // one-way street.
+  show_signature_on_invoice?: 0 | 1;
   invoice_prefix: string;
   invoice_next_seq: number;
   // Business-wide monotonically increasing counter for Sales Return numbers
@@ -298,6 +317,13 @@ export interface Invoice {
   // is always +X (original) or 0 (deleted), keeping TB balanced without ever
   // mutating history. `null` on a live invoice; set only while deleted_at set.
   deletion_reversal_journal_id?: string | null;
+  // §2: snapshot of business.signature_ref at invoice-creation time. When the
+  // business later replaces its signature, this field STILL resolves to the
+  // Attachment that was current when the invoice was issued — so printing
+  // INV-001 always reproduces the signature that appeared originally, even
+  // after V2 upload. `null` when show_signature_on_invoice was off at
+  // creation time or the business had no signature uploaded.
+  signature_attachment_id?: string | null;
   created_at: string;
   updated_at: string;
   entity_version: number;

@@ -186,6 +186,22 @@ export class InvoiceService {
       throw new Error('Intrastate invoice must not carry IGST');
     }
 
+    // §2: snapshot the CURRENT business signature onto the invoice so a later
+    // Replace/Remove of the signature never re-writes history. Read once
+    // here, before the tx, and store the id on the invoice row. Explicit
+    // OFF-toggle or no-signature-uploaded both resolve to null.
+    const bizForSignature = await this.db.businesses.get(input.business_id);
+    const signatureAttachmentId =
+      bizForSignature?.show_signature_on_invoice === 1
+        ? bizForSignature.signature_ref ?? null
+        : null;
+    log.info('invoice', 'signature snapshot decision', {
+      invoiceId,
+      showFlag: bizForSignature?.show_signature_on_invoice ?? 0,
+      currentBusinessSignatureRef: bizForSignature?.signature_ref ?? null,
+      snapshotResolvedTo: signatureAttachmentId,
+    });
+
     const invoice: Invoice = {
       id: invoiceId,
       business_id: input.business_id,
@@ -217,6 +233,7 @@ export class InvoiceService {
       terms: input.terms ?? '',
       pdf_attachment_id: null,
       journal_entry_id: journalEntryId,
+      signature_attachment_id: signatureAttachmentId,
       created_at: now,
       updated_at: now,
       entity_version: 1,

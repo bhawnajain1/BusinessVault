@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export const DB_NAME = 'businessvault';
 
@@ -154,4 +154,13 @@ export const STORES_V6: Record<string, string> = {
 // deletion reversal for each one.
 export const STORES_V7: Record<string, string> = {
   ...STORES_V6,
+};
+
+// v8: feedback §2 Authorised Signature. Adds two sidecar fields on
+// businesses (`signature_ref`, `show_signature_on_invoice`) and one on
+// invoices (`signature_attachment_id`). No new indexes needed — the fields
+// are read as sidecars off the row already in hand. Existing rows are
+// backfilled with null / 0 defaults on upgrade.
+export const STORES_V8: Record<string, string> = {
+  ...STORES_V7,
 };

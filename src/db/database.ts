@@ -8,6 +8,7 @@ import {
   STORES_V5,
   STORES_V6,
   STORES_V7,
+  STORES_V8,
 } from './schema';
 import { ulid } from 'ulid';
 import { pokeSyncWorker } from '../sync/pokeChannel';
@@ -219,6 +220,36 @@ export class BusinessVaultDB extends Dexie {
             entity_version: inv.entity_version + 1,
           });
         }
+      });
+
+    // v8: feedback §2 Authorised Signature — sidecar fields on businesses and
+    // invoices. Backfill defaults so pre-v8 rows read as "no signature". The
+    // signature toggle defaults OFF so existing installs don't start
+    // silently altering invoice PDFs the next time they print one.
+    this.version(8)
+      .stores(STORES_V8)
+      .upgrade(async (tx) => {
+        const businessesTable = tx.table('businesses');
+        const invoicesTable = tx.table('invoices');
+        const now = new Date().toISOString();
+        await businessesTable.toCollection().modify((row: {
+          signature_ref?: string | null;
+          show_signature_on_invoice?: 0 | 1;
+          updated_at?: string;
+          entity_version?: number;
+        }) => {
+          if (row.signature_ref === undefined) row.signature_ref = null;
+          if (row.show_signature_on_invoice === undefined)
+            row.show_signature_on_invoice = 0;
+          row.updated_at = now;
+          row.entity_version = (row.entity_version ?? 0) + 1;
+        });
+        await invoicesTable.toCollection().modify((row: {
+          signature_attachment_id?: string | null;
+        }) => {
+          if (row.signature_attachment_id === undefined)
+            row.signature_attachment_id = null;
+        });
       });
 
     // After any sync_event insert commits, kick the sync worker so the write

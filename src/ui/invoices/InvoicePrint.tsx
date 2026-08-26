@@ -4,6 +4,8 @@ import { db } from '../../db';
 import type { Business, Customer, Invoice, InvoiceLine, Item } from '../../db/types';
 import Money from '../components/Money';
 import Qty from '../components/Qty';
+import { loadSignatureBlob } from '../../domain/BusinessProfileService';
+import { log } from '../../lib/log';
 
 interface Loaded {
   business: Business | null;
@@ -11,6 +13,11 @@ interface Loaded {
   lines: InvoiceLine[];
   customer: Customer | undefined;
   items: Map<string, Item>;
+  // Resolved via invoice.signature_attachment_id (NOT business.signature_ref)
+  // so historical invoices keep the exact image bytes that were current when
+  // they were issued. Null if the invoice never captured a signature, or if
+  // the blob is missing (Drive-only, not yet hydrated).
+  signatureBlobUrl: string | null;
 }
 
 // Indian numbering system amount-to-words. Handles up to 99,99,99,999 (99 crore).
@@ -97,6 +104,8 @@ export default function InvoicePrint() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let createdBlobUrl: string | null = null;
+    let cancelled = false;
     (async () => {
       try {
         if (!id) return;
@@ -112,22 +121,49 @@ export default function InvoicePrint() {
           const it = await db.items.get(iid);
           if (it) items.set(iid, it);
         }
+        // Historical snapshot resolution — the invoice pinned its signature
+        // to a specific Attachment at creation time. If that pin exists,
+        // load it. If it's null (invoice pre-dates §2, or the business had
+        // the toggle off), skip the image and render the plain block.
+        const sigBlob = await loadSignatureBlob(
+          invoice.signature_attachment_id ?? null,
+          db,
+        );
+        let signatureBlobUrl: string | null = null;
+        if (sigBlob) {
+          signatureBlobUrl = URL.createObjectURL(sigBlob);
+          createdBlobUrl = signatureBlobUrl;
+        }
+        log.info('invoice-print', 'signature resolved', {
+          invoiceId: invoice.id,
+          signatureAttachmentId: invoice.signature_attachment_id ?? null,
+          renderingImage: !!signatureBlobUrl,
+        });
+        if (cancelled) {
+          if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl);
+          return;
+        }
         setData({
           business: business ?? null,
           invoice,
           lines,
           customer,
           items,
+          signatureBlobUrl,
         });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
+    return () => {
+      cancelled = true;
+      if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl);
+    };
   }, [id]);
 
   if (error) return <div className="p-6 text-rose-600">{error}</div>;
   if (!data) return <div className="p-6 text-slate-500">Loading...</div>;
-  const { business, invoice, lines, customer, items } = data;
+  const { business, invoice, lines, customer, items, signatureBlobUrl } = data;
   const isIntrastate = invoice.is_interstate === 0;
 
   return (
@@ -458,15 +494,26 @@ export default function InvoicePrint() {
             </div>
           </div>
 
-          {/* Signature block */}
+          {/* Signature block — image resolved from invoice.signature_attachment_id */}
           <div className="grid grid-cols-2 gap-4 mt-8 pt-3 border-t border-slate-800">
             <div className="text-xs text-slate-600">
               This is a computer-generated invoice and does not require a physical signature.
             </div>
             <div className="text-right text-sm">
-              <div className="mb-10">
+              <div className="mb-2">
                 For <strong>{business?.legal_name || business?.name || '—'}</strong>
               </div>
+              {signatureBlobUrl ? (
+                <div className="flex justify-end">
+                  <img
+                    src={signatureBlobUrl}
+                    alt="Authorised signature"
+                    className="max-h-16 max-w-[200px] object-contain"
+                  />
+                </div>
+              ) : (
+                <div className="h-16" />
+              )}
               <div className="border-t border-slate-400 pt-1 inline-block min-w-[180px]">
                 Authorised Signatory
               </div>

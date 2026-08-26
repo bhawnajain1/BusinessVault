@@ -222,6 +222,33 @@ const migration_v6_to_v7: Migration = {
   },
 };
 
+// v7 → v8: feedback §2 Authorised Signature. Adds `signature_ref` +
+// `show_signature_on_invoice` on businesses and `signature_attachment_id` on
+// invoices. Older snapshots don't carry these columns; default them to
+// null/0 so the restore reads as "no signature configured". Historical
+// invoices restored from a pre-v8 backup therefore land with
+// signature_attachment_id=null, which InvoicePrint interprets as "render
+// the plain signature block, no image" — consistent with how the PDF
+// looked at the time the snapshot was taken.
+const migration_v7_to_v8: Migration = {
+  from: 7,
+  to: 8,
+  describe:
+    'v7 → v8: adds signature_ref / show_signature_on_invoice on businesses, signature_attachment_id on invoices',
+  apply(tables) {
+    const businesses = (tables.businesses ?? []).map((r) => ({
+      ...r,
+      signature_ref: r.signature_ref ?? null,
+      show_signature_on_invoice: r.show_signature_on_invoice ?? 0,
+    }));
+    const invoices = (tables.invoices ?? []).map((r) => ({
+      ...r,
+      signature_attachment_id: r.signature_attachment_id ?? null,
+    }));
+    return { ...tables, businesses, invoices };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
@@ -230,6 +257,7 @@ export const MIGRATIONS: Migration[] = [
   migration_v4_to_v5,
   migration_v5_to_v6,
   migration_v6_to_v7,
+  migration_v7_to_v8,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;
