@@ -275,92 +275,143 @@ export class BusinessVaultDB extends Dexie {
       });
     });
 
-    // §8 Low-Stock Alerts — hook item_stock writes to capture pre/post qty
-    // per (item, warehouse), then fire threshold-crossing detection AFTER
-    // the surrounding transaction commits. Doing the detection post-commit
-    // means (a) an alert-detection failure can never roll back a stock
-    // write, and (b) we read the fully-committed row set when summing the
-    // cross-warehouse total. Snake-case field names in the row payloads are
-    // what Dexie exposes here; using the shared LowStockPending tuple type
-    // avoids any(-ed) casts elsewhere.
-    interface LowStockPending {
+    // §8 Low-Stock Alerts — hook item_stock writes to compute cross-warehouse
+    // pre-tx and post-tx totals for each affected (business, item) PAIR,
+    // right here inside the transaction. We build the totals during the tx
+    // so the crossing decision is authoritative — no post-commit re-read,
+    // no race with a follow-up tx, no under-counting when two warehouses of
+    // the same item are touched in one tx. On commit, we hand the finished
+    // totals to the detector which just does the item lookup + dispatch.
+    //
+    // Suppression: rebuildFromDrive sets `db.__bvSuppressLowStock = true`
+    // around the bulk restore so a snapshot restore doesn't pop dozens of
+    // toasts for items whose starting stock is legitimately below reorder.
+    // A restore represents "loading history", not "user just sold something".
+    interface LowStockAggregate {
       businessId: string;
       itemId: string;
-      warehouseId: string;
-      prev: number;
-      next: number;
+      prevTotal: number; // cross-WH sum BEFORE this tx started
+      currentTotal: number; // running cross-WH sum reflecting hook fires so far
     }
-    type LowStockTx = typeof Dexie.currentTransaction & {
-      __bvLowStockPending?: LowStockPending[];
+    type LowStockTx = NonNullable<typeof Dexie.currentTransaction> & {
+      __bvLowStockAgg?: Map<string, LowStockAggregate>;
       __bvLowStockRegistered?: boolean;
+      waitFor(p: Promise<unknown>): void;
     };
     const registerLowStockFlush = (tx: LowStockTx) => {
       if (tx.__bvLowStockRegistered) return;
       tx.__bvLowStockRegistered = true;
       tx.on('complete', () => {
-        const pending = tx.__bvLowStockPending ?? [];
-        // Coalesce multiple hits on the same (item, warehouse) inside one
-        // transaction — e.g. an invoice with two lines on the same item.
-        // We want the true tx-wide prev (from the first hit) and the final
-        // committed next (from the last hit).
-        const collapsed = new Map<string, LowStockPending>();
-        for (const p of pending) {
-          const key = `${p.itemId}|${p.warehouseId}`;
-          const seen = collapsed.get(key);
-          if (seen) {
-            seen.next = p.next;
-          } else {
-            collapsed.set(key, { ...p });
-          }
+        const agg = tx.__bvLowStockAgg;
+        if (!agg || agg.size === 0) return;
+        if ((this as unknown as { __bvSuppressLowStock?: boolean }).__bvSuppressLowStock) {
+          return;
         }
-        if (collapsed.size === 0) return;
-        // Dynamic import to avoid an import cycle:
-        //   database.ts → lowStockAlerts.ts → log.ts → db/index.ts → database.ts
-        // The `void` chain runs post-commit, so a microtask delay from
-        // import() is a non-issue.
-        void import('../domain/lowStockAlerts').then(({ detectAndDispatchLowStock }) => {
-          for (const p of collapsed.values()) {
-            if (p.prev === p.next) continue;
-            void detectAndDispatchLowStock(this, {
-              businessId: p.businessId,
-              itemId: p.itemId,
-              warehouseId: p.warehouseId,
-              prevWarehouseQtyMicros: p.prev,
-              newWarehouseQtyMicros: p.next,
-            });
+        // Dynamic import breaks a `database.ts → lowStockAlerts.ts →
+        // log.ts → db/index.ts → database.ts` cycle. Runs post-commit so
+        // the microtask delay is irrelevant.
+        void import('../domain/lowStockAlerts').then(({ dispatchLowStockForTotals }) => {
+          for (const a of agg.values()) {
+            if (a.prevTotal === a.currentTotal) continue;
+            void dispatchLowStockForTotals(this, a);
           }
         });
       });
     };
 
+    // Seed once per (business, item) touched in this tx. Read ALL
+    // per-warehouse rows for the item — including any about to be
+    // updated — and stash that sum as BOTH prevTotal and currentTotal.
+    // Deltas from each hook fire then move currentTotal from the pre-tx
+    // sum to the post-tx sum without needing to know which rows were
+    // touched. Dexie tx-scoped read isolation serves the pre-tx snapshot
+    // here (we're inside the hook, before any of this tx's writes have
+    // committed), so the sum is authoritative even for a warehouse row
+    // we're about to overwrite in this same tx.
+    //
+    // Sync-cache-first: install the aggregate placeholder SYNCHRONOUSLY
+    // during the hook fire. If we awaited the read, N concurrent hook
+    // fires for the same (business, item) inside one bulkAdd would all
+    // start N parallel scans before any populated the cache — O(N²)
+    // scans over the growing stock table. Installing the placeholder
+    // sync means subsequent fires this tx find it in the map immediately
+    // and skip the scan.
+    const getOrCreateAggregate = (
+      tx: LowStockTx,
+      businessId: string,
+      itemId: string,
+    ): { agg: LowStockAggregate; seeding: Promise<void> } => {
+      const map = (tx.__bvLowStockAgg ??= new Map());
+      const key = `${businessId}|${itemId}`;
+      const existing = map.get(key);
+      if (existing) {
+        const withSeed = existing as LowStockAggregate & { __seedingPromise?: Promise<void> };
+        return { agg: existing, seeding: withSeed.__seedingPromise ?? Promise.resolve() };
+      }
+      const fresh: LowStockAggregate & { __seedingPromise?: Promise<void> } = {
+        businessId,
+        itemId,
+        prevTotal: 0,
+        currentTotal: 0,
+      };
+      map.set(key, fresh);
+      const seeding = (async () => {
+        let sum = 0;
+        // Use the compound [business_id+item_id+warehouse_id] index to
+        // range-scan JUST this item's warehouse rows — an equality-scan
+        // on business_id would be O(all item_stock rows for the business)
+        // and gets prohibitive when bulk-writing thousands of rows in one
+        // tx (an O(N²) blowup during test/onboarding bulk seeds).
+        await this.item_stock
+          .where('[business_id+item_id+warehouse_id]')
+          .between([businessId, itemId, ''], [businessId, itemId, '￿'])
+          .each((r) => {
+            sum += r.qty_micros;
+          });
+        fresh.prevTotal += sum;
+        fresh.currentTotal += sum;
+      })();
+      fresh.__seedingPromise = seeding;
+      return { agg: fresh, seeding };
+    };
+
     this.item_stock.hook('creating', (_pk, obj) => {
+      // rebuildFromDrive sets __bvSuppressLowStock around bulk restore
+      // so the hook becomes a no-op during restore. Also spares the tx
+      // from scanning-the-item_stock-table-per-item during a snapshot
+      // reseed.
+      if ((this as unknown as { __bvSuppressLowStock?: boolean }).__bvSuppressLowStock) {
+        return;
+      }
       const tx = Dexie.currentTransaction as LowStockTx | null;
       if (!tx) return;
       registerLowStockFlush(tx);
-      const list = (tx.__bvLowStockPending ??= []);
-      list.push({
-        businessId: obj.business_id,
-        itemId: obj.item_id,
-        warehouseId: obj.warehouse_id,
-        prev: 0,
-        next: obj.qty_micros,
-      });
+      const { agg, seeding } = getOrCreateAggregate(tx, obj.business_id, obj.item_id);
+      // The new row didn't exist in the pre-tx snapshot — add its qty to
+      // currentTotal only. Do it synchronously so subsequent hook fires
+      // in this tx (e.g. bulkAdd) see the updated running total without
+      // waiting for the seed scan to resolve.
+      agg.currentTotal += obj.qty_micros;
+      tx.waitFor(seeding);
     });
 
     this.item_stock.hook('updating', (mods, _pk, obj) => {
       const m = mods as Partial<{ qty_micros: number }>;
-      if (m.qty_micros === undefined) return; // qty untouched, no crossing
+      const newQty = m.qty_micros;
+      if (newQty === undefined) return;
+      if ((this as unknown as { __bvSuppressLowStock?: boolean }).__bvSuppressLowStock) {
+        return;
+      }
       const tx = Dexie.currentTransaction as LowStockTx | null;
       if (!tx) return;
       registerLowStockFlush(tx);
-      const list = (tx.__bvLowStockPending ??= []);
-      list.push({
-        businessId: obj.business_id,
-        itemId: obj.item_id,
-        warehouseId: obj.warehouse_id,
-        prev: obj.qty_micros,
-        next: m.qty_micros,
-      });
+      const { agg, seeding } = getOrCreateAggregate(tx, obj.business_id, obj.item_id);
+      // Delta on currentTotal. See seed comment above — obj.qty_micros is
+      // the row value in the pre-hook snapshot, which is included in the
+      // seed sum (for first fire) or in currentTotal (for repeat fires).
+      // Either way the delta is exactly newQty - obj.qty_micros.
+      agg.currentTotal += newQty - obj.qty_micros;
+      tx.waitFor(seeding);
     });
   }
 }

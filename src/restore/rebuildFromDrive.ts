@@ -299,67 +299,79 @@ export async function rebuildFromDrive(
     );
   }
 
-  // Bulk-insert snapshot into Dexie under ONE transaction. If anything throws,
-  // Dexie rolls back leaving the database in its pre-restore state (which
-  // rebuildFromDrive already cleared at the head of the transaction — so on
-  // failure the DB is empty and the caller can retry).
-  progress('Rebuilding local database', 55);
-  await opts.db.transaction(
-    'rw',
-    tableNames(),
-    async () => {
-      for (const spec of TABLE_SPECS) {
-        // Clear + repopulate each table. Even if the snapshot lacks the file
-        // we clear — restore is a full replacement.
-        const table = (opts.db as unknown as Record<string, {
-          clear(): Promise<void>;
-          bulkPut(rows: unknown[]): Promise<unknown>;
-        }>)[spec.store];
-        if (!table) continue;
-        await table.clear();
-        const rows = snapshotTables[spec.store];
-        if (rows && rows.length > 0) {
-          await table.bulkPut(rows);
-        }
-      }
-      // Truncate the sync_events store too — restore starts a fresh journal.
-      await opts.db.sync_events.clear();
-    },
-  );
-
-  // 6. replay journal events after the snapshot's checkpoint
-  progress('Replaying journal events', 70);
-
+  // §8: suppress low-stock alerts across the entire rebuild — a snapshot
+  // restore represents "loading history", not "user just sold something",
+  // and every item that happens to be below reorder in the restored data
+  // would otherwise pop a toast the moment the item_stock row lands. The
+  // flag is checked by the Dexie item_stock hook in database.ts inside its
+  // post-commit dispatcher. We restore it in a `finally` so a mid-restore
+  // throw doesn't leave the flag stuck on and mute future real writes.
+  const dbWithFlag = opts.db as unknown as { __bvSuppressLowStock?: boolean };
+  dbWithFlag.__bvSuppressLowStock = true;
   const diagnostics: string[] = [];
   let replayed = 0;
   let unhandled = 0;
-
-  await opts.db.transaction(
-    'rw',
-    tableNames(),
-    async () => {
-      for (const evt of events) {
-        try {
-          const result = await applyEvent(evt, {
-            db: opts.db,
-            businessId: selected.businessId,
-            diagnostics,
-          });
-          if (result === 'applied') replayed++;
-          else unhandled++;
-        } catch (err) {
-          diagnostics.push(
-            `event ${evt.event_id} (${evt.entity_type}:${evt.operation}) failed: ${(err as Error).message}`,
-          );
+  try {
+    // Bulk-insert snapshot into Dexie under ONE transaction. If anything throws,
+    // Dexie rolls back leaving the database in its pre-restore state (which
+    // rebuildFromDrive already cleared at the head of the transaction — so on
+    // failure the DB is empty and the caller can retry).
+    progress('Rebuilding local database', 55);
+    await opts.db.transaction(
+      'rw',
+      tableNames(),
+      async () => {
+        for (const spec of TABLE_SPECS) {
+          // Clear + repopulate each table. Even if the snapshot lacks the file
+          // we clear — restore is a full replacement.
+          const table = (opts.db as unknown as Record<string, {
+            clear(): Promise<void>;
+            bulkPut(rows: unknown[]): Promise<unknown>;
+          }>)[spec.store];
+          if (!table) continue;
+          await table.clear();
+          const rows = snapshotTables[spec.store];
+          if (rows && rows.length > 0) {
+            await table.bulkPut(rows);
+          }
         }
-      }
-    },
-  );
+        // Truncate the sync_events store too — restore starts a fresh journal.
+        await opts.db.sync_events.clear();
+      },
+    );
 
-  // 7. rebuild derived caches
-  progress('Rebuilding derived tables', 80);
-  await rebuildItemStockFromMovements(opts.db, selected.businessId);
-  await rebuildInvoicePaidBalance(opts.db, selected.businessId);
+    // 6. replay journal events after the snapshot's checkpoint
+    progress('Replaying journal events', 70);
+
+    await opts.db.transaction(
+      'rw',
+      tableNames(),
+      async () => {
+        for (const evt of events) {
+          try {
+            const result = await applyEvent(evt, {
+              db: opts.db,
+              businessId: selected.businessId,
+              diagnostics,
+            });
+            if (result === 'applied') replayed++;
+            else unhandled++;
+          } catch (err) {
+            diagnostics.push(
+              `event ${evt.event_id} (${evt.entity_type}:${evt.operation}) failed: ${(err as Error).message}`,
+            );
+          }
+        }
+      },
+    );
+
+    // 7. rebuild derived caches
+    progress('Rebuilding derived tables', 80);
+    await rebuildItemStockFromMovements(opts.db, selected.businessId);
+    await rebuildInvoicePaidBalance(opts.db, selected.businessId);
+  } finally {
+    dbWithFlag.__bvSuppressLowStock = false;
+  }
 
   // 8. run validators (spec §27)
   progress('Verifying accounting and inventory', 90);

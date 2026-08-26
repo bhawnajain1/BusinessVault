@@ -1,11 +1,15 @@
 // §8 Low-Stock Alerts — the crossing detector + dispatch primitive.
 //
-// One tiny helper called by the Dexie `item_stock` write hook (see
-// src/db/database.ts). No I/O beyond: (a) look up the item, (b) fire a
-// window `CustomEvent` describing the crossing. Everything else — toast,
-// notification list, sound — lives on the UI side listening for that
-// event. Keeps stock-writing services untouched: they don't need to know
-// alerts exist. LoB win.
+// The Dexie hook in src/db/database.ts computes cross-warehouse
+// prevTotal / currentTotal for each affected item INSIDE the transaction
+// (so the values are immune to follow-up-tx races) and then calls
+// `dispatchLowStockForTotals` here on tx commit. This module only does:
+//   (a) skip-rules gate (services / non-tracked / unset threshold),
+//   (b) item + unit metadata lookup for the payload,
+//   (c) window CustomEvent dispatch.
+//
+// Everything else — toast, notification list, sound — lives on the UI
+// side listening for the event. Keeps stock-writing services untouched.
 //
 // Threshold-crossing behaviour per spec §8:
 //   * ALERT on `prev > reorder && new <= reorder`
@@ -39,7 +43,82 @@ export interface LowStockPayload {
   occurredAt: string; // ISO
 }
 
-interface DetectArgs {
+export interface LowStockTotals {
+  businessId: string;
+  itemId: string;
+  prevTotal: number; // cross-warehouse sum BEFORE the tx started
+  currentTotal: number; // cross-warehouse sum AFTER the tx committed
+}
+
+/**
+ * Called from the item_stock Dexie hook on tx commit. Totals are already
+ * cross-warehouse-summed at hook time — this function only does the item
+ * lookup + skip rules + dispatch. Any thrown error is logged and swallowed
+ * — an alert failure must never break the transaction whose commit we
+ * hooked into.
+ */
+export async function dispatchLowStockForTotals(
+  db: BusinessVaultDB,
+  totals: LowStockTotals,
+): Promise<void> {
+  try {
+    const item = await db.items.get(totals.itemId);
+    if (!item) return;
+    if (item.is_service === 1 || item.track_inventory !== 1) return;
+    if (!item.reorder_level_micros || item.reorder_level_micros <= 0) return;
+
+    const reorder = item.reorder_level_micros;
+    const crossedBelow = totals.prevTotal > reorder && totals.currentTotal <= reorder;
+    const cleared = totals.prevTotal <= reorder && totals.currentTotal > reorder;
+    if (!crossedBelow && !cleared) return;
+
+    const unit = item.unit_id ? await db.units.get(item.unit_id) : undefined;
+    const payload: LowStockPayload = {
+      kind: crossedBelow ? 'crossed_below' : 'cleared',
+      businessId: totals.businessId,
+      itemId: totals.itemId,
+      itemName: item.name,
+      itemSku: item.sku,
+      unitLabel: unit?.code ?? unit?.name ?? '',
+      currentQtyMicros: totals.currentTotal,
+      reorderLevelMicros: reorder,
+      isOutOfStock: totals.currentTotal <= 0,
+      occurredAt: new Date().toISOString(),
+    };
+    log.info('lowStock', 'threshold crossing detected', {
+      kind: payload.kind,
+      itemId: payload.itemId,
+      itemName: payload.itemName,
+      prevTotalMicros: totals.prevTotal,
+      newTotalMicros: totals.currentTotal,
+      reorderLevelMicros: reorder,
+    });
+    dispatchLowStock(payload);
+  } catch (e) {
+    log.error('lowStock', 'detection failed', {
+      itemId: totals.itemId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+function dispatchLowStock(payload: LowStockPayload): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent<LowStockPayload>(LOW_STOCK_EVENT_NAME, { detail: payload }),
+  );
+}
+
+/**
+ * Test hook: exported so unit tests can synthesise a fake crossing event
+ * without touching Dexie. Fires the SAME event the production path fires,
+ * so listeners exercise the whole downstream shape.
+ */
+export function _testDispatch(payload: LowStockPayload): void {
+  dispatchLowStock(payload);
+}
+
+export interface LowStockDetectArgs {
   businessId: string;
   itemId: string;
   warehouseId: string;
@@ -48,70 +127,34 @@ interface DetectArgs {
 }
 
 /**
- * Called AFTER an item_stock row is committed. Computes the cross-warehouse
- * total delta and, if the aggregate crossed the reorder threshold in either
- * direction, dispatches a low-stock event. Any thrown error is logged and
- * swallowed — an alert failure must never break the transaction whose
- * commit we hooked into.
+ * Compatibility entry point for tests and any caller that already knows the
+ * pre-tx and post-tx qty for one specific warehouse row. Reads the CURRENT
+ * per-warehouse rows for the item (which reflect the post-write state)
+ * except the touched warehouse, adds this row's prev/new qty to synthesise
+ * cross-warehouse totals, then delegates to `dispatchLowStockForTotals`.
+ *
+ * NOTE: production `item_stock` writes go through the Dexie hook path in
+ * database.ts, which computes totals inside the tx — this function is a
+ * best-effort synthesiser used only outside a tx (e.g. test drivers).
  */
 export async function detectAndDispatchLowStock(
   db: BusinessVaultDB,
-  args: DetectArgs,
+  args: LowStockDetectArgs,
 ): Promise<void> {
   try {
-    const item = await db.items.get(args.itemId);
-    if (!item) return;
-    // Skip services / non-tracked items outright.
-    if (item.is_service === 1 || item.track_inventory !== 1) return;
-    // A zero reorder threshold means "unset" — opt-in only.
-    if (!item.reorder_level_micros || item.reorder_level_micros <= 0) return;
-
-    // The hook only knows this ONE warehouse's before/after. To decide
-    // crossing we need the cross-warehouse total. Read the rest of the
-    // per-warehouse rows for this item and add THIS warehouse's before and
-    // after. This runs post-commit so it sees the new row for the current
-    // warehouse — hence we subtract new + add prev to synthesise the old
-    // total, and use the current sum as the new total.
-    // No compound [business_id+item_id] index exists (only
-    // [business_id+item_id+warehouse_id]), so scan business rows and filter
-    // by item_id — item_stock is bounded by item_count × warehouse_count,
-    // which is small for a POS-scale business.
-    const rows = await db.item_stock
+    const otherRows = await db.item_stock
       .where('business_id')
       .equals(args.businessId)
-      .and((r) => r.item_id === args.itemId)
+      .and((r) => r.item_id === args.itemId && r.warehouse_id !== args.warehouseId)
       .toArray();
-    let newTotal = 0;
-    for (const r of rows) newTotal += r.qty_micros;
-    const prevTotal = newTotal - args.newWarehouseQtyMicros + args.prevWarehouseQtyMicros;
-
-    const reorder = item.reorder_level_micros;
-    const crossedBelow = prevTotal > reorder && newTotal <= reorder;
-    const cleared = prevTotal <= reorder && newTotal > reorder;
-    if (!crossedBelow && !cleared) return;
-
-    const unit = item.unit_id ? await db.units.get(item.unit_id) : undefined;
-    const payload: LowStockPayload = {
-      kind: crossedBelow ? 'crossed_below' : 'cleared',
+    let others = 0;
+    for (const r of otherRows) others += r.qty_micros;
+    await dispatchLowStockForTotals(db, {
       businessId: args.businessId,
       itemId: args.itemId,
-      itemName: item.name,
-      itemSku: item.sku,
-      unitLabel: unit?.code ?? unit?.name ?? '',
-      currentQtyMicros: newTotal,
-      reorderLevelMicros: reorder,
-      isOutOfStock: newTotal <= 0,
-      occurredAt: new Date().toISOString(),
-    };
-    log.info('lowStock', 'threshold crossing detected', {
-      kind: payload.kind,
-      itemId: payload.itemId,
-      itemName: payload.itemName,
-      prevTotalMicros: prevTotal,
-      newTotalMicros: newTotal,
-      reorderLevelMicros: reorder,
+      prevTotal: others + args.prevWarehouseQtyMicros,
+      currentTotal: others + args.newWarehouseQtyMicros,
     });
-    dispatchLowStock(payload);
   } catch (e) {
     log.error('lowStock', 'detection failed', {
       itemId: args.itemId,
@@ -120,30 +163,12 @@ export async function detectAndDispatchLowStock(
   }
 }
 
-function dispatchLowStock(payload: LowStockPayload): void {
-  // window is undefined on the initial SSR-style module load path in
-  // certain Vitest configurations; guard so tests don't blow up.
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(
-    new CustomEvent<LowStockPayload>(LOW_STOCK_EVENT_NAME, { detail: payload }),
-  );
-}
-
 /**
- * Test hook: exported so the Settings > Test Sound button and unit tests
- * can synthesise a fake crossing event without touching Dexie. Fires the
- * SAME event the production path fires, so listeners exercise the whole
- * downstream shape.
+ * Look up an Item by id and synthesise a low-stock payload from its
+ * CURRENT state (cross-warehouse sum vs reorder threshold). Used by
+ * point-in-time checks; returns null when the item doesn't exist, isn't
+ * tracked, has no threshold, or currently sits above threshold.
  */
-export function _testDispatch(payload: LowStockPayload): void {
-  dispatchLowStock(payload);
-}
-
-// Look up an Item by id and synthesise a low-stock payload from its
-// current state. Used by "Test Sound" and by the NotificationProvider
-// backfill when the user re-enables alerts and wants to see currently-low
-// items. Returns null if the item doesn't exist / isn't tracked / has no
-// reorder threshold — same skip rules as the detector.
 export async function loadCurrentLowStockSnapshot(
   db: BusinessVaultDB,
   businessId: string,
