@@ -73,11 +73,35 @@ const migration_v3_to_v4: Migration = {
   },
 };
 
+// v4 → v5: introduces the Sales Return domain — sales_returns,
+// sales_return_items, invoice_line_return_summary, legacy_reversal_audit.
+// Older snapshots pre-date all four tables; ensure they exist as empty
+// arrays so downstream restore code doesn't crash on `.length` / iteration.
+// The invoice_line_return_summary cache is rebuildable and will be
+// recomputed post-restore rather than trusted from the (nonexistent) v4
+// backup payload.
+const migration_v4_to_v5: Migration = {
+  from: 4,
+  to: 5,
+  describe:
+    'v4 → v5: adds sales_returns / sales_return_items / invoice_line_return_summary / legacy_reversal_audit (empty for older snapshots)',
+  apply(tables) {
+    return {
+      ...tables,
+      sales_returns: tables.sales_returns ?? [],
+      sales_return_items: tables.sales_return_items ?? [],
+      invoice_line_return_summary: tables.invoice_line_return_summary ?? [],
+      legacy_reversal_audit: tables.legacy_reversal_audit ?? [],
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
   migration_v2_to_v3,
   migration_v3_to_v4,
+  migration_v4_to_v5,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

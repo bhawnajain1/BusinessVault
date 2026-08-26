@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const DB_NAME = 'businessvault';
 
@@ -104,4 +104,33 @@ export const STORES_V4: Record<string, string> = {
   ...STORES_V3,
   invoices:
     'id, business_id, [business_id+invoice_number], [business_id+customer_id], [business_id+invoice_date], [business_id+status], [business_id+financial_year], [business_id+deleted_at], updated_at',
+};
+
+// v5: Sales Return domain, per SellReturnRequirement.md. Native sales returns
+// live in their own tables — NOT as a reversal Invoice row — so invoice edits
+// (which still write a reversal Invoice for journal integrity) can never leak
+// into the Sales Return UI or reports.
+//
+//   sales_returns              — one row per user-initiated Sales Return.
+//   sales_return_items         — one row per returned line (qty > 0).
+//   invoice_line_return_summary — cache: sum(active return qty) per invoice
+//                                 line. Authoritative source is still
+//                                 sales_return_items; rebuildable via
+//                                 rebuildInvoiceLineReturnSummary().
+//   legacy_reversal_audit      — one row per pre-v5 Invoice row whose
+//                                 reverses_invoice_id != null, recording the
+//                                 conservative migration classification
+//                                 (SALES_RETURN | SALES_RETURN_UNRECONSTRUCTABLE
+//                                 | EDIT_REVERSAL | UNKNOWN). Never guesses;
+//                                 preserves originals; idempotent.
+export const STORES_V5: Record<string, string> = {
+  ...STORES_V4,
+  sales_returns:
+    'id, business_id, [business_id+return_number], [business_id+original_invoice_id], [business_id+return_date], [business_id+customer_id], [business_id+status], [business_id+legacy_migration_classification], [business_id+deleted_at], updated_at',
+  sales_return_items:
+    'id, business_id, sales_return_id, [business_id+sales_return_id], [business_id+original_invoice_line_id], [business_id+original_invoice_id]',
+  invoice_line_return_summary:
+    '&invoice_line_id, business_id, invoice_id, [business_id+invoice_id]',
+  legacy_reversal_audit:
+    '&credit_note_invoice_id, business_id, [business_id+classification], [business_id+original_invoice_id], examined_at',
 };

@@ -1,5 +1,12 @@
 import Dexie, { type Table } from 'dexie';
-import { DB_NAME, STORES_V1, STORES_V2, STORES_V3, STORES_V4 } from './schema';
+import {
+  DB_NAME,
+  STORES_V1,
+  STORES_V2,
+  STORES_V3,
+  STORES_V4,
+  STORES_V5,
+} from './schema';
 import { pokeSyncWorker } from '../sync/pokeChannel';
 import type {
   Account,
@@ -16,14 +23,18 @@ import type {
   Expense,
   Invoice,
   InvoiceLine,
+  InvoiceLineReturnSummary,
   Item,
   ItemStock,
   JournalEntry,
   JournalLine,
   KVEntry,
+  LegacyReversalAudit,
   Payment,
   Purchase,
   PurchaseLine,
+  SalesReturn,
+  SalesReturnItem,
   StockMovement,
   Supplier,
   SyncEvent,
@@ -61,6 +72,10 @@ export class BusinessVaultDB extends Dexie {
   kv!: Table<KVEntry, string>;
   advances!: Table<Advance, string>;
   debug_logs!: Table<DebugLogEntry, number>;
+  sales_returns!: Table<SalesReturn, string>;
+  sales_return_items!: Table<SalesReturnItem, string>;
+  invoice_line_return_summary!: Table<InvoiceLineReturnSummary, string>;
+  legacy_reversal_audit!: Table<LegacyReversalAudit, string>;
 
   constructor(name: string = DB_NAME) {
     super(name);
@@ -68,6 +83,7 @@ export class BusinessVaultDB extends Dexie {
     this.version(2).stores(STORES_V2);
     this.version(3).stores(STORES_V3);
     this.version(4).stores(STORES_V4);
+    this.version(5).stores(STORES_V5);
 
     // After any sync_event insert commits, kick the sync worker so the write
     // lands in the local backup folder within a few hundred ms instead of

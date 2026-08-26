@@ -27,7 +27,9 @@ export type EntityType =
   | 'journal_entry'
   | 'journal_line'
   | 'attachment'
-  | 'advance';
+  | 'advance'
+  | 'sales_return'
+  | 'sales_return_item';
 
 export type EventOperation =
   | 'created'
@@ -114,6 +116,12 @@ export interface Business {
   logo_ref: string | null;
   invoice_prefix: string;
   invoice_next_seq: number;
+  // Business-wide monotonically increasing counter for Sales Return numbers
+  // (format `SR-000001`). Bumped inside allocateSalesReturnNumber's tx after
+  // scanning past collisions, mirroring invoice_next_seq semantics. Optional
+  // on the type because pre-v5 Business rows won't have it — the numbering
+  // service defaults to 1 in that case.
+  sales_return_next_seq?: number;
   drive_folder_id: string | null;
   drive_connected_email: string | null;
   schema_version: number;
@@ -604,6 +612,134 @@ export interface KVEntry {
   key: string;
   value: unknown;
   updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Sales Returns (schema v5) — per SellReturnRequirement.md.
+//
+// A Sales Return is a first-class user-initiated document, NOT a repurposed
+// reversal Invoice. It carries lines that can be a subset of the original
+// invoice's lines (partial return) and at partial quantities.
+//
+// Historical fidelity: item pricing / discount / GST fields on
+// SalesReturnItem are copied from the ORIGINAL invoice line at return time
+// (never the item master's current values), so the return remains
+// reproducible even if the item / invoice is later edited.
+// ---------------------------------------------------------------------------
+
+export type SalesReturnStatus = 'posted' | 'cancelled';
+
+// Distinguishes native v5+ returns from legacy pre-v5 rows that the
+// conservative migration classified. Native returns write `null` here.
+export type LegacyMigrationClassification =
+  | 'SALES_RETURN' // definitely a legacy Sales Return, lines reconstructed
+  | 'SALES_RETURN_UNRECONSTRUCTABLE' // definitely a return but line qty unknown; audit only
+  | 'EDIT_REVERSAL' // definitely an invoice-edit CN; not a return
+  | 'UNKNOWN'; // ambiguous; preserved as audit only, no return created
+
+export interface SalesReturn {
+  id: string;
+  business_id: string;
+  return_number: string; // e.g. SR-000001, from allocateSalesReturnNumber
+  return_date: string; // YYYY-MM-DD
+  original_invoice_id: string;
+  customer_id: string;
+  subtotal_paise: number;
+  discount_paise: number;
+  taxable_paise: number;
+  cgst_paise: number;
+  sgst_paise: number;
+  igst_paise: number;
+  cess_paise: number;
+  round_off_paise: number;
+  total_paise: number;
+  status: SalesReturnStatus;
+  reason: string;
+  notes: string;
+  journal_entry_id: string;
+  // Set for a v5+ native return that was migrated from a pre-existing
+  // reversal Invoice row. Points at that Invoice.id so the audit trail
+  // ties back to the original journal-integrity CN. Null for organically
+  // created returns.
+  reversed_credit_note_invoice_id: string | null;
+  // Non-null ONLY for rows written by the legacy-reversal migration.
+  legacy_migration_classification: LegacyMigrationClassification | null;
+  device_id: string;
+  deleted_at?: string | null;
+  deleted_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+// One returned line. Financially active iff parent SalesReturn.status='posted'
+// AND parent.deleted_at is null. Anything else is excluded from
+// available_to_return and invoice_line_return_summary math.
+export interface SalesReturnItem {
+  id: string;
+  business_id: string;
+  sales_return_id: string;
+  original_invoice_id: string; // denormalised — every sales_return_items row
+  // stays queryable by invoice without joining
+  // through sales_returns; also lets restore
+  // reconstruct summaries without a join.
+  original_invoice_line_id: string;
+  item_id: string;
+  description: string;
+  hsn: string;
+  warehouse_id: string;
+  line_no: number;
+  qty_micros: number; // POSITIVE. Sign is a return-vs-sale concern, not a per-line concern.
+  unit_price_paise: number; // frozen from the original invoice line
+  discount_pct_bps: number;
+  discount_paise: number;
+  taxable_paise: number;
+  tax_rate_bps: number;
+  cgst_paise: number;
+  sgst_paise: number;
+  igst_paise: number;
+  cess_paise: number;
+  line_total_paise: number;
+}
+
+// Cache: sum(qty_micros over financially active sales_return_items) per
+// original invoice line. Rebuildable from source data — NOT authoritative.
+// Written inside the same tx as sales_return_items so the cache is never
+// stale w.r.t. an in-DB transaction.
+export interface InvoiceLineReturnSummary {
+  invoice_line_id: string;
+  invoice_id: string;
+  business_id: string;
+  returned_qty_micros: number; // >= 0, sum over active return items
+  updated_at: string;
+}
+
+// One row per pre-v5 reversal Invoice examined by the migration. Preserves
+// classification decision + supporting evidence so the migration is
+// idempotent (skip already-audited rows) and auditable (why did we (not)
+// materialize a native SalesReturn?).
+export interface LegacyReversalAudit {
+  credit_note_invoice_id: string; // Invoice.id whose reverses_invoice_id != null
+  business_id: string;
+  original_invoice_id: string;
+  classification: LegacyMigrationClassification;
+  // Which native SalesReturn was created from this CN, if any. null for
+  // EDIT_REVERSAL / UNKNOWN / SALES_RETURN_UNRECONSTRUCTABLE.
+  materialized_sales_return_id: string | null;
+  evidence: {
+    // Fields we based the classification on. Kept as free-form JSON so future
+    // migrations can add new signals without a schema bump.
+    journal_entry_number: string | null;
+    journal_narration: string | null;
+    journal_ref_type: string | null;
+    credit_note_invoice_number: string | null;
+    stock_movement_types: string[]; // distinct movement_type values on rows ref'ing the CN
+    original_lines_present: boolean;
+    original_lines_count: number;
+    notes?: string;
+  };
+  examined_at: string;
+  migration_version: number;
 }
 
 // A structured log entry. Written by src/lib/log.ts and shown / exported from
