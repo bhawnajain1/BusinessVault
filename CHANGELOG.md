@@ -4,6 +4,34 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 0.15.0 — 2026-08-26
+
+### Sales Return audit + gap-fill (feedback_1_to_7.md §5, §6, §7)
+
+- **§5.3 — Sales Return picker shows original economics.** The per-line
+  picker in `SalesReturnPicker.tsx` now surfaces the columns a shopkeeper
+  needs to decide what they're refunding: **Unit** (looked up from the
+  item's `unit_id`), **Orig. rate** (`line.unit_price_paise`), **Discount**
+  (`line.discount_paise`), and **GST %** (`line.tax_rate_bps / 100`) — all
+  read from the invoice line itself, never the current item-master, so
+  edits to a product's price after the sale don't rewrite the return
+  screen.
+- **§7.4 — Snapshot restore rebuilds the return summary cache.**
+  `rebuildFromDrive` now runs `rebuildInvoiceLineReturnSummary` after the
+  inventory identity check and before the GST reconciliation pass. This
+  closes a gap where a restore from an older snapshot (or event-only
+  replay) would leave `invoice_line_return_summary` empty even though the
+  authoritative `sales_return_items` rows were fully restored — the first
+  render of the return picker post-restore now shows correct
+  "Prev. returned" / "Available" values without waiting for the next
+  create-return round-trip to backfill the cache.
+
+All other §5, §6, §7 items (per-line qty capping, journal reversal,
+inventory reversal, guard against editing an invoice with active returns,
+customer credit issuance, hash-chain preservation across returns) were
+already implemented in prior PRs — this release fills only the two audit
+gaps.
+
 ## 0.14.0 — 2026-08-26
 
 ### Authorised Signature on invoices (feedback_1_to_7.md §2)

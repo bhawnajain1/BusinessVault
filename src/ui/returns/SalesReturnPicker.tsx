@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { db } from '../../db';
-import type { Invoice, InvoiceLine, Item, SalesReturnItem, SalesReturn } from '../../db/types';
+import type {
+  Invoice,
+  InvoiceLine,
+  Item,
+  SalesReturn,
+  SalesReturnItem,
+  Unit,
+} from '../../db/types';
 import { SalesReturnService } from '../../domain/SalesReturnService';
 import { log } from '../../lib/log';
 import Money from '../components/Money';
@@ -29,6 +36,10 @@ interface Props {
 interface LineRow {
   line: InvoiceLine;
   itemName: string;
+  // §5.3: per-line columns must include the original economics from the
+  // invoice line itself (never the current item-master), so a user can see
+  // what they're getting refunded on. Unit is looked up from Item.unit_id.
+  unitLabel: string;
   alreadyReturnedMicros: number;
   availableMicros: number;
   qtyStr: string; // user input, in display units (not micros)
@@ -78,6 +89,14 @@ export default function SalesReturnPicker({
           .toArray();
         const itemById = new Map<string, Item>();
         for (const it of items) itemById.set(it.id, it);
+        // Look up units once so we can render "PCS" / "KG" per row without
+        // an N+1 fetch during render. Small dataset — full-table scan is fine.
+        const units = await db.units
+          .where('business_id')
+          .equals(inv.business_id)
+          .toArray();
+        const unitById = new Map<string, Unit>();
+        for (const u of units) unitById.set(u.id, u);
 
         // Authoritative already-returned per line: sum active
         // sales_return_items belonging to posted, non-deleted parents.
@@ -107,9 +126,12 @@ export default function SalesReturnPicker({
         const nextRows: LineRow[] = lines.map((l) => {
           const alreadyReturned = returnedByLine.get(l.id) ?? 0;
           const available = Math.max(0, l.qty_micros - alreadyReturned);
+          const it = itemById.get(l.item_id);
+          const unit = it ? unitById.get(it.unit_id) : undefined;
           return {
             line: l,
-            itemName: itemById.get(l.item_id)?.name ?? l.description ?? l.item_id,
+            itemName: it?.name ?? l.description ?? l.item_id,
+            unitLabel: unit?.code ?? unit?.name ?? '',
             alreadyReturnedMicros: alreadyReturned,
             availableMicros: available,
             qtyStr: '',
@@ -285,16 +307,22 @@ export default function SalesReturnPicker({
         </div>
       </div>
 
-      <div className="border border-border rounded overflow-hidden">
+      {/* §5.3: per-line UI shows the ORIGINAL economics (rate, discount, GST)
+          captured on the invoice line — never re-reads item master. */}
+      <div className="border border-border rounded overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-surface-hover text-xs uppercase text-fg-muted">
             <tr>
               <th className="text-left px-2 py-1.5">Item</th>
-              <th className="text-right px-2 py-1.5 w-24">Original qty</th>
-              <th className="text-right px-2 py-1.5 w-24">Already returned</th>
+              <th className="text-right px-2 py-1.5 w-20">Sold qty</th>
+              <th className="text-left px-2 py-1.5 w-14">Unit</th>
+              <th className="text-right px-2 py-1.5 w-24">Prev. returned</th>
               <th className="text-right px-2 py-1.5 w-24">Available</th>
+              <th className="text-right px-2 py-1.5 w-24">Orig. rate</th>
+              <th className="text-right px-2 py-1.5 w-24">Discount</th>
+              <th className="text-right px-2 py-1.5 w-20">GST %</th>
               <th className="text-right px-2 py-1.5 w-28">Return qty</th>
-              <th className="text-right px-2 py-1.5 w-28">Line total</th>
+              <th className="text-right px-2 py-1.5 w-28">Return amount</th>
             </tr>
           </thead>
           <tbody>
@@ -306,18 +334,41 @@ export default function SalesReturnPicker({
                 !invalid && r.line.qty_micros > 0
                   ? parsed / r.line.qty_micros
                   : 0;
+              // "Return amount" preview mirrors what the service will post —
+              // pro-rate the ORIGINAL line total by (return qty / sold qty).
+              // Same rule the service uses when it splits GST + discount pro
+              // rata; keeps the on-screen number consistent with the posted row.
               const projectedLinePaise = Math.round(r.line.line_total_paise * frac);
+              const gstPct = (r.line.tax_rate_bps / 100).toFixed(
+                r.line.tax_rate_bps % 100 === 0 ? 0 : 2,
+              );
               return (
                 <tr key={r.line.id} className="border-t border-border">
                   <td className="px-2 py-1.5">{r.itemName}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">
                     {formatQty(r.line.qty_micros)}
                   </td>
+                  <td className="px-2 py-1.5 text-fg-muted">
+                    {r.unitLabel || '—'}
+                  </td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-fg-muted">
                     {formatQty(r.alreadyReturnedMicros)}
                   </td>
                   <td className="px-2 py-1.5 text-right tabular-nums">
                     {formatQty(r.availableMicros)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    <Money paise={r.line.unit_price_paise} />
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-fg-muted">
+                    {r.line.discount_paise > 0 ? (
+                      <Money paise={r.line.discount_paise} />
+                    ) : (
+                      <span className="text-fg-subtle">—</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-fg-muted">
+                    {gstPct}%
                   </td>
                   <td className="px-2 py-1.5 text-right">
                     <input
@@ -346,7 +397,7 @@ export default function SalesReturnPicker({
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-center text-fg-subtle">
+                <td colSpan={10} className="px-3 py-6 text-center text-fg-subtle">
                   Invoice has no lines to return.
                 </td>
               </tr>

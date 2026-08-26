@@ -52,6 +52,8 @@ import {
 } from './diagnosticReport';
 import { accountingSelfCheck } from '../domain/AccountingService';
 import { InventoryService } from '../domain/InventoryService';
+import { rebuildInvoiceLineReturnSummary } from '../domain/invoiceLineReturnSummary';
+import { log } from '../lib/log';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -394,6 +396,17 @@ export async function rebuildFromDrive(
       detail: { mismatches: identity.mismatches.slice(0, 20) },
     });
   }
+
+  // §7.4: invoice_line_return_summary is a CACHE — source of truth is
+  // SUM(active sales_return_items.qty_micros). A snapshot may or may not
+  // carry the cache (older backups don't), and event replay writes items
+  // without touching the summary. Rebuild from source once after all rows
+  // are in place so the available-to-return math and any downstream
+  // eligibility checks read consistent values on the very first render.
+  log.info('restore', 'rebuilding invoice_line_return_summary from source', {
+    businessId: selected.businessId,
+  });
+  await rebuildInvoiceLineReturnSummary(opts.db, selected.businessId);
 
   const gst = await gstReconciliation(opts.db, selected.businessId);
   const gstReconciled = gst.ok;
