@@ -128,7 +128,7 @@ export const STORES_V5: Record<string, string> = {
   sales_returns:
     'id, business_id, [business_id+return_number], [business_id+original_invoice_id], [business_id+return_date], [business_id+customer_id], [business_id+status], [business_id+legacy_migration_classification], [business_id+deleted_at], updated_at',
   sales_return_items:
-    'id, business_id, sales_return_id, [business_id+sales_return_id], [business_id+original_invoice_line_id], [business_id+original_invoice_id]',
+    'id, business_id, sales_return_id, original_invoice_id, original_invoice_line_id, [business_id+sales_return_id], [business_id+original_invoice_line_id], [business_id+original_invoice_id]',
   invoice_line_return_summary:
     '&invoice_line_id, business_id, invoice_id, [business_id+invoice_id]',
   legacy_reversal_audit:

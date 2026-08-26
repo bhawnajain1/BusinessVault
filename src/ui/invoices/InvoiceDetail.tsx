@@ -13,6 +13,8 @@ import type {
 import Money from '../components/Money';
 import Qty from '../components/Qty';
 import StatusBadge from '../components/StatusBadge';
+import SalesReturnPicker from '../returns/SalesReturnPicker';
+import { useActiveBusiness } from '../hooks/useActiveBusiness';
 
 interface Loaded {
   invoice: Invoice;
@@ -26,9 +28,11 @@ interface Loaded {
 export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { businessId, deviceId } = useActiveBusiness();
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [returnPickerOpen, setReturnPickerOpen] = useState(false);
 
   async function load() {
     if (!id) return;
@@ -112,6 +116,15 @@ export default function InvoiceDetail() {
             >
               Edit
             </Link>
+          )}
+          {!superseded && !isCreditNote && invoice.status !== 'cancelled' && businessId && deviceId && (
+            <button
+              type="button"
+              onClick={() => setReturnPickerOpen(true)}
+              className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+            >
+              Create sales return
+            </button>
           )}
           <Link
             to={`/invoices/${invoice.id}/print`}
@@ -229,6 +242,19 @@ export default function InvoiceDetail() {
           </div>
         </div>
       </div>
+
+      {returnPickerOpen && businessId && deviceId && (
+        <SalesReturnPicker
+          businessId={businessId}
+          deviceId={deviceId}
+          invoiceId={invoice.id}
+          onClose={() => setReturnPickerOpen(false)}
+          onPosted={() => {
+            setReturnPickerOpen(false);
+            void load();
+          }}
+        />
+      )}
 
       {journal && (
         <div className="border border-slate-200 rounded">

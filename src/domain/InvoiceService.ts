@@ -851,6 +851,93 @@ export class InvoiceService {
     if (original.reversed_by_invoice_id) {
       throw new Error('Cannot edit an already-superseded invoice');
     }
+
+    // Edit guard (SellReturnRequirement.md §7 + §10): if any invoice line
+    // has historically returned quantity, the edit's new per-line quantity
+    // cannot go below that historical quantity. Rejecting here — rather
+    // than silently clamping — surfaces the conflict to the user (the UI
+    // shows "line X: cannot reduce below Y returned").
+    //
+    // Matching original line ↔ input line: by item_id + warehouse_id
+    // (line_no is caller-controlled and unstable across edits). Multiple
+    // original lines with the same (item, warehouse) collapse to their
+    // summed historical-return, and multiple input lines with the same
+    // pair sum on the new side — parity ensures the invariant holds for
+    // that item's total quantity in that warehouse.
+    const originalLines = await this.db.invoice_lines
+      .where('invoice_id')
+      .equals(invoiceId)
+      .toArray();
+    // Historical returns are stored on original_invoice_line_id. Sum active
+    // return qty per (item_id, warehouse_id) so we can validate against the
+    // edited line's key, not the specific line_id (which is being replaced).
+    const activeReturnItems = await this.db.sales_return_items
+      .where('original_invoice_id')
+      .equals(invoiceId)
+      .toArray();
+    log.info('invoice', 'updateInvoice edit-guard scan', {
+      invoiceId,
+      invoiceNumber: original.invoice_number,
+      originalLineCount: originalLines.length,
+      newLineCount: input.lines.length,
+      returnItemsFound: activeReturnItems.length,
+    });
+    if (activeReturnItems.length > 0) {
+      const activeReturns = await this.db.sales_returns
+        .where('[business_id+original_invoice_id]')
+        .equals([original.business_id, invoiceId])
+        .toArray();
+      const activeIds = new Set(
+        activeReturns
+          .filter((r) => r.status === 'posted' && !r.deleted_at)
+          .map((r) => r.id),
+      );
+      const returnedByKey = new Map<string, number>();
+      for (const it of activeReturnItems) {
+        if (!activeIds.has(it.sales_return_id)) continue;
+        const key = `${it.item_id}|${it.warehouse_id}`;
+        returnedByKey.set(key, (returnedByKey.get(key) ?? 0) + it.qty_micros);
+      }
+      const newByKey = new Map<string, number>();
+      for (const l of input.lines) {
+        const key = `${l.item_id}|${l.warehouse_id}`;
+        newByKey.set(key, (newByKey.get(key) ?? 0) + l.qty_micros);
+      }
+      log.debug('invoice', 'updateInvoice edit-guard aggregated', {
+        invoiceId,
+        activePostedReturns: activeIds.size,
+        totalActiveReturns: activeReturns.length,
+        keysReturned: returnedByKey.size,
+        keysNew: newByKey.size,
+      });
+      for (const [key, returned] of returnedByKey) {
+        const nowQty = newByKey.get(key) ?? 0;
+        if (nowQty < returned) {
+          const [itemId, warehouseId] = key.split('|');
+          log.warn('invoice', 'updateInvoice rejected by edit-guard', {
+            invoiceId,
+            invoiceNumber: original.invoice_number,
+            itemId,
+            warehouseId,
+            historicallyReturned: returned,
+            attemptedNewQty: nowQty,
+          });
+          throw new Error(
+            `Cannot reduce quantity for item ${itemId} (warehouse ${warehouseId}) to ${nowQty} — ${returned} has already been returned against this invoice. Cancel the Sales Return first, or keep the quantity at or above ${returned}.`,
+          );
+        }
+      }
+      log.info('invoice', 'updateInvoice edit-guard passed', {
+        invoiceId,
+        invoiceNumber: original.invoice_number,
+        keysChecked: returnedByKey.size,
+      });
+      // Silence unused-var lint on originalLines — the read is intentional
+      // (defensive: it forces the tx to observe the current lines before
+      // we compare against them via active return items).
+      void originalLines;
+    }
+
     await this.reverseInvoicePosting(invoiceId, 'edit');
     return this.createInvoice({
       ...input,

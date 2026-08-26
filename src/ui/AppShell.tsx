@@ -1,8 +1,12 @@
+import { useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
 import Header from './Header';
 import Sidebar from './Sidebar';
 import StorageBootBanner from './StorageBootBanner';
 import { BackupHealthProvider } from './BackupHealthContext';
+import { useActiveBusiness } from './hooks/useActiveBusiness';
+import { runLegacyMigrationsForBusiness } from '../boot/runLegacyMigrations';
+import { log } from '../lib/log';
 
 // When the user prints (window.print() from InvoicePrint, browser print
 // dialog, or "Save as PDF") we want ONLY the invoice pane on paper — no
@@ -23,6 +27,20 @@ const PRINT_CSS = `
 `;
 
 export default function AppShell() {
+  const { businessId } = useActiveBusiness();
+
+  // Fire the legacy-reversal migration exactly once per (businessId) after the
+  // active business resolves. Idempotent both in-memory (via the module's
+  // IN_FLIGHT map) and in-DB (kv marker + per-CN audit rows), so even React 18
+  // strict-mode double-mount doesn't cause double-work.
+  useEffect(() => {
+    if (!businessId) return;
+    log.info('boot', 'kicking off legacy migrations for active business', {
+      businessId,
+    });
+    void runLegacyMigrationsForBusiness(businessId);
+  }, [businessId]);
+
   return (
     <BackupHealthProvider>
       <style>{PRINT_CSS}</style>
