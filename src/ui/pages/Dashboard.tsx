@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import Money from '../components/Money';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
+import { computePayables, computeReceivables } from '../../domain/partyLedger';
+import { log } from '../../lib/log';
 
 interface DashboardStats {
   invoices: number;
@@ -29,32 +31,69 @@ export default function Dashboard() {
   useEffect(() => {
     if (!businessId) return;
     (async () => {
-      const [invoiceRows, customerCount, supplierCount, itemCount, purchaseRows] =
-        await Promise.all([
-          db.invoices.where('business_id').equals(businessId).toArray(),
-          db.customers.where('business_id').equals(businessId).count(),
-          db.suppliers.where('business_id').equals(businessId).count(),
-          db.items.where('business_id').equals(businessId).count(),
-          db.purchases.where('business_id').equals(businessId).toArray(),
-        ]);
+      // Load everything computeReceivables/computePayables need: invoices,
+      // purchases, advances, customers, suppliers. The naive prior version
+      // summed `balance_paise` across raw rows — that double-counts a
+      // rename-edit trio (original + auto credit-note + reissue) because the
+      // reversed original's `balance_paise` is left untouched by design (§9
+      // preserves the append-only journal). Using the same derivation as the
+      // Receivables/Payables report guarantees the dashboard number matches
+      // the report and correctly nets credit notes / advances / opening.
+      const [
+        invoiceRows,
+        purchaseRows,
+        customers,
+        suppliers,
+        advances,
+        itemCount,
+      ] = await Promise.all([
+        db.invoices.where('business_id').equals(businessId).toArray(),
+        db.purchases.where('business_id').equals(businessId).toArray(),
+        db.customers.where('business_id').equals(businessId).toArray(),
+        db.suppliers.where('business_id').equals(businessId).toArray(),
+        db.advances.where('business_id').equals(businessId).toArray(),
+        db.items.where('business_id').equals(businessId).count(),
+      ]);
 
-      const outstandingReceivablesPaise = invoiceRows.reduce(
-        (sum, i) => sum + (i.balance_paise ?? 0),
-        0,
+      // Live invoice = not superseded by an edit, not a credit note, not
+      // soft-deleted (recycled). This mirrors the InvoicesPage default filter
+      // (`!showVoided`) so the two counts stay in sync.
+      const liveInvoices = invoiceRows.filter(
+        (i) =>
+          !i.reversed_by_invoice_id &&
+          !i.reverses_invoice_id &&
+          !i.deleted_at &&
+          i.status !== 'cancelled' &&
+          i.status !== 'draft',
       );
-      const outstandingPayablesPaise = purchaseRows.reduce(
-        (sum, p) => sum + (p.balance_paise ?? 0),
-        0,
+      const livePurchases = purchaseRows.filter(
+        (p) =>
+          !p.reversed_by_purchase_id &&
+          !p.reverses_purchase_id &&
+          p.status !== 'cancelled' &&
+          p.status !== 'draft',
       );
 
-      const customerNameById = new Map(
-        (await db.customers.where('business_id').equals(businessId).toArray()).map((c) => [
-          c.id,
-          c.name,
-        ]),
-      );
+      const asOfYmd = new Date().toISOString().slice(0, 10);
+      const ar = computeReceivables(invoiceRows, asOfYmd, advances, customers);
+      const ap = computePayables(purchaseRows, asOfYmd, advances, suppliers);
+      const outstandingReceivablesPaise = ar.totals.outstanding_paise;
+      const outstandingPayablesPaise = ap.totals.outstanding_paise;
 
-      const recentInvoices = [...invoiceRows]
+      log.info('dashboard', 'stats computed', {
+        businessId,
+        rawInvoiceRows: invoiceRows.length,
+        liveInvoices: liveInvoices.length,
+        rawPurchaseRows: purchaseRows.length,
+        livePurchases: livePurchases.length,
+        outstandingReceivablesPaise,
+        outstandingPayablesPaise,
+        advances: advances.length,
+      });
+
+      const customerNameById = new Map(customers.map((c) => [c.id, c.name]));
+
+      const recentInvoices = [...liveInvoices]
         .sort((a, b) => (a.invoice_date < b.invoice_date ? 1 : -1))
         .slice(0, 5)
         .map((i) => ({
@@ -67,11 +106,11 @@ export default function Dashboard() {
         }));
 
       setStats({
-        invoices: invoiceRows.length,
-        customers: customerCount,
-        suppliers: supplierCount,
+        invoices: liveInvoices.length,
+        customers: customers.length,
+        suppliers: suppliers.length,
         items: itemCount,
-        purchases: purchaseRows.length,
+        purchases: livePurchases.length,
         outstandingReceivablesPaise,
         outstandingPayablesPaise,
         recentInvoices,

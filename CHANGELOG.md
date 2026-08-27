@@ -4,6 +4,13 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.1 — 2026-08-27
+
+### Fixed
+
+- **Dashboard: invoice count and outstanding totals were double-counting rename-edits.** When an invoice is edited with a new invoice number (§3), `InvoiceService.updateInvoice` performs a reverse + reissue: the original stays in `db.invoices` with `reversed_by_invoice_id` set, a credit note (`reverses_invoice_id`) is appended, and a fresh reissue is added — three rows per rename. The dashboard was calling `db.invoices.toArray()` and summing raw `balance_paise` across every row, so a rename made the count jump by +2 and the outstanding-receivables number drift upward. The Invoices page (`InvoicesPage.tsx`) already filtered out both `reversed_by_invoice_id` and `reverses_invoice_id` when `showVoided=false`, which is why the invoice list showed the correct 3 rows while the dashboard showed more. Fix: `Dashboard.tsx` now (1) filters to the same "live invoice" set for its count and Recent Invoices table, and (2) derives outstanding receivables/payables via `computeReceivables` / `computePayables` from `partyLedger.ts` — the same functions the Receivables/Payables report uses. Symmetric fix applied for purchases (`reversed_by_purchase_id` / `reverses_purchase_id`).
+- Added structured `log.info('dashboard', 'stats computed', {...})` per the log-liberally policy so debug bundles capture the raw-vs-live counts and derived totals for future drift diagnosis.
+
 ## 1.0.0 — 2026-08-26
 
 ### Release: feedback_1_to_7.md series complete
