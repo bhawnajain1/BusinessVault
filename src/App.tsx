@@ -1,47 +1,54 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { lazy, Suspense } from 'react';
+import { Suspense } from 'react';
 import AppShell from './ui/AppShell';
+import ErrorBoundary from './ui/ErrorBoundary';
+import { lazyWithReload } from './lib/lazyWithReload';
 
-const Dashboard = lazy(() => import('./ui/pages/Dashboard'));
-const Invoices = lazy(() => import('./ui/pages/Invoices'));
-const InvoiceEditor = lazy(() => import('./ui/pos/POSScreen'));
-const Customers = lazy(() => import('./ui/pages/Customers'));
-const Suppliers = lazy(() => import('./ui/pages/Suppliers'));
-const Items = lazy(() => import('./ui/pages/Items'));
-const Categories = lazy(() => import('./ui/pages/Categories'));
-const Warehouses = lazy(() => import('./ui/pages/Warehouses'));
-const StockMovements = lazy(() => import('./ui/pages/StockMovements'));
-const Returns = lazy(() => import('./ui/pages/Returns'));
-const SalesReturnDetail = lazy(() => import('./ui/returns/SalesReturnDetail'));
-const Purchases = lazy(() => import('./ui/pages/Purchases'));
-const PurchaseDetail = lazy(() => import('./ui/purchases/PurchaseDetail'));
-const InvoiceDetail = lazy(() => import('./ui/invoices/InvoiceDetail'));
-const InvoicePrint = lazy(() => import('./ui/invoices/InvoicePrint'));
-const InvoiceForm = lazy(() => import('./ui/invoices/InvoiceForm'));
-const DeletedInvoices = lazy(() => import('./ui/invoices/DeletedInvoicesPage'));
-const Payments = lazy(() => import('./ui/pages/Payments'));
-const Advances = lazy(() => import('./ui/pages/Advances'));
-const PartyLedger = lazy(() => import('./ui/parties/PartyLedgerPage'));
-const CustomerDetail = lazy(() => import('./ui/customers/CustomerDetailPage'));
-const Expenses = lazy(() => import('./ui/pages/Expenses'));
-const TrialBalancePage = lazy(() => import('./ui/reports/TrialBalancePage'));
-const ProfitLossPage = lazy(() => import('./ui/reports/ProfitLossPage'));
-const BalanceSheetPage = lazy(() => import('./ui/reports/BalanceSheetPage'));
-const GstSummaryPage = lazy(() => import('./ui/reports/GstSummaryPage'));
-const StockValuationPage = lazy(() => import('./ui/reports/StockValuationPage'));
-const AuditLogPage = lazy(() => import('./ui/reports/AuditLogPage'));
-const ReceivablesPayablesPage = lazy(() => import('./ui/reports/ReceivablesPayablesPage'));
-const SalesReturnsReportPage = lazy(() => import('./ui/reports/SalesReturnsReportPage'));
-const ReportsIndex = lazy(() => import('./ui/pages/Reports'));
-const DataAndBackup = lazy(() => import('./ui/pages/DataAndBackup'));
-const Restore = lazy(() => import('./ui/pages/Restore'));
-const Settings = lazy(() => import('./ui/pages/Settings'));
-const Onboarding = lazy(() => import('./ui/pages/Onboarding'));
+// All routes use lazyWithReload (not React.lazy) so a stale chunk after a
+// deploy self-heals via one reload instead of surfacing as a black page.
+// The `label` is emitted into the chunk-load debug log so we can tell
+// which route was navigating when the failure hit.
+const Dashboard = lazyWithReload(() => import('./ui/pages/Dashboard'), 'Dashboard');
+const Invoices = lazyWithReload(() => import('./ui/pages/Invoices'), 'Invoices');
+const InvoiceEditor = lazyWithReload(() => import('./ui/pos/POSScreen'), 'POSScreen');
+const Customers = lazyWithReload(() => import('./ui/pages/Customers'), 'Customers');
+const Suppliers = lazyWithReload(() => import('./ui/pages/Suppliers'), 'Suppliers');
+const Items = lazyWithReload(() => import('./ui/pages/Items'), 'Items');
+const Categories = lazyWithReload(() => import('./ui/pages/Categories'), 'Categories');
+const Warehouses = lazyWithReload(() => import('./ui/pages/Warehouses'), 'Warehouses');
+const StockMovements = lazyWithReload(() => import('./ui/pages/StockMovements'), 'StockMovements');
+const Returns = lazyWithReload(() => import('./ui/pages/Returns'), 'Returns');
+const SalesReturnDetail = lazyWithReload(() => import('./ui/returns/SalesReturnDetail'), 'SalesReturnDetail');
+const Purchases = lazyWithReload(() => import('./ui/pages/Purchases'), 'Purchases');
+const PurchaseDetail = lazyWithReload(() => import('./ui/purchases/PurchaseDetail'), 'PurchaseDetail');
+const InvoiceDetail = lazyWithReload(() => import('./ui/invoices/InvoiceDetail'), 'InvoiceDetail');
+const InvoicePrint = lazyWithReload(() => import('./ui/invoices/InvoicePrint'), 'InvoicePrint');
+const InvoiceForm = lazyWithReload(() => import('./ui/invoices/InvoiceForm'), 'InvoiceForm');
+const DeletedInvoices = lazyWithReload(() => import('./ui/invoices/DeletedInvoicesPage'), 'DeletedInvoicesPage');
+const Payments = lazyWithReload(() => import('./ui/pages/Payments'), 'Payments');
+const Advances = lazyWithReload(() => import('./ui/pages/Advances'), 'Advances');
+const PartyLedger = lazyWithReload(() => import('./ui/parties/PartyLedgerPage'), 'PartyLedgerPage');
+const CustomerDetail = lazyWithReload(() => import('./ui/customers/CustomerDetailPage'), 'CustomerDetailPage');
+const Expenses = lazyWithReload(() => import('./ui/pages/Expenses'), 'Expenses');
+const TrialBalancePage = lazyWithReload(() => import('./ui/reports/TrialBalancePage'), 'TrialBalancePage');
+const ProfitLossPage = lazyWithReload(() => import('./ui/reports/ProfitLossPage'), 'ProfitLossPage');
+const BalanceSheetPage = lazyWithReload(() => import('./ui/reports/BalanceSheetPage'), 'BalanceSheetPage');
+const GstSummaryPage = lazyWithReload(() => import('./ui/reports/GstSummaryPage'), 'GstSummaryPage');
+const StockValuationPage = lazyWithReload(() => import('./ui/reports/StockValuationPage'), 'StockValuationPage');
+const AuditLogPage = lazyWithReload(() => import('./ui/reports/AuditLogPage'), 'AuditLogPage');
+const ReceivablesPayablesPage = lazyWithReload(() => import('./ui/reports/ReceivablesPayablesPage'), 'ReceivablesPayablesPage');
+const SalesReturnsReportPage = lazyWithReload(() => import('./ui/reports/SalesReturnsReportPage'), 'SalesReturnsReportPage');
+const ReportsIndex = lazyWithReload(() => import('./ui/pages/Reports'), 'Reports');
+const DataAndBackup = lazyWithReload(() => import('./ui/pages/DataAndBackup'), 'DataAndBackup');
+const Restore = lazyWithReload(() => import('./ui/pages/Restore'), 'Restore');
+const Settings = lazyWithReload(() => import('./ui/pages/Settings'), 'Settings');
+const Onboarding = lazyWithReload(() => import('./ui/pages/Onboarding'), 'Onboarding');
 
 export default function App() {
   return (
-    <Suspense fallback={<div className="p-6 text-slate-500">Loading...</div>}>
-      <Routes>
+    <ErrorBoundary>
+      <Suspense fallback={<div className="p-6 text-slate-500">Loading...</div>}>
+        <Routes>
         <Route element={<AppShell />}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/pos" element={<InvoiceEditor />} />
@@ -87,7 +94,8 @@ export default function App() {
           <Route path="/onboarding" element={<Onboarding />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Suspense>
+        </Routes>
+      </Suspense>
+    </ErrorBoundary>
   );
 }

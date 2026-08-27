@@ -4,6 +4,17 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.3 — 2026-08-27
+
+### Fixed
+
+- **Black page after deploy: lazy-route imports now self-heal from a stale chunk map.** Every route in `App.tsx` is a `React.lazy()` import whose chunk filenames carry a Vite content hash (e.g. `InvoiceForm-CHaK4dxT.js`). A tab held open across a Pages deploy still holds the *old* filename map, so navigating to a not-yet-visited route triggers `import()` → 404 on the old filename → the promise rejects → React unmounts the whole Suspense subtree → the user sees a black page until they refresh. Evidence: the 2026-08-27 07:05:34Z debug bundle captured the exact shape: `Uncaught TypeError: Failed to fetch dynamically imported module: https://bhawnajain1.github.io/businessvault-app/assets/InvoiceForm-CHaK4dxT.js`. Fix: added `src/lib/lazyWithReload.ts` — a drop-in `React.lazy()` replacement that catches the `Failed to fetch dynamically imported module` / `ChunkLoadError` shape and does one `window.location.reload()` (which fetches the current `index.html` and its fresh chunk map). Guarded via `sessionStorage['bv:chunk-reload-attempted']` so a genuine build corruption can't loop forever — after one attempt within the session, the error surfaces to the ErrorBoundary. All ~39 lazy imports in `App.tsx` swapped to `lazyWithReload(..., 'RouteLabel')`, the label lands in the debug log alongside the failure. See `src/lib/lazyWithReload.ts` for full rationale.
+
+### Added
+
+- **Top-level `ErrorBoundary` around the routed tree** so a render-time throw (or a chunk-load error that couldn't self-heal) shows a friendly "Something went wrong" panel with a Reload button and a Copy-error-details button, instead of a black page. Stack + component stack + `isChunkLoad` classification are written to the debug log so a support export contains everything needed to diagnose. Chunk-specific fallback message is briefer ("The app was updated — reload to continue"). Source: [`src/ui/ErrorBoundary.tsx`](https://github.com/bhawnajain1/BusinessVault/blob/main/src/ui/ErrorBoundary.tsx).
+- **Regression tests** for the chunk-load recovery logic: 12 unit tests in [`src/lib/lazyWithReload.test.ts`](https://github.com/bhawnajain1/BusinessVault/blob/main/src/lib/lazyWithReload.test.ts) cover the browser-shape matcher (Vite, Webpack ChunkLoadError, Firefox variant, plain string, non-chunk errors, null/undefined) and the four decision paths of `loadWithChunkRecovery` (success, non-chunk-error passthrough, fresh chunk → set flag + reload, chunk-with-prior-reload → give up + throw).
+
 ## 1.0.2 — 2026-08-27
 
 ### Added
