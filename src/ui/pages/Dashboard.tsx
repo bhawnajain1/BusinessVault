@@ -3,26 +3,11 @@ import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import Money from '../components/Money';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
-import { computePayables, computeReceivables } from '../../domain/partyLedger';
+import {
+  computeDashboardStats,
+  type DashboardStats,
+} from '../../domain/dashboardStats';
 import { log } from '../../lib/log';
-
-interface DashboardStats {
-  invoices: number;
-  customers: number;
-  suppliers: number;
-  items: number;
-  purchases: number;
-  outstandingReceivablesPaise: number;
-  outstandingPayablesPaise: number;
-  recentInvoices: Array<{
-    id: string;
-    number: string;
-    date: string;
-    total_paise: number;
-    balance_paise: number;
-    customerName: string;
-  }>;
-}
 
 export default function Dashboard() {
   const { businessId, loading } = useActiveBusiness();
@@ -31,90 +16,65 @@ export default function Dashboard() {
   useEffect(() => {
     if (!businessId) return;
     (async () => {
-      // Load everything computeReceivables/computePayables need: invoices,
-      // purchases, advances, customers, suppliers. The naive prior version
-      // summed `balance_paise` across raw rows — that double-counts a
-      // rename-edit trio (original + auto credit-note + reissue) because the
-      // reversed original's `balance_paise` is left untouched by design (§9
-      // preserves the append-only journal). Using the same derivation as the
-      // Receivables/Payables report guarantees the dashboard number matches
-      // the report and correctly nets credit notes / advances / opening.
-      const [
-        invoiceRows,
-        purchaseRows,
+      // Thin shim: load rows, hand to the pure computeDashboardStats. All
+      // filtering / derivation lives in src/domain/dashboardStats.ts so
+      // it can be unit-tested without React. Prior regression (PR #52):
+      // summing raw `balance_paise` double-counted rename-edit trios.
+      const [invoices, purchases, customers, suppliers, advances, itemCount] =
+        await Promise.all([
+          db.invoices.where('business_id').equals(businessId).toArray(),
+          db.purchases.where('business_id').equals(businessId).toArray(),
+          db.customers.where('business_id').equals(businessId).toArray(),
+          db.suppliers.where('business_id').equals(businessId).toArray(),
+          db.advances.where('business_id').equals(businessId).toArray(),
+          db.items.where('business_id').equals(businessId).count(),
+        ]);
+
+      const asOfYmd = new Date().toISOString().slice(0, 10);
+      const computed = computeDashboardStats({
+        invoices,
+        purchases,
         customers,
         suppliers,
         advances,
         itemCount,
-      ] = await Promise.all([
-        db.invoices.where('business_id').equals(businessId).toArray(),
-        db.purchases.where('business_id').equals(businessId).toArray(),
-        db.customers.where('business_id').equals(businessId).toArray(),
-        db.suppliers.where('business_id').equals(businessId).toArray(),
-        db.advances.where('business_id').equals(businessId).toArray(),
-        db.items.where('business_id').equals(businessId).count(),
-      ]);
-
-      // Live invoice = not superseded by an edit, not a credit note, not
-      // soft-deleted (recycled). This mirrors the InvoicesPage default filter
-      // (`!showVoided`) so the two counts stay in sync.
-      const liveInvoices = invoiceRows.filter(
-        (i) =>
-          !i.reversed_by_invoice_id &&
-          !i.reverses_invoice_id &&
-          !i.deleted_at &&
-          i.status !== 'cancelled' &&
-          i.status !== 'draft',
-      );
-      const livePurchases = purchaseRows.filter(
-        (p) =>
-          !p.reversed_by_purchase_id &&
-          !p.reverses_purchase_id &&
-          p.status !== 'cancelled' &&
-          p.status !== 'draft',
-      );
-
-      const asOfYmd = new Date().toISOString().slice(0, 10);
-      const ar = computeReceivables(invoiceRows, asOfYmd, advances, customers);
-      const ap = computePayables(purchaseRows, asOfYmd, advances, suppliers);
-      const outstandingReceivablesPaise = ar.totals.outstanding_paise;
-      const outstandingPayablesPaise = ap.totals.outstanding_paise;
+        asOfYmd,
+      });
 
       log.info('dashboard', 'stats computed', {
         businessId,
-        rawInvoiceRows: invoiceRows.length,
-        liveInvoices: liveInvoices.length,
-        rawPurchaseRows: purchaseRows.length,
-        livePurchases: livePurchases.length,
-        outstandingReceivablesPaise,
-        outstandingPayablesPaise,
-        advances: advances.length,
+        asOfYmd,
+        liveInvoices: computed.invoices,
+        livePurchases: computed.purchases,
+        outstandingReceivablesPaise: computed.outstandingReceivablesPaise,
+        outstandingPayablesPaise: computed.outstandingPayablesPaise,
+        advanceCount: advances.length,
+        ...computed.diagnostics,
       });
 
-      const customerNameById = new Map(customers.map((c) => [c.id, c.name]));
+      // If the gap between raw rows and live rows is unusually large,
+      // shout so a debug-bundle reader notices immediately instead of
+      // scrolling. Threshold picked empirically: >5 hidden rows per live
+      // row is almost certainly a bug (excessive supersedes, corrupted
+      // credit-note pairing, or a missing filter).
+      const hiddenInv =
+        computed.diagnostics.rawInvoiceRows - computed.invoices;
+      if (
+        computed.invoices > 0 &&
+        hiddenInv > 5 * computed.invoices &&
+        hiddenInv > 5
+      ) {
+        log.warn('dashboard', 'unusually large hidden-invoice gap', {
+          businessId,
+          liveInvoices: computed.invoices,
+          hiddenInvoices: hiddenInv,
+          supersededInvoices: computed.diagnostics.supersededInvoices,
+          creditNotes: computed.diagnostics.creditNotes,
+          recycledInvoices: computed.diagnostics.recycledInvoices,
+        });
+      }
 
-      const recentInvoices = [...liveInvoices]
-        .sort((a, b) => (a.invoice_date < b.invoice_date ? 1 : -1))
-        .slice(0, 5)
-        .map((i) => ({
-          id: i.id,
-          number: i.invoice_number,
-          date: i.invoice_date,
-          total_paise: i.total_paise,
-          balance_paise: i.balance_paise,
-          customerName: customerNameById.get(i.customer_id) ?? '—',
-        }));
-
-      setStats({
-        invoices: liveInvoices.length,
-        customers: customers.length,
-        suppliers: suppliers.length,
-        items: itemCount,
-        purchases: livePurchases.length,
-        outstandingReceivablesPaise,
-        outstandingPayablesPaise,
-        recentInvoices,
-      });
+      setStats(computed);
     })();
   }, [businessId]);
 

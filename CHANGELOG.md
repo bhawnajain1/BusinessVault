@@ -4,6 +4,13 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.2 — 2026-08-27
+
+### Added
+
+- **Regression tests** pinning the dashboard/invoices-page/receivables-report coherence invariant. Extracted the dashboard KPI computation out of `Dashboard.tsx` into a pure `computeDashboardStats` function in `src/domain/dashboardStats.ts`, so it can be unit-tested without React. Added [`src/domain/dashboardStats.test.ts`](https://github.com/bhawnajain1/BusinessVault/blob/main/src/domain/dashboardStats.test.ts) with 13 tests that hand-craft the rename-edit trio (original + credit note + reissue) and pin `dashboard.invoices == invoices-page filter count` and `dashboard.outstandingReceivablesPaise == computeReceivables(...).totals.outstanding_paise`. Added [`tests/dashboard-coherence.spec.ts`](https://github.com/bhawnajain1/BusinessVault/blob/main/tests/dashboard-coherence.spec.ts) with 3 integration tests that run the real `InvoiceService.createInvoice` + `updateInvoice` code paths against fake-indexeddb — reproducing the exact debug-log scenario the user reported (4 creates → 2 renames → 1 more) and asserting all three surfaces agree on the count and totals. If a future change makes any surface diverge, one of these tests fails.
+- **Debug diagnostics on the dashboard.** The `dashboard.stats computed` log line now includes `supersededInvoices`, `creditNotes`, `recycledInvoices`, `supersededPurchases`, and `debitNotes` counts alongside the live totals — so a future "count looks off" report can be diagnosed straight from the JSONL bundle without re-running the app. Added a `log.warn('dashboard', 'unusually large hidden-invoice gap', …)` guard that fires when the raw-vs-live gap exceeds 5× the live count (empirical threshold — see `Dashboard.tsx` for rationale).
+
 ## 1.0.1 — 2026-08-27
 
 ### Fixed
