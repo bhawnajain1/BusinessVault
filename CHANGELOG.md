@@ -4,6 +4,20 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.4 — 2026-08-27
+
+### Added
+
+- **Preemptive version-preflight reloader** — [`src/lib/versionPreflight.ts`](https://github.com/bhawnajain1/BusinessVault/blob/main/src/lib/versionPreflight.ts). Complements the reactive `lazyWithReload` guard shipped in [1.0.3](https://github.com/bhawnajain1/BusinessVault/commit/c6f122c1fd3c3545bb73c5e54de8af9967a97625). On app boot, extracts the hashed entry-bundle path (`assets/index-<hash>.js`) from the live document as a version fingerprint. Re-fetches `index.html` with `cache: 'no-store'` on `visibilitychange → visible`, on `online`, and every 5 minutes while the tab is visible; if the deployed entry-hash no longer matches the boot hash, does one `window.location.reload()`. Result: a tab held open across a deploy self-heals when the user returns to it, BEFORE they click a link that would trigger a 404-ing dynamic import.
+  - **Evidence this is needed**: the 2026-08-27 07:38:51Z debug bundle showed a `Failed to fetch dynamically imported module: .../Invoices-CqHElkv4.js` error from a tab that booted at 07:07:01Z — 10 minutes before the 1.0.3 fix deployed at 07:17:43Z. The reactive guard couldn't help because the code that installs it wasn't in the browser yet. Preflight closes that window: after 1.0.4 propagates, the *next* deploy's stale tab reloads on tab-focus instead of on click.
+  - **Session-scoped guard** via `sessionStorage['bv:preflight-reloaded-to']` records the target hash — if a CDN inconsistency briefly serves an older `index.html` after the reload, we don't bounce.
+  - **Interactive-route protection**: skips the auto-reload on `/pos`, `/invoices/new`, `/invoices/:id/edit`, `/purchases/new`, `/onboarding` — these hold in-memory line-item state that hasn't been committed. On those routes, the preflight logs `deferring — unsafe path` and waits; the next check on a safe route reloads.
+  - **Silent on network failure**: no `alert()`, no visible error, just a `log.info` — the user's offline state is indistinguishable from Pages being briefly unavailable, and either way no reload should fire.
+
+### Tests
+
+- **19 unit tests** in [`src/lib/versionPreflight.test.ts`](https://github.com/bhawnajain1/BusinessVault/blob/main/src/lib/versionPreflight.test.ts) — 6 for the `extractEntryHash` HTML parser (Vite shape, single-quoted attrs, extra attrs, no-match, non-Vite scripts, non-module scripts) and 13 for the check flow (matching-hash no-op, mismatch reloads once, second-reload guard, unsafe path (`/pos`), unsafe path (`/invoices/:id/edit`), hidden-tab skip, network failure silence, missing-script silence, non-2xx silence, cache/cachebuster shape, idempotent install, no-op without entry script).
+
 ## 1.0.3 — 2026-08-27
 
 ### Fixed
