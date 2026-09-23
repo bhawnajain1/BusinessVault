@@ -229,6 +229,44 @@ export default function InvoiceForm() {
     };
   }, [businessId, customerId, editingId, advanceSvc]);
 
+  // Re-resolve prices when the customer is selected after items are already on
+  // the invoice. Item selection handles the opposite order.
+  useEffect(() => {
+    if (!businessId || !customerId || editingId) return;
+    let cancelled = false;
+    (async () => {
+      const selectedLines = lines.filter((line) => line.item_id);
+      if (selectedLines.length === 0) return;
+      const remembered = await Promise.all(
+        selectedLines.map(async (line) => {
+          const saved = await db.customer_item_prices
+            .where('[business_id+customer_id+item_id]')
+            .equals([businessId, customerId, line.item_id])
+            .first();
+          return [line.key, saved?.unit_price_paise ?? null] as const;
+        }),
+      );
+      if (cancelled) return;
+      const rememberedByLine = new Map(remembered);
+      setLines((rows) =>
+        rows.map((line) => {
+          const price = rememberedByLine.get(line.key);
+          if (price === undefined || price === null) return line;
+          log.info('invoice-form', 'applied customer item price after customer selection', {
+            businessId,
+            customerId,
+            itemId: line.item_id,
+            unitPricePaise: price,
+          });
+          return { ...line, unitPriceStr: (price / 100).toString() };
+        }),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [businessId, customerId, editingId]);
+
   const interstate = useMemo(() => {
     if (!business || !customer) return false;
     return isInterstate(business.state_code, customer.state_code);
