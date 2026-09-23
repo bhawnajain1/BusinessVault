@@ -4,6 +4,17 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.27 — 2026-09-23
+
+### Changed
+
+- Added customer-specific item pricing for new invoices, including remembered prices, item-master fallback, and safe customer switching.
+- Added editable default invoice terms with legacy-term migration and improved long-term print formatting.
+
+### Tests
+
+- Added regression coverage for customer-first selection, item-first selection, customer switching, fallback pricing, and item-price immutability.
+
 ## 1.0.26 — 2026-09-23
 
 ### Changed
