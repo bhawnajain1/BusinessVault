@@ -4,11 +4,15 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
-## 1.0.23 — 2026-09-23
+## 1.0.24 — 2026-09-23
 
 ### Changed
 
 - Dashboard is now the default home page after onboarding, with a structured completion log and regression coverage for the destination.
+
+### Release Rule
+
+- Every push to the main branch increments the application version.
 
 ## 1.0.9 — 2026-09-07
 
