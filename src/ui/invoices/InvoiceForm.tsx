@@ -18,6 +18,7 @@ import { log } from '../../lib/log';
 import { addDaysYmd } from '../../lib/date';
 import { appendSyncEvent } from '../../domain/syncEventLog';
 import { resolveDefaultInvoiceTerms } from '../../domain/defaults';
+import { resolveCustomerItemPrice } from '../../domain/customerItemPricing';
 
 interface LineDraft {
   key: string;
@@ -239,12 +240,16 @@ export default function InvoiceForm() {
       if (selectedLines.length === 0) return;
       const remembered = await Promise.all(
         selectedLines.map(async (line) => {
-          const saved = await db.customer_item_prices
-            .where('[business_id+customer_id+item_id]')
-            .equals([businessId, customerId, line.item_id])
-            .first();
           const item = items.find((candidate) => candidate.id === line.item_id);
-          return [line.key, saved?.unit_price_paise ?? item?.sale_price_paise ?? null] as const;
+          if (!item) return [line.key, null] as const;
+          const price = await resolveCustomerItemPrice(
+            db,
+            businessId,
+            customerId,
+            line.item_id,
+            item.sale_price_paise,
+          );
+          return [line.key, price] as const;
         }),
       );
       if (cancelled) return;
@@ -331,18 +336,20 @@ export default function InvoiceForm() {
       setLineField(key, 'item_id', itemId);
       return;
     }
-    let rememberedPrice: number | null = null;
+    let rememberedPrice = it.sale_price_paise;
     if (businessId && customerId) {
-      const saved = await db.customer_item_prices
-        .where('[business_id+customer_id+item_id]')
-        .equals([businessId, customerId, itemId])
-        .first();
-      rememberedPrice = saved?.unit_price_paise ?? null;
+      rememberedPrice = await resolveCustomerItemPrice(
+        db,
+        businessId,
+        customerId,
+        itemId,
+        it.sale_price_paise,
+      );
       log.info('invoice-form', 'resolved customer item price', {
         businessId,
         customerId,
         itemId,
-        usedCustomerPrice: rememberedPrice !== null,
+        resolvedPricePaise: rememberedPrice,
       });
     }
     setLines((rows) =>
@@ -353,7 +360,7 @@ export default function InvoiceForm() {
               item_id: itemId,
               description: it.description,
               hsn: it.hsn,
-              unitPriceStr: ((rememberedPrice ?? it.sale_price_paise) / 100).toString(),
+              unitPriceStr: (rememberedPrice / 100).toString(),
               taxRatePctStr: (it.tax_rate_bps / 100).toString(),
               warehouse_id: r.warehouse_id || defaultWarehouseId,
             }
