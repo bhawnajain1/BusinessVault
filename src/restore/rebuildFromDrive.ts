@@ -597,6 +597,7 @@ function tableNames(): string[] {
     'journal_entries',
     'journal_lines',
     'advances',
+    'customer_item_prices',
     // §20 additions.
     'sales_returns',
     'sales_return_items',

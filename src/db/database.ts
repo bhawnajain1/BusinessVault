@@ -12,6 +12,7 @@ import {
   STORES_V9,
   STORES_V10,
   STORES_V11,
+  STORES_V12,
 } from './schema';
 import { ulid } from 'ulid';
 import { pokeSyncWorker } from '../sync/pokeChannel';
@@ -24,6 +25,7 @@ import type {
   Business,
   Category,
   Customer,
+  CustomerItemPrice,
   DebugLogEntry,
   Device,
   DriveFileMap,
@@ -82,6 +84,7 @@ export class BusinessVaultDB extends Dexie {
   sales_returns!: Table<SalesReturn, string>;
   sales_return_items!: Table<SalesReturnItem, string>;
   invoice_line_return_summary!: Table<InvoiceLineReturnSummary, string>;
+  customer_item_prices!: Table<CustomerItemPrice, string>;
   legacy_reversal_audit!: Table<LegacyReversalAudit, string>;
 
   constructor(name: string = DB_NAME) {
@@ -332,6 +335,7 @@ export class BusinessVaultDB extends Dexie {
         });
         void updated;
       });
+    this.version(12).stores(STORES_V12);
 
     // After any sync_event insert commits, kick the sync worker so the write
     // lands in the local backup folder within a few hundred ms instead of

@@ -38,6 +38,7 @@ import type {
   StockMovement,
   SalesReturn,
   SalesReturnItem,
+  CustomerItemPrice,
 } from '../db/types';
 import { log } from '../lib/log';
 
@@ -149,6 +150,11 @@ const HANDLERS: Record<string, EventHandler> = {
   'customer:update': merge<Customer>('customer', (db) => db.customers),
   'customer:created': put<Customer>((db) => db.customers),
   'customer:updated': merge<Customer>('customer', (db) => db.customers),
+
+  'customer_item_price:create': put<CustomerItemPrice>((db) => db.customer_item_prices),
+  'customer_item_price:created': put<CustomerItemPrice>((db) => db.customer_item_prices),
+  'customer_item_price:update': merge<CustomerItemPrice>('customer_item_price', (db) => db.customer_item_prices),
+  'customer_item_price:updated': merge<CustomerItemPrice>('customer_item_price', (db) => db.customer_item_prices),
 
   'supplier:create': put<Supplier>((db) => db.suppliers),
   'supplier:created': put<Supplier>((db) => db.suppliers),

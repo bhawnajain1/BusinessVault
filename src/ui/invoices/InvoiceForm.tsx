@@ -16,6 +16,7 @@ import { bankersRound, isInterstate, roundOffToNearestRupee, splitTax } from '..
 import type { Advance } from '../../db/types';
 import { log } from '../../lib/log';
 import { addDaysYmd } from '../../lib/date';
+import { appendSyncEvent } from '../../domain/syncEventLog';
 
 interface LineDraft {
   key: string;
@@ -284,11 +285,25 @@ export default function InvoiceForm() {
     );
   }
 
-  function pickItem(key: string, itemId: string) {
+  async function pickItem(key: string, itemId: string) {
     const it = items.find((i) => i.id === itemId);
     if (!it) {
       setLineField(key, 'item_id', itemId);
       return;
+    }
+    let rememberedPrice: number | null = null;
+    if (businessId && customerId) {
+      const saved = await db.customer_item_prices
+        .where('[business_id+customer_id+item_id]')
+        .equals([businessId, customerId, itemId])
+        .first();
+      rememberedPrice = saved?.unit_price_paise ?? null;
+      log.info('invoice-form', 'resolved customer item price', {
+        businessId,
+        customerId,
+        itemId,
+        usedCustomerPrice: rememberedPrice !== null,
+      });
     }
     setLines((rows) =>
       rows.map((r) =>
@@ -298,13 +313,55 @@ export default function InvoiceForm() {
               item_id: itemId,
               description: it.description,
               hsn: it.hsn,
-              unitPriceStr: (it.sale_price_paise / 100).toString(),
+              unitPriceStr: ((rememberedPrice ?? it.sale_price_paise) / 100).toString(),
               taxRatePctStr: (it.tax_rate_bps / 100).toString(),
               warehouse_id: r.warehouse_id || defaultWarehouseId,
             }
           : r,
       ),
-    );
+      );
+  }
+
+  async function saveCustomerItemPrices(): Promise<void> {
+    if (!businessId || !deviceId || !customerId || editingId) return;
+    const remembered = computedLines.filter((line) => {
+      const item = items.find((candidate) => candidate.id === line.l.item_id);
+      return item && line.unitPaise !== item.sale_price_paise;
+    });
+    if (remembered.length === 0) return;
+    const now = new Date().toISOString();
+    await db.transaction('rw', [db.customer_item_prices, db.sync_events], async () => {
+      for (const line of remembered) {
+        const id = `${businessId}:${customerId}:${line.l.item_id}`;
+        const existing = await db.customer_item_prices.get(id);
+        const row = {
+          id,
+          business_id: businessId,
+          customer_id: customerId,
+          item_id: line.l.item_id,
+          unit_price_paise: line.unitPaise,
+          created_at: existing?.created_at ?? now,
+          updated_at: now,
+          entity_version: (existing?.entity_version ?? 0) + 1,
+        };
+        await db.customer_item_prices.put(row);
+        await appendSyncEvent(db, {
+          businessId,
+          deviceId,
+          entityType: 'customer_item_price',
+          entityId: id,
+          operation: existing ? 'updated' : 'created',
+          payload: row,
+          timestamp: now,
+        });
+        log.info('invoice-form', 'remembered customer item price', {
+          businessId,
+          customerId,
+          itemId: line.l.item_id,
+          unitPricePaise: line.unitPaise,
+        });
+      }
+    });
   }
 
   const save = useCallback(async (opts?: { thenPrint?: boolean }) => {
@@ -393,6 +450,7 @@ export default function InvoiceForm() {
           ...commonInput,
           invoice_number: invoiceNumber,
         });
+        await saveCustomerItemPrices();
 
         // Apply any selected advances (customer only, new invoice only).
         for (const [advId, str] of Object.entries(advanceAllocations)) {

@@ -340,6 +340,18 @@ const migration_v10_to_v11: Migration = {
   },
 };
 
+const migration_v11_to_v12: Migration = {
+  from: 11,
+  to: 12,
+  describe: 'v11 → v12: adds customer-specific item prices',
+  apply(tables) {
+    return {
+      ...tables,
+      customer_item_prices: tables.customer_item_prices ?? [],
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
@@ -352,6 +364,7 @@ export const MIGRATIONS: Migration[] = [
   migration_v8_to_v9,
   migration_v9_to_v10,
   migration_v10_to_v11,
+  migration_v11_to_v12,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

@@ -105,3 +105,37 @@ describe('compliance schema migrations', () => {
     expect(second).toEqual(first);
   });
 });
+
+describe('customer-specific item price migration', () => {
+  it('adds the customer_item_prices table when restoring a v11 snapshot', () => {
+    const result = migrateSnapshot(
+      { items: [{ id: 'item-1', sale_price_paise: 12500 }] },
+      11,
+      12,
+    );
+
+    expect(result.appliedSteps.map((step) => `${step.from}->${step.to}`)).toEqual(['11->12']);
+    expect(result.tables.customer_item_prices).toEqual([]);
+    expect(result.tables.items).toEqual([{ id: 'item-1', sale_price_paise: 12500 }]);
+  });
+
+  it('preserves existing customer-specific prices and is idempotent', () => {
+    const tables = {
+      customer_item_prices: [
+        {
+          id: 'business-1:customer-1:item-1',
+          business_id: 'business-1',
+          customer_id: 'customer-1',
+          item_id: 'item-1',
+          unit_price_paise: 9900,
+        },
+      ],
+    };
+
+    const first = migrateSnapshot(tables, 11, 12).tables;
+    const second = migrateSnapshot(first, 11, 12).tables;
+
+    expect(first).toEqual(tables);
+    expect(second).toEqual(first);
+  });
+});

@@ -29,7 +29,8 @@ export type EntityType =
   | 'attachment'
   | 'advance'
   | 'sales_return'
-  | 'sales_return_item';
+  | 'sales_return_item'
+  | 'customer_item_price';
 
 export type EventOperation =
   | 'created'
@@ -267,6 +268,17 @@ export interface ItemStock {
   qty_micros: number;
   avg_cost_paise: number; // money: integer paise per unit
   updated_at: string;
+}
+
+export interface CustomerItemPrice {
+  id: string;
+  business_id: string;
+  customer_id: string;
+  item_id: string;
+  unit_price_paise: number;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
 }
 
 export interface Invoice {

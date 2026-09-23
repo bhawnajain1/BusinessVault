@@ -73,6 +73,19 @@ export const TABLE_SPECS: TableSpec[] = [
     ],
   },
   {
+    file: 'customer_item_prices.csv',
+    store: 'customer_item_prices',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' },
+      { name: 'business_id', type: 'string' },
+      { name: 'customer_id', type: 'string' },
+      { name: 'item_id', type: 'string' },
+      { name: 'unit_price_paise', type: 'number' },
+      ...COMMON_AUDIT,
+    ],
+  },
+  {
     file: 'customers.csv',
     store: 'customers',
     pk: 'id',
