@@ -243,7 +243,8 @@ export default function InvoiceForm() {
             .where('[business_id+customer_id+item_id]')
             .equals([businessId, customerId, line.item_id])
             .first();
-          return [line.key, saved?.unit_price_paise ?? null] as const;
+          const item = items.find((candidate) => candidate.id === line.item_id);
+          return [line.key, saved?.unit_price_paise ?? item?.sale_price_paise ?? null] as const;
         }),
       );
       if (cancelled) return;
@@ -265,7 +266,7 @@ export default function InvoiceForm() {
     return () => {
       cancelled = true;
     };
-  }, [businessId, customerId, editingId]);
+  }, [businessId, customerId, editingId, items]);
 
   const interstate = useMemo(() => {
     if (!business || !customer) return false;
