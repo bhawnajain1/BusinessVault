@@ -63,6 +63,7 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'logo_ref', type: 'string_or_null' },
       { name: 'invoice_prefix', type: 'string' },
       { name: 'invoice_next_seq', type: 'number' },
+      { name: 'default_invoice_terms', type: 'string' },
       { name: 'drive_folder_id', type: 'string_or_null' },
       { name: 'drive_connected_email', type: 'string_or_null' },
       { name: 'schema_version', type: 'number' },

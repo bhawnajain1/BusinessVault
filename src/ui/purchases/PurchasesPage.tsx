@@ -17,6 +17,8 @@ import Drawer from '../components/Drawer';
 import Money from '../components/Money';
 import StatusBadge from '../components/StatusBadge';
 import { paginateCollection, matchesText } from '../components/pagination';
+import { addDaysYmd } from '../../lib/date';
+import { log } from '../../lib/log';
 
 const STATUSES: PurchaseStatus[] = ['draft', 'received', 'partial', 'paid', 'cancelled'];
 
@@ -84,6 +86,7 @@ export default function PurchasesPage() {
   const [billNumber, setBillNumber] = useState('');
   const [supplierBillNumber, setSupplierBillNumber] = useState('');
   const [billDate, setBillDate] = useState<string>(today());
+  const [dueDate, setDueDate] = useState<string>(() => addDaysYmd(today(), 15));
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<EditorLine[]>([{ ...EMPTY_LINE }]);
   const [showVoided, setShowVoided] = useState(false);
@@ -273,6 +276,7 @@ export default function PurchasesPage() {
     setBillNumber(purchase.bill_number);
     setSupplierBillNumber(purchase.supplier_bill_number ?? '');
     setBillDate(purchase.bill_date);
+    setDueDate(purchase.due_date ?? addDaysYmd(purchase.bill_date, 15));
     setNotes(purchase.notes ?? '');
     const purchaseLines = await db.purchase_lines
       .where('purchase_id')
@@ -317,7 +321,9 @@ export default function PurchasesPage() {
       )}${pad(ts.getMinutes())}${pad(ts.getSeconds())}`,
     );
     setSupplierBillNumber('');
-    setBillDate(today());
+    const newBillDate = today();
+    setBillDate(newBillDate);
+    setDueDate(addDaysYmd(newBillDate, 15));
     setNotes('');
     setLines([{ ...EMPTY_LINE }]);
     navigate('/purchases/new');
@@ -393,6 +399,7 @@ export default function PurchasesPage() {
         billNumber: billNumber.trim(),
         supplierBillNumber: supplierBillNumber.trim() || undefined,
         billDate,
+        dueDate: dueDate || null,
         supplierId: supplier.id,
         supplierStateCode: supplier.state_code || business.state_code || '',
         isInterstate,
@@ -418,6 +425,13 @@ export default function PurchasesPage() {
           accountsPayable: req('2010'),
         },
       };
+      log.info('purchases', 'saving purchase with due date', {
+        businessId,
+        editingId,
+        billDate,
+        dueDate: dueDate || null,
+        defaulted: !editingId && dueDate === addDaysYmd(billDate, 15),
+      });
       if (editingId) {
         await svc.update(editingId, payload);
       } else {
@@ -551,7 +565,20 @@ export default function PurchasesPage() {
             <input
               type="date"
               value={billDate}
-              onChange={(e) => setBillDate(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setBillDate(next);
+                if (!editingId) setDueDate(addDaysYmd(next, 15));
+              }}
+              className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </label>
+          <label>
+            <span className="block text-[12px] text-fg-muted mb-1">Due date</span>
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
               className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </label>

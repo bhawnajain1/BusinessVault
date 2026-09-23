@@ -90,6 +90,7 @@ export default function Settings() {
       changedKeys: Object.keys(form).filter(
         (k) => (form as Record<string, unknown>)[k] !== (business as unknown as Record<string, unknown>)[k],
       ),
+      hasDefaultInvoiceTerms: (form.default_invoice_terms ?? '').trim().length > 0,
     });
     setSaving(true);
     setSaved(false);
@@ -552,6 +553,19 @@ export default function Settings() {
               onChange={(e) => set('invoice_prefix', e.target.value)}
               className="w-full border border-slate-300 rounded px-2 py-1.5"
             />
+          </label>
+          <label className="col-span-2">
+            <span className="block text-slate-700 mb-1">Default invoice terms</span>
+            <textarea
+              value={form.default_invoice_terms ?? ''}
+              onChange={(e) => set('default_invoice_terms', e.target.value)}
+              placeholder="Enter the terms of business to use on new invoices"
+              rows={3}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+            <span className="mt-1 block text-xs text-slate-500">
+              This is used as the starting terms on every new invoice. You can edit it before saving.
+            </span>
           </label>
           <label>
             <span className="block text-slate-700 mb-1">FY start month</span>

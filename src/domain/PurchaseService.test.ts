@@ -92,6 +92,33 @@ describe('PurchaseService', () => {
         'stock_movement.movement',
       ].sort(),
     );
+    expect(p.due_date).toBe('2026-09-03');
+  });
+
+  it('keeps an explicitly supplied due date instead of applying the default', async () => {
+    const db = freshDb();
+    const p = await new PurchaseService({ db }).create({
+      businessId: BIZ,
+      deviceId: DEV,
+      billNumber: 'BILL-DUE-DATE',
+      billDate: '2026-08-19',
+      dueDate: '2026-08-25',
+      supplierId: 'sup-1',
+      supplierStateCode: '29',
+      isInterstate: false,
+      financialYear: '2026-27',
+      accounts: ACCOUNTS,
+      lines: [
+        {
+          itemId: 'item-1',
+          warehouseId: 'wh-1',
+          qtyMicros: 1_000_000,
+          unitCostPaise: 10000,
+          taxRateBps: 0,
+        },
+      ],
+    });
+    expect(p.due_date).toBe('2026-08-25');
   });
 
   it('uses banker\'s rounding on the half-split of odd tax amounts (regression)', async () => {

@@ -13,6 +13,7 @@ import { bankersRound, roundOffToNearestRupee } from './gst';
 import { reconcileAfter } from './reconciliation';
 import { log } from '../lib/log';
 import { validateHsnSac } from './compliance';
+import { addDaysYmd } from '../lib/date';
 
 export interface PurchaseServiceDeps {
   db: BusinessVaultDB;
@@ -191,13 +192,22 @@ export class PurchaseService {
     }
     const total = preRoundTotal + roundOff;
 
+    const dueDate = input.dueDate ?? addDaysYmd(input.billDate, 15);
+    log.info('purchase', 'using purchase due date', {
+      businessId: input.businessId,
+      billNumber: input.billNumber.trim(),
+      billDate: input.billDate,
+      dueDate,
+      defaulted: input.dueDate == null,
+    });
+
     const purchase: Purchase = {
       id: purchaseId,
       business_id: input.businessId,
       bill_number: input.billNumber.trim(),
       supplier_bill_number: input.supplierBillNumber ?? '',
       bill_date: input.billDate,
-      due_date: input.dueDate ?? null,
+      due_date: dueDate,
       supplier_id: input.supplierId,
       supplier_state_code: input.supplierStateCode,
       is_interstate: input.isInterstate ? 1 : 0,

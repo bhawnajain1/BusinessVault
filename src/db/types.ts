@@ -137,6 +137,7 @@ export interface Business {
   show_signature_on_invoice?: 0 | 1;
   invoice_prefix: string;
   invoice_next_seq: number;
+  default_invoice_terms?: string;
   // Business-wide monotonically increasing counter for Sales Return numbers
   // (format `SR-000001`). Bumped inside allocateSalesReturnNumber's tx after
   // scanning past collisions, mirroring invoice_next_seq semantics. Optional

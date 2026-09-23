@@ -236,6 +236,24 @@ describe('InvoiceService.createInvoice', () => {
     ).toBe(2);
   });
 
+  it('stores terms supplied by the invoice creator', async () => {
+    const invoice = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-TERMS-1',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      terms: 'Payment due within 15 days.',
+      lines: [intrastateLine()],
+    });
+
+    expect(invoice.terms).toBe('Payment due within 15 days.');
+  });
+
   it('runs all 6 steps atomically', async () => {
     const invoice = await service.createInvoice({
       business_id: businessId,

@@ -14,6 +14,7 @@ import { PaymentService } from '../../domain/PaymentService';
 import { AdvanceService } from '../../domain/AdvanceService';
 import { bankersRound, isInterstate, roundOffToNearestRupee, splitTax } from '../../domain/gst';
 import type { Advance } from '../../db/types';
+import { log } from '../../lib/log';
 
 interface LineDraft {
   key: string;
@@ -129,6 +130,14 @@ export default function InvoiceForm() {
           .sortBy('name'),
       ]);
       setBusiness(biz ?? null);
+      if (!editingId) {
+        const defaultTerms = biz?.default_invoice_terms ?? '';
+        setTerms(defaultTerms);
+        log.info('invoice-form', 'loaded default invoice terms', {
+          businessId,
+          hasDefaultTerms: defaultTerms.trim().length > 0,
+        });
+      }
       setCustomers(cs);
       setItems(its);
       setWarehouseOptions(whs.map((w) => ({ id: w.id, name: w.name })));
@@ -358,6 +367,12 @@ export default function InvoiceForm() {
         notes,
         terms,
       };
+      log.info('invoice-form', 'saving invoice terms', {
+        businessId,
+        editingId,
+        hasTerms: terms.trim().length > 0,
+        usedBusinessDefault: !editingId && terms === (business.default_invoice_terms ?? ''),
+      });
 
       let saved;
       if (editingId) {
