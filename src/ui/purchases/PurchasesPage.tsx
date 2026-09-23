@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import type {
   Account,
@@ -61,6 +61,9 @@ function today(): string {
 }
 
 export default function PurchasesPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isNewRoute = location.pathname === '/purchases/new';
   const { businessId, deviceId, loading } = useActiveBusiness();
   const [statusFilter, setStatusFilter] = useState<PurchaseStatus | ''>('');
   const [supplierFilter, setSupplierFilter] = useState<string>('');
@@ -73,7 +76,7 @@ export default function PurchasesPage() {
   const [reloadKey, setReloadKey] = useState(0);
 
   // Editor state
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(isNewRoute);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -206,7 +209,7 @@ export default function PurchasesPage() {
                 e.stopPropagation();
                 void openEdit(r);
               }}
-              className="text-xs text-blue-700 hover:underline"
+              className="action-edit text-xs"
             >
               Edit
             </button>
@@ -216,7 +219,7 @@ export default function PurchasesPage() {
                 e.stopPropagation();
                 void cancelPurchase(r);
               }}
-              className="ml-2 text-xs text-danger hover:underline"
+              className="action-cancel ml-2 text-xs"
             >
               Cancel
             </button>
@@ -286,7 +289,7 @@ export default function PurchasesPage() {
         taxRatePct: (l.tax_rate_bps / 100).toString(),
       })),
     );
-    setDrawerOpen(true);
+    navigate('/purchases/new');
   }
 
   async function cancelPurchase(purchase: Purchase) {
@@ -317,7 +320,7 @@ export default function PurchasesPage() {
     setBillDate(today());
     setNotes('');
     setLines([{ ...EMPTY_LINE }]);
-    setDrawerOpen(true);
+    navigate('/purchases/new');
   }
 
   function updateLine(idx: number, patch: Partial<EditorLine>) {
@@ -420,7 +423,8 @@ export default function PurchasesPage() {
       } else {
         await svc.create(payload);
       }
-      setDrawerOpen(false);
+      if (isNewRoute) navigate('/purchases');
+      else setDrawerOpen(false);
       setReloadKey((k) => k + 1);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -496,15 +500,17 @@ export default function PurchasesPage() {
       />
 
       <Drawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        open={drawerOpen || isNewRoute}
+        onClose={() => (isNewRoute ? navigate('/purchases') : setDrawerOpen(false))}
+        fullPage={isNewRoute}
+        showFullPageBack={false}
         title={editingId ? `Edit Purchase — ${billNumber}` : 'New Purchase'}
         footer={
           <div className="flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => setDrawerOpen(false)}
-              className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
+              onClick={() => (isNewRoute ? navigate('/purchases') : setDrawerOpen(false))}
+              className="action-cancel h-8 text-[13px]"
             >
               Cancel
             </button>
@@ -512,9 +518,9 @@ export default function PurchasesPage() {
               type="button"
               disabled={saving || !supplierId || lines.every((l) => !l.itemId)}
               onClick={save}
-              className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
+              className="h-8 rounded-md bg-green-600 px-3 text-[13px] font-medium text-white hover:bg-green-700 disabled:opacity-50"
             >
-              {saving ? 'Saving...' : 'Save'}
+              {saving ? 'Saving...' : 'Save Purchase'}
             </button>
           </div>
         }

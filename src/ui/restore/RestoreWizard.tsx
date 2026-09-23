@@ -489,7 +489,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
             <button
               type="button"
               onClick={onCancelDataLoss}
-              className="bg-slate-900 text-white rounded px-4 py-2 hover:bg-slate-800"
+              className="action-cancel text-sm font-semibold"
             >
               Cancel restore (keep local data)
             </button>
@@ -525,7 +525,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
                 </div>
                 <button
                   type="button"
-                  className="border rounded px-3 py-1 hover:bg-slate-50"
+                  className="action-restore text-sm font-semibold"
                   onClick={() => onPick(b)}
                 >
                   Restore this

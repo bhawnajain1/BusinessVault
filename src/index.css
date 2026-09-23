@@ -6,16 +6,16 @@
    Consumed by Tailwind theme.extend.colors as bg-app/bg-surface/text-fg/etc. */
 :root {
   color-scheme: light;
-  --bv-app: 250 250 250;         /* page bg — near-white */
+  --bv-app: 244 247 251;         /* page bg — cool blue-gray */
   --bv-surface: 255 255 255;     /* cards, drawers, table */
-  --bv-surface-hover: 245 245 245;
+  --bv-surface-hover: 239 246 255;
   --bv-elevated: 255 255 255;
-  --bv-border: 229 229 229;      /* hairline */
-  --bv-border-strong: 212 212 212;
+  --bv-border: 226 232 240;      /* hairline */
+  --bv-border-strong: 203 213 225;
   --bv-fg: 10 10 10;             /* primary text */
-  --bv-fg-muted: 64 64 64;       /* secondary text */
-  --bv-fg-subtle: 96 96 96;      /* placeholder / meta */
-  --bv-accent: 10 10 10;         /* solid primary button = near-black */
+  --bv-fg-muted: 45 45 45;       /* secondary text */
+  --bv-fg-subtle: 70 70 70;      /* placeholder / meta */
+  --bv-accent: 29 78 216;        /* solid primary button = blue */
   --bv-accent-fg: 255 255 255;
   --bv-ring: 82 82 82;           /* focus ring */
   --bv-success: 22 101 52;
@@ -61,16 +61,152 @@ body {
   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   background: rgb(var(--bv-app));
   color: rgb(var(--bv-fg));
-  -webkit-font-smoothing: auto;
+  -webkit-font-smoothing: antialiased;
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+/* Local visual refresh: quiet canvas, elevated work surfaces, and crisp focus. */
+.app-shell-root {
+  background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 55%, #f0fdf4 100%);
+}
+
+.app-shell-main { background: transparent !important; }
+
+/* Shared page language: these selectors let older pages participate in the
+   refresh without changing their data flow or route-specific markup. */
+.app-shell-main > div {
+  color: #0f172a;
+}
+
+.app-shell-main h1 {
+  letter-spacing: -0.025em;
+}
+
+.app-shell-main .border-slate-200,
+.app-shell-main .border-slate-300 {
+  border-color: rgb(226 232 240 / 0.9);
+}
+
+.app-shell-main .rounded:not([class*='rounded-2xl']):not([class*='rounded-xl']) {
+  border-radius: 0.75rem;
+}
+
+.app-shell-main .bg-white {
+  box-shadow: 0 8px 24px rgb(15 23 42 / 0.045);
+}
+
+.app-shell-main table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.app-shell-main table thead {
+  background: #f8fafc;
+}
+
+.app-shell-main table th {
+  color: #475569;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.app-shell-main table tbody tr {
+  transition: background-color 140ms ease;
+}
+
+.app-shell-main table tbody tr:hover {
+  background: #f8fbff;
+}
+
+.app-shell-main input:not([type='checkbox']):not([type='radio']),
+.app-shell-main select,
+.app-shell-main textarea {
+  border-color: #cbd5e1;
+  border-radius: 0.65rem;
+  background: #fff;
+  color: #0f172a;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.app-shell-main input:not([type='checkbox']):not([type='radio']):focus,
+.app-shell-main select:focus,
+.app-shell-main textarea:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 0.14);
+  outline: none;
+}
+
+.app-shell-main button:not([aria-label='Close']) {
+  border-radius: 0.65rem;
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.app-shell-main button:not([aria-label='Close']):hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.app-shell-main a.text-blue-700 {
+  font-weight: 600;
+}
+
+/* Readability scale: older pages use compact Tailwind utilities heavily, so
+   keep the visual hierarchy while making labels, controls, and table content
+   easier to scan. */
+.app-shell-main .text-xs {
+  font-size: 0.9375rem;
+  line-height: 1.4rem;
+}
+
+.app-shell-main .text-sm {
+  font-size: 1.0625rem;
+  line-height: 1.6rem;
+}
+
+.app-shell-main [class*='text-[11px]'],
+.app-shell-main [class*='text-[12px]'],
+.app-shell-main [class*='text-[13px]'] {
+  font-size: 1rem;
+  line-height: 1.5rem;
+}
+
+.app-shell-main table th {
+  font-size: 0.875rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell-main table tbody tr,
+  .app-shell-main input,
+  .app-shell-main select,
+  .app-shell-main textarea,
+  .app-shell-main button { transition: none; }
+  .app-shell-main button:not([aria-label='Close']):hover:not(:disabled) { transform: none; }
+}
+
+.dashboard-surface { box-shadow: 0 18px 45px rgb(15 23 42 / 0.06); }
+
+.dashboard-card {
+  box-shadow: 0 8px 24px rgb(15 23 42 / 0.05);
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+.dashboard-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px rgb(15 23 42 / 0.09);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-card { transition: none; }
+  .dashboard-card:hover { transform: none; }
 }
 
 /* High-visibility light-theme text. Keep this block isolated so the visual
    change can be reverted without touching component markup. */
-html:not(.dark) .text-slate-400 { color: #64748b; }
-html:not(.dark) .text-slate-500 { color: #475569; }
-html:not(.dark) .text-slate-600 { color: #334155; }
-html:not(.dark) .text-slate-700 { color: #1e293b; }
+html:not(.dark) .text-slate-400 { color: #475569; }
+html:not(.dark) .text-slate-500 { color: #334155; }
+html:not(.dark) .text-slate-600 { color: #1e293b; }
+html:not(.dark) .text-slate-700 { color: #0f172a; }
 html:not(.dark) .text-slate-800 { color: #0f172a; }
 html:not(.dark) .text-slate-900 { color: #020617; }
 
@@ -78,4 +214,148 @@ html:not(.dark) .text-slate-900 { color: #020617; }
 :where(button, [role='button'], a, input, select, textarea):focus-visible {
   outline: 2px solid rgb(var(--bv-ring));
   outline-offset: 2px;
+}
+
+/* Action palette: every actionable control uses one of the three product
+   colors. Existing page-specific utility classes are normalized here so the
+   payment and accounting flows keep their behavior without a markup rewrite.
+   Blue = primary/neutral, green = confirm/success, red = destructive/warning. */
+:where(button, [role='button'], a[class*='rounded'][class*='px-']) {
+  --action-color: #2563eb;
+  --action-hover: #1d4ed8;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-slate-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-gray-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-neutral-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='border-slate-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='border-gray-'] {
+  --action-color: #2563eb;
+  --action-hover: #1d4ed8;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-emerald-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-green-'] {
+  --action-color: #15803d;
+  --action-hover: #166534;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-amber-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-yellow-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-orange-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-rose-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-red-'] {
+  --action-color: #dc2626;
+  --action-hover: #b91c1c;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-violet-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-purple-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-indigo-'] {
+  --action-color: #2563eb;
+  --action-hover: #1d4ed8;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-slate-900'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-gray-900'] {
+  background-color: var(--action-color) !important;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-amber-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-yellow-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-orange-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-rose-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-red-'] {
+  background-color: color-mix(in srgb, var(--action-color) 10%, white) !important;
+  color: var(--action-color) !important;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-violet-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-purple-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-indigo-'] {
+  background-color: color-mix(in srgb, var(--action-color) 9%, white) !important;
+  color: var(--action-color) !important;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-']):not([class*='bg-']) {
+  background-color: var(--action-color);
+  color: white;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='border-slate-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='border-gray-'],
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='border-border'] {
+  border-color: color-mix(in srgb, var(--action-color) 45%, white) !important;
+  color: var(--action-color) !important;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-slate-']:not([class*='bg-slate-900']),
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-gray-']:not([class*='bg-gray-900']) {
+  background-color: color-mix(in srgb, var(--action-color) 8%, white) !important;
+  color: var(--action-color) !important;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-']):hover:not(:disabled) {
+  border-color: var(--action-hover) !important;
+}
+
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-slate-900']:hover:not(:disabled),
+:where(button, [role='button'], a[class*='rounded'][class*='px-'])[class*='bg-gray-900']:hover:not(:disabled) {
+  background-color: var(--action-hover) !important;
+  color: white !important;
+}
+
+.action-edit,
+.action-edit:hover,
+.action-edit:visited {
+  color: #2563eb !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.action-link,
+.action-link:hover,
+.action-link:visited {
+  color: #2563eb !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.action-delete,
+.action-delete:hover,
+.action-delete:visited,
+.action-cancel,
+.action-cancel:hover,
+.action-cancel:visited {
+  color: #dc2626 !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.action-restore,
+.action-restore:hover,
+.action-restore:visited {
+  color: #2563eb !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.payment-out-button,
+.payment-out-button:hover,
+.payment-out-button:visited {
+  background-color: #ef4444 !important;
+  color: #fff !important;
+  border-color: #ef4444 !important;
+}
+
+.payment-out-button:hover:not(:disabled) {
+  background-color: #dc2626 !important;
 }

@@ -1196,7 +1196,7 @@ describe('InvoiceService — Recycle Bin accounting (feedback §9)', () => {
 // ---------------------------------------------------------------------------
 // Every mode ('auto' | 'none' | 'manual') must yield a total_paise that
 // exactly equals pre_round_total_paise + round_off_paise, and 'auto' must
-// snap to the nearest ₹1 via banker's rounding (0.50 → nearest even).
+// leave whole-rupee totals unchanged or round fractional totals upward.
 //
 // Setup: use two 18%-GST lines at prices tuned to land inside each rounding
 // bucket. The intrastateLine() helper is 200 net + 36 GST = 236 paise total,
@@ -1225,10 +1225,10 @@ function customLine(unitPaise: number): ReturnType<typeof intrastateLine> {
 }
 
 describe('InvoiceService — round-off modes (feedback §1)', () => {
-  it("auto: rounds DOWN a total ending in <50 paise to the nearest rupee", async () => {
-    // ₹100.30 taxable + 18% = 118.354 → 11835 paise (rounded per-line).
+  it('auto: rounds a fractional total upward to the next rupee', async () => {
+    // ₹100.30 taxable + 18% = 118.36 after per-line tax rounding.
     // Actually per-line taxable is 10030 paise; cgst/sgst = round(10030*0.09)=903+903=1806.
-    // Line total = 10030 + 1806 = 11836. auto rounds 11836 → nearest 100 → 11800.
+    // Line total = 10030 + 1806 = 11836. auto rounds 11836 → 11900.
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -1245,7 +1245,7 @@ describe('InvoiceService — round-off modes (feedback §1)', () => {
     expect(inv.round_off_mode).toBe('auto');
     expect(inv.total_paise % 100).toBe(0);
     expect(inv.pre_round_total_paise + inv.round_off_paise).toBe(inv.total_paise);
-    expect(inv.round_off_paise).toBeLessThan(0); // rounded down → negative
+    expect(inv.round_off_paise).toBeGreaterThan(0);
   });
 
   it("auto: rounds UP a total ending in >50 paise to the nearest rupee", async () => {
@@ -1290,12 +1290,8 @@ describe('InvoiceService — round-off modes (feedback §1)', () => {
     expect(inv.pre_round_total_paise).toBe(23600);
   });
 
-  it('auto: 50-paise halfway ties round to nearest even rupee (bankers)', async () => {
-    // Craft a line that sums to exactly ₹X.50 pre-round.
-    // taxable 4237, cgst=sgst=381 (round(4237*0.09)=381), sum=4999. Not 50-boundary.
-    // Instead pass a raw pre-round total via a line whose pieces sum to X50.
-    // Use taxable=250 gst=100 => not right. Simplest: unit=42, taxable=42,
-    // cgst=round(42*0.09)=4, sgst=4 -> 50. Perfect 50-paise.
+  it('auto: rounds a 50-paise total upward', async () => {
+    // taxable=42, cgst=4, sgst=4 -> 50 paise, which must become ₹1.00.
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -1309,10 +1305,9 @@ describe('InvoiceService — round-off modes (feedback §1)', () => {
       lines: [customLine(42)], // total = 42+4+4 = 50 paise = ₹0.50 halfway
       round_off_mode: 'auto',
     });
-    // Banker's rounding of 0.5 → 0 (nearest even).
     expect(inv.pre_round_total_paise).toBe(50);
-    expect(inv.total_paise).toBe(0);
-    expect(inv.round_off_paise).toBe(-50);
+    expect(inv.total_paise).toBe(100);
+    expect(inv.round_off_paise).toBe(50);
   });
 
   it('none: keeps the exact pre-round total, round_off=0', async () => {

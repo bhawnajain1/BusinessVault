@@ -127,7 +127,7 @@ export default function InvoiceDetail() {
           {!superseded && invoice.status !== 'cancelled' && (
             <Link
               to={`/invoices/${invoice.id}/edit`}
-              className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+              className="action-edit text-sm"
             >
               Edit
             </Link>
@@ -151,7 +151,7 @@ export default function InvoiceDetail() {
             type="button"
             onClick={deleteInvoice}
             disabled={deleting}
-            className="text-sm border border-rose-300 text-rose-700 rounded px-3 py-1.5 hover:bg-rose-50 disabled:opacity-50"
+            className="action-delete text-sm disabled:opacity-50"
           >
             {deleting ? 'Deleting...' : 'Delete'}
           </button>

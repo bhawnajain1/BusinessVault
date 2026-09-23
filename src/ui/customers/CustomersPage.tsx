@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../../db';
 import type { Customer, Invoice, Payment, Advance } from '../../db/types';
 import { createCustomerService } from '../../domain/CustomerService';
@@ -74,6 +74,8 @@ function paiseToRupees(p: number): string {
 
 export default function CustomersPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isNewRoute = location.pathname === '/customers/new';
   const { businessId, deviceId, loading } = useActiveBusiness();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<Customer | null>(null);
@@ -303,7 +305,7 @@ export default function CustomersPage() {
     setEditing(null);
     setForm(EMPTY_FORM);
     setSaveError(null);
-    setDrawerOpen(true);
+    navigate('/customers/new');
   }
 
   function openEdit(row: Customer) {
@@ -369,7 +371,11 @@ export default function CustomersPage() {
           notes: form.notes,
         });
       }
-      setDrawerOpen(false);
+      if (isNewRoute) {
+        navigate('/customers');
+      } else {
+        setDrawerOpen(false);
+      }
       setReloadKey((k) => k + 1);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -428,6 +434,42 @@ export default function CustomersPage() {
     );
   }
 
+  if (isNewRoute) {
+    return (
+      <div className="mx-auto flex max-w-5xl flex-col gap-6 p-5 sm:p-8">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <button
+              type="button"
+              onClick={() => navigate('/customers')}
+              className="mb-3 text-sm font-semibold text-blue-700 hover:text-blue-800"
+            >
+              ← Customers
+            </button>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Customer setup</p>
+            <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-950">New customer</h1>
+            <p className="mt-2 text-sm text-slate-500">Add identity, tax, contact, and opening balance details.</p>
+          </div>
+          <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800">
+            Customer profile
+          </div>
+        </div>
+        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-7">
+          <CustomerFormFields form={form} setForm={setForm} />
+          {saveError && <div className="mt-5 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800 whitespace-pre-wrap">{saveError}</div>}
+          <div className="mt-7 flex flex-wrap justify-end gap-3 border-t border-slate-100 pt-5">
+            <button type="button" onClick={() => navigate('/customers')} className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-blue-700 hover:bg-blue-50">
+              Cancel
+            </button>
+            <button type="button" disabled={saving || form.name.trim().length === 0} onClick={save} className="h-10 rounded-xl bg-green-600 px-5 text-sm font-semibold text-white shadow-sm hover:bg-green-700 disabled:opacity-50">
+              {saving ? 'Saving...' : 'Save Customer'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -460,7 +502,7 @@ export default function CustomersPage() {
             <button
               type="button"
               onClick={() => setDrawerOpen(false)}
-              className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
+              className="action-cancel h-8 text-[13px]"
             >
               Cancel
             </button>

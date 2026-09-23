@@ -339,7 +339,7 @@ export default function PaymentsPage() {
           <button type="button" onClick={() => openEntry('in')} className="rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700">
             Payment In
           </button>
-          <button type="button" onClick={() => openEntry('out')} className="rounded bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700">
+          <button type="button" onClick={() => openEntry('out')} className="payment-out-button rounded px-3 py-2 text-sm font-medium text-white shadow-sm">
             Payment Out
           </button>
         </div>
@@ -397,7 +397,7 @@ export default function PaymentsPage() {
               {entryError && <p className="sm:col-span-2 text-rose-600">{entryError}</p>}
             </div>
             <div className="flex justify-end gap-2 border-t px-4 py-3">
-              <button type="button" onClick={() => setEntryDirection(null)} className="rounded border px-3 py-2 text-sm">Cancel</button>
+              <button type="button" onClick={() => setEntryDirection(null)} className="action-cancel text-sm">Cancel</button>
               <button type="button" onClick={() => void saveEntry()} disabled={entrySaving} className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{entrySaving ? 'Saving...' : 'Save payment'}</button>
             </div>
           </div>

@@ -763,7 +763,7 @@ export default function InvoiceForm() {
           <button
             type="button"
             onClick={addLine}
-            className="text-sm text-blue-700 hover:underline"
+            className="action-link text-sm"
           >
             + Add line
           </button>
@@ -842,7 +842,7 @@ export default function InvoiceForm() {
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-medium text-fg">Payment</h2>
           <span className="text-xs text-fg-muted">
-            FULL sets the total to one method
+            Choose one method to apply the full total
           </span>
         </div>
         <div className="grid grid-cols-4 gap-3">
@@ -941,26 +941,38 @@ export default function InvoiceForm() {
         <button
           type="button"
           onClick={() => void save()}
-          disabled={saving}
-          className="h-9 rounded-md bg-accent px-4 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
+          disabled={
+            saving ||
+            !customerId ||
+            computedLines.filter((c) => c.qtyMicros > 0 && c.unitPaise > 0 && c.l.item_id).length === 0 ||
+            (defaultWarehouseId === '' && warehouseOptions.length === 0)
+          }
+          className="h-9 rounded-md bg-blue-600 px-4 text-[13px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
         >
           {saving
             ? 'Saving…'
             : editingId
               ? 'Save changes (void & reissue)'
-              : 'Create invoice'}
+              : editingId
+                ? 'Save Changes'
+                : 'Save Invoice'}
         </button>
         <button
           type="button"
           onClick={() => void save({ thenPrint: true })}
-          disabled={saving}
-          className="h-9 rounded-md bg-emerald-600 px-4 text-[13px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+          disabled={
+            saving ||
+            !customerId ||
+            computedLines.filter((c) => c.qtyMicros > 0 && c.unitPaise > 0 && c.l.item_id).length === 0 ||
+            (defaultWarehouseId === '' && warehouseOptions.length === 0)
+          }
+          className="h-9 rounded-md bg-green-600 px-4 text-[13px] font-medium text-white hover:bg-green-700 disabled:opacity-50"
         >
-          {saving ? 'Saving…' : 'Save & print detailed invoice'}
+          {saving ? 'Saving…' : 'Save & Print Detailed Invoice'}
         </button>
         <Link
           to="/invoices"
-          className="h-9 inline-flex items-center rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
+          className="action-cancel h-9 inline-flex items-center text-[13px]"
         >
           Cancel
         </Link>
@@ -989,10 +1001,11 @@ function PaymentInput({
           <button
             type="button"
             onClick={onFull}
-            className="text-[10px] font-semibold uppercase tracking-wide text-blue-700 hover:text-blue-900"
+            className="inline-flex min-h-10 items-center rounded-md px-2 text-xs font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:bg-blue-50 hover:text-blue-800 focus-visible:outline-2 focus-visible:outline-blue-600"
             title={`Set ${label} to full total`}
+            aria-label={`Use full invoice total for ${label}`}
           >
-            FULL
+            Use full amount
           </button>
         )}
       </div>

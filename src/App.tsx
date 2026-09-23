@@ -12,14 +12,18 @@ const Dashboard = lazyWithReload(() => import('./ui/pages/Dashboard'), 'Dashboar
 const Invoices = lazyWithReload(() => import('./ui/pages/Invoices'), 'Invoices');
 const InvoiceEditor = lazyWithReload(() => import('./ui/pos/POSScreen'), 'POSScreen');
 const Customers = lazyWithReload(() => import('./ui/pages/Customers'), 'Customers');
+const CustomerForm = lazyWithReload(() => import('./ui/customers/CustomersPage'), 'CustomerForm');
 const Suppliers = lazyWithReload(() => import('./ui/pages/Suppliers'), 'Suppliers');
+const SupplierForm = lazyWithReload(() => import('./ui/suppliers/SuppliersPage'), 'SupplierForm');
 const Items = lazyWithReload(() => import('./ui/pages/Items'), 'Items');
+const ItemForm = lazyWithReload(() => import('./ui/items/ItemsPage'), 'ItemForm');
 const Categories = lazyWithReload(() => import('./ui/pages/Categories'), 'Categories');
 const Warehouses = lazyWithReload(() => import('./ui/pages/Warehouses'), 'Warehouses');
 const StockMovements = lazyWithReload(() => import('./ui/pages/StockMovements'), 'StockMovements');
 const Returns = lazyWithReload(() => import('./ui/pages/Returns'), 'Returns');
 const SalesReturnDetail = lazyWithReload(() => import('./ui/returns/SalesReturnDetail'), 'SalesReturnDetail');
 const Purchases = lazyWithReload(() => import('./ui/pages/Purchases'), 'Purchases');
+const PurchaseForm = lazyWithReload(() => import('./ui/purchases/PurchasesPage'), 'PurchaseForm');
 const PurchaseDetail = lazyWithReload(() => import('./ui/purchases/PurchaseDetail'), 'PurchaseDetail');
 const InvoiceDetail = lazyWithReload(() => import('./ui/invoices/InvoiceDetail'), 'InvoiceDetail');
 const InvoicePrint = lazyWithReload(() => import('./ui/invoices/InvoicePrint'), 'InvoicePrint');
@@ -27,9 +31,11 @@ const InvoiceForm = lazyWithReload(() => import('./ui/invoices/InvoiceForm'), 'I
 const DeletedInvoices = lazyWithReload(() => import('./ui/invoices/DeletedInvoicesPage'), 'DeletedInvoicesPage');
 const Payments = lazyWithReload(() => import('./ui/pages/Payments'), 'Payments');
 const Advances = lazyWithReload(() => import('./ui/pages/Advances'), 'Advances');
+const AdvanceForm = lazyWithReload(() => import('./ui/advances/AdvancesPage'), 'AdvanceForm');
 const PartyLedger = lazyWithReload(() => import('./ui/parties/PartyLedgerPage'), 'PartyLedgerPage');
 const CustomerDetail = lazyWithReload(() => import('./ui/customers/CustomerDetailPage'), 'CustomerDetailPage');
 const Expenses = lazyWithReload(() => import('./ui/pages/Expenses'), 'Expenses');
+const ExpenseForm = lazyWithReload(() => import('./ui/expenses/ExpensesPage'), 'ExpenseForm');
 const TrialBalancePage = lazyWithReload(() => import('./ui/reports/TrialBalancePage'), 'TrialBalancePage');
 const ProfitLossPage = lazyWithReload(() => import('./ui/reports/ProfitLossPage'), 'ProfitLossPage');
 const BalanceSheetPage = lazyWithReload(() => import('./ui/reports/BalanceSheetPage'), 'BalanceSheetPage');
@@ -60,23 +66,29 @@ export default function App() {
           <Route path="/invoices/:id/edit" element={<InvoiceForm />} />
           <Route path="/invoices/:id/print" element={<InvoicePrint />} />
           <Route path="/customers" element={<Customers />} />
+          <Route path="/customers/new" element={<CustomerForm />} />
           <Route path="/customers/:id" element={<CustomerDetail />} />
           <Route path="/suppliers" element={<Suppliers />} />
+          <Route path="/suppliers/new" element={<SupplierForm />} />
           <Route
             path="/parties/:partyType/:id/ledger"
             element={<PartyLedger />}
           />
           <Route path="/items" element={<Items />} />
+          <Route path="/items/new" element={<ItemForm />} />
           <Route path="/categories" element={<Categories />} />
           <Route path="/warehouses" element={<Warehouses />} />
           <Route path="/stock-movements" element={<StockMovements />} />
           <Route path="/returns" element={<Returns />} />
           <Route path="/returns/:id" element={<SalesReturnDetail />} />
           <Route path="/purchases" element={<Purchases />} />
+          <Route path="/purchases/new" element={<PurchaseForm />} />
           <Route path="/purchases/:id" element={<PurchaseDetail />} />
           <Route path="/payments" element={<Payments />} />
           <Route path="/advances" element={<Advances />} />
+          <Route path="/advances/new" element={<AdvanceForm />} />
           <Route path="/expenses" element={<Expenses />} />
+          <Route path="/expenses/new" element={<ExpenseForm />} />
           <Route path="/accounting" element={<TrialBalancePage />} />
           <Route path="/gst" element={<GstSummaryPage />} />
           <Route path="/reports" element={<ReportsIndex />} />

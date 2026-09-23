@@ -146,7 +146,7 @@ export default function InvoicesPage() {
           ) : (
             <Link
               to={`/invoices/${r.id}/edit`}
-              className="text-xs text-blue-700 hover:underline"
+              className="action-edit text-xs"
             >
               Edit
             </Link>
@@ -154,7 +154,7 @@ export default function InvoicesPage() {
           <button
             type="button"
             onClick={() => handleDelete(r)}
-            className="text-xs text-rose-700 hover:underline"
+            className="action-delete text-xs"
           >
             Delete
           </button>

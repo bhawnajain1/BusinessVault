@@ -155,7 +155,7 @@ export default function Returns() {
             <button
               type="button"
               onClick={cancelFlow}
-              className="text-xs text-fg-muted hover:text-fg"
+              className="action-cancel text-xs"
             >
               Cancel
             </button>
@@ -196,7 +196,7 @@ export default function Returns() {
                       <button
                         type="button"
                         onClick={() => pickInvoice(inv.id)}
-                        className="text-xs text-blue-700 hover:underline"
+                        className="action-link text-xs"
                       >
                         Select
                       </button>

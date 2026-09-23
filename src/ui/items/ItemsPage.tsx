@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import type { Category, Item, Unit } from '../../db/types';
 import { createItemService } from '../../domain/ItemService';
@@ -74,7 +75,49 @@ function microsToUnits(m: number): string {
   return (m / 1_000_000).toString();
 }
 
+function ItemFormFields({
+  form,
+  setForm,
+  units,
+  categories,
+  editing,
+}: {
+  form: ItemForm;
+  setForm: (form: ItemForm) => void;
+  units: Unit[];
+  categories: Category[];
+  editing: Item | null;
+}) {
+  const input = 'w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-[13px] text-slate-800 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-4 focus:ring-blue-500/10';
+  const label = 'mb-1 block text-xs font-semibold text-slate-600';
+  const set = <K extends keyof ItemForm>(key: K, value: ItemForm[K]) => setForm({ ...form, [key]: value });
+  return (
+    <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+      <label><span className={label}>SKU *</span><input value={form.sku} onChange={(e) => set('sku', e.target.value)} className={input} disabled={!!editing} /></label>
+      <label><span className={label}>Name *</span><input value={form.name} onChange={(e) => set('name', e.target.value)} className={input} /></label>
+      <label><span className={label}>HSN</span><input value={form.hsn} onChange={(e) => set('hsn', e.target.value)} className={input} /></label>
+      <label><span className={label}>Barcode</span><input value={form.barcode} onChange={(e) => set('barcode', e.target.value)} className={input} /></label>
+      <label><span className={label}>Unit</span><select value={form.unitId} onChange={(e) => set('unitId', e.target.value)} className={input}>{units.length === 0 && <option value="">— none available —</option>}{units.map((u) => <option key={u.id} value={u.id}>{u.code} — {u.name}</option>)}</select></label>
+      <label><span className={label}>Category</span><select value={form.categoryId} onChange={(e) => set('categoryId', e.target.value)} className={input}><option value="">— none —</option>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+      <label><span className={label}>Sale Price (₹)</span><input value={form.salePriceRupees} onChange={(e) => set('salePriceRupees', e.target.value)} className={`${input} text-right`} /></label>
+      <label><span className={label}>Purchase Price (₹)</span><input value={form.purchasePriceRupees} onChange={(e) => set('purchasePriceRupees', e.target.value)} className={`${input} text-right`} /></label>
+      <label><span className={label}>GST %</span><input value={form.taxRatePct} onChange={(e) => set('taxRatePct', e.target.value)} className={`${input} text-right`} /></label>
+      <label><span className={label}>Cess %</span><input value={form.cessRatePct} onChange={(e) => set('cessRatePct', e.target.value)} className={`${input} text-right`} /></label>
+      <label><span className={label}>Opening Qty</span><input value={form.openingQty} onChange={(e) => set('openingQty', e.target.value)} className={`${input} text-right`} disabled={!!editing} /></label>
+      <label><span className={label}>Opening Value (₹)</span><input value={form.openingValueRupees} onChange={(e) => set('openingValueRupees', e.target.value)} className={`${input} text-right`} disabled={!!editing} /></label>
+      <label><span className={label}>Reorder Level</span><input value={form.reorderLevel} onChange={(e) => set('reorderLevel', e.target.value)} className={`${input} text-right`} /></label>
+      <label className="sm:col-span-2"><span className={label}>Description</span><textarea value={form.description} onChange={(e) => set('description', e.target.value)} className={`${input} h-24 py-2`} /></label>
+      <label className="inline-flex min-h-12 items-center gap-3 rounded-xl border border-slate-200 px-3"><input type="checkbox" checked={form.isService} onChange={(e) => set('isService', e.target.checked)} /><span>Service</span></label>
+      <label className="inline-flex min-h-12 items-center gap-3 rounded-xl border border-slate-200 px-3"><input type="checkbox" checked={form.trackInventory} onChange={(e) => set('trackInventory', e.target.checked)} /><span>Track inventory</span></label>
+      <label className="inline-flex min-h-12 items-center gap-3 rounded-xl border border-slate-200 px-3 sm:col-span-2"><input type="checkbox" checked={form.active} onChange={(e) => set('active', e.target.checked)} /><span>Active</span></label>
+    </div>
+  );
+}
+
 export default function ItemsPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isNewRoute = location.pathname === '/items/new';
   const { businessId, deviceId, loading } = useActiveBusiness();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<Item | null>(null);
@@ -171,7 +214,7 @@ export default function ItemsPage() {
     const pcsUnit = units.find((u) => u.code === 'PCS')?.id ?? units[0]?.id ?? '';
     setForm({ ...EMPTY_FORM, unitId: pcsUnit });
     setSaveError(null);
-    setDrawerOpen(true);
+    navigate('/items/new');
   }
   function openEdit(row: Item) {
     setEditing(row);
@@ -257,7 +300,11 @@ export default function ItemsPage() {
           barcode: form.barcode || null,
         });
       }
-      setDrawerOpen(false);
+      if (isNewRoute) {
+        navigate('/items');
+      } else {
+        setDrawerOpen(false);
+      }
       setReloadKey((k) => k + 1);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -312,6 +359,32 @@ export default function ItemsPage() {
     );
   }
 
+  if (isNewRoute) {
+    return (
+      <div className="mx-auto flex max-w-5xl flex-col gap-6 p-5 sm:p-8">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <button type="button" onClick={() => navigate('/items')} className="mb-3 text-sm font-semibold text-blue-700 hover:text-blue-800">
+              ← Items
+            </button>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Catalog setup</p>
+            <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-950">New item</h1>
+            <p className="mt-2 text-sm text-slate-500">Define pricing, GST, inventory, and item identification details.</p>
+          </div>
+          <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800">Catalog item</div>
+        </div>
+        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-7">
+          <ItemFormFields form={form} setForm={setForm} units={units} categories={categories} editing={null} />
+          {saveError && <div className="mt-5 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800 whitespace-pre-wrap">{saveError}</div>}
+          <div className="mt-7 flex flex-wrap justify-end gap-3 border-t border-slate-100 pt-5">
+            <button type="button" onClick={() => navigate('/items')} className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-blue-700 hover:bg-blue-50">Cancel</button>
+            <button type="button" disabled={saving || form.name.trim().length === 0 || form.sku.trim().length === 0} onClick={save} className="h-10 rounded-xl bg-green-600 px-5 text-sm font-semibold text-white shadow-sm hover:bg-green-700 disabled:opacity-50">{saving ? 'Saving...' : 'Save Item'}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -344,7 +417,7 @@ export default function ItemsPage() {
             <button
               type="button"
               onClick={() => setDrawerOpen(false)}
-              className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
+              className="action-cancel h-8 text-[13px]"
             >
               Cancel
             </button>

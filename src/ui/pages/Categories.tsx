@@ -175,14 +175,14 @@ export default function Categories() {
                     <button
                       type="button"
                       onClick={() => startEdit(c)}
-                      className="text-xs text-blue-700 hover:underline mr-3"
+                      className="action-edit mr-3 text-xs"
                     >
                       Edit
                     </button>
                     <button
                       type="button"
                       onClick={() => remove(c)}
-                      className="text-xs text-rose-700 hover:underline"
+                      className="action-delete text-xs"
                     >
                       Delete
                     </button>

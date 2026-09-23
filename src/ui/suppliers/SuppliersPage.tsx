@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import type { Advance, Purchase, Supplier } from '../../db/types';
 import { createSupplierService } from '../../domain/SupplierService';
@@ -62,8 +62,11 @@ function paiseToRupees(p: number): string {
 }
 
 export default function SuppliersPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isNewRoute = location.pathname === '/suppliers/new';
   const { businessId, deviceId, loading } = useActiveBusiness();
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(isNewRoute);
   const [editing, setEditing] = useState<Supplier | null>(null);
   const [form, setForm] = useState<SupplierForm>(EMPTY_FORM);
   const [manuallySetState, setManuallySetState] = useState(false);
@@ -209,7 +212,7 @@ export default function SuppliersPage() {
     setForm(EMPTY_FORM);
     setManuallySetState(false);
     setSaveError(null);
-    setDrawerOpen(true);
+    navigate('/suppliers/new');
   }
 
   function openEdit(row: Supplier) {
@@ -270,7 +273,8 @@ export default function SuppliersPage() {
           notes: form.notes,
         });
       }
-      setDrawerOpen(false);
+      if (isNewRoute) navigate('/suppliers');
+      else setDrawerOpen(false);
       setReloadKey((k) => k + 1);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -349,15 +353,17 @@ export default function SuppliersPage() {
       />
 
       <Drawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        open={drawerOpen || isNewRoute}
+        onClose={() => (isNewRoute ? navigate('/suppliers') : setDrawerOpen(false))}
+        fullPage={isNewRoute}
+        showFullPageBack={false}
         title={editing ? 'Edit Supplier' : 'New Supplier'}
         footer={
           <div className="flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => setDrawerOpen(false)}
-              className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
+              onClick={() => (isNewRoute ? navigate('/suppliers') : setDrawerOpen(false))}
+              className="action-cancel h-8 text-[13px]"
             >
               Cancel
             </button>
@@ -365,9 +371,9 @@ export default function SuppliersPage() {
               type="button"
               disabled={saving || form.name.trim().length === 0}
               onClick={save}
-              className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
+              className="h-8 rounded-md bg-green-600 px-3 text-[13px] font-medium text-white hover:bg-green-700 disabled:opacity-50"
             >
-              {saving ? 'Saving...' : 'Save'}
+              {saving ? 'Saving...' : 'Save Supplier'}
             </button>
           </div>
         }

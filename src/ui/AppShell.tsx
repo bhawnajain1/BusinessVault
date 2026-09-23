@@ -56,7 +56,7 @@ export default function AppShell() {
             <div data-print-hide className="h-full min-h-0">
               <Sidebar />
             </div>
-            <main className="app-shell-main flex-1 overflow-y-auto bg-app">
+            <main className="app-shell-main flex-1 overflow-y-auto">
               <Outlet />
             </main>
           </div>

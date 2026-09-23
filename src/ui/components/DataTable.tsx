@@ -33,10 +33,10 @@ export interface DataTableProps<T> {
 }
 
 const inputCls =
-  'h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring';
+  'h-10 rounded-xl border border-slate-200 bg-white px-3 text-[13px] text-slate-800 placeholder:text-slate-400 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-4 focus:ring-blue-500/10';
 
 const btnGhost =
-  'inline-flex h-8 items-center rounded-md border border-border bg-surface px-2.5 text-[12px] text-fg-muted hover:text-fg hover:bg-surface-hover disabled:opacity-40 disabled:hover:bg-surface transition-colors';
+  'inline-flex h-10 items-center rounded-xl border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-40 disabled:hover:bg-white';
 
 export default function DataTable<T>(props: DataTableProps<T>) {
   const {
@@ -111,7 +111,8 @@ export default function DataTable<T>(props: DataTableProps<T>) {
   const to = Math.min(total, (page + 1) * pageSize);
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
+      <div className="rounded-2xl border border-slate-200/80 bg-white/80 p-3 shadow-sm">
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
           <svg
@@ -134,7 +135,7 @@ export default function DataTable<T>(props: DataTableProps<T>) {
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder={searchPlaceholder}
-            className={`${inputCls} w-72 pl-8`}
+            className={`${inputCls} w-full pl-9 sm:w-80`}
           />
         </div>
         {filterKeys.length > 0 && (
@@ -172,8 +173,9 @@ export default function DataTable<T>(props: DataTableProps<T>) {
         )}
         {toolbar}
       </div>
+      </div>
 
-      <div className="rounded-lg border border-border bg-surface overflow-hidden">
+      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
         <table className="w-full text-[13px]">
           <thead className="bg-app border-b border-border">
             <tr>

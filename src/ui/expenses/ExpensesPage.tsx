@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import type { Account, Expense, Supplier } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
@@ -8,6 +9,9 @@ import { paginateCollection, matchesText } from '../components/pagination';
 import { ExpenseService } from '../../domain/ExpenseService';
 
 export default function ExpensesPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isNewRoute = location.pathname === '/expenses/new';
   const { businessId, deviceId, loading } = useActiveBusiness();
   const [categoryFilter, setCategoryFilter] = useState<string>('');
   const [categoryAccounts, setCategoryAccounts] = useState<Account[]>([]);
@@ -18,7 +22,7 @@ export default function ExpensesPage() {
   const [reloadKey, setReloadKey] = useState(0);
 
   // New-expense drawer state
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(isNewRoute);
   const [expenseNumber, setExpenseNumber] = useState('');
   const [expenseDate, setExpenseDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [categoryAccountId, setCategoryAccountId] = useState<string>('');
@@ -60,7 +64,7 @@ export default function ExpensesPage() {
   }, [businessId, reloadKey]);
 
   function openDrawer() {
-    setDrawerOpen(true);
+    navigate('/expenses/new');
     setSaveError(null);
     setExpenseNumber('');
     setExpenseDate(new Date().toISOString().slice(0, 10));
@@ -118,7 +122,8 @@ export default function ExpensesPage() {
         amountPaise,
         taxPaise,
       });
-      setDrawerOpen(false);
+      if (isNewRoute) navigate('/expenses');
+      else setDrawerOpen(false);
       setReloadKey((k) => k + 1);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -321,24 +326,30 @@ export default function ExpensesPage() {
         onExport={exportCsv}
       />
 
-      {drawerOpen && (
+      {(drawerOpen || isNewRoute) && (
         <div
-          className="fixed inset-0 z-40 bg-black/40 flex items-start justify-end"
-          onClick={closeDrawer}
+          className={isNewRoute ? 'fixed inset-0 z-40 overflow-y-auto bg-slate-50/95 p-5 sm:p-8' : 'fixed inset-0 z-40 flex items-start justify-end bg-black/40'}
+          onClick={isNewRoute ? () => navigate('/expenses') : closeDrawer}
+          data-full-page={isNewRoute ? 'true' : undefined}
         >
           <div
-            className="h-full w-full max-w-md bg-surface shadow-xl border-l border-border flex flex-col"
+            className={isNewRoute ? 'mx-auto w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm' : 'h-full w-full max-w-md border-l border-border bg-surface shadow-xl'}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-border px-4 py-3">
-              <h2 className="text-base font-semibold text-fg">New Expense</h2>
-              <button
-                type="button"
-                onClick={closeDrawer}
-                className="text-sm text-fg-muted hover:text-fg"
-              >
-                Close
-              </button>
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-7">
+              <div>
+                {isNewRoute && <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Accounting entry</p>}
+                <h2 className={isNewRoute ? 'mt-1 text-3xl font-semibold tracking-tight text-slate-950' : 'text-base font-semibold text-fg'}>New Expense</h2>
+              </div>
+              {!isNewRoute && (
+                <button
+                  type="button"
+                  onClick={closeDrawer}
+                  className="action-cancel text-sm font-semibold"
+                >
+                  Close
+                </button>
+              )}
             </div>
             <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3 text-sm">
               <label className="flex flex-col">
@@ -438,21 +449,28 @@ export default function ExpensesPage() {
               </div>
               {saveError && <div className="text-sm text-danger">{saveError}</div>}
             </div>
-            <div className="border-t border-border px-4 py-3 flex justify-end gap-2">
+            <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50/80 px-5 py-4 sm:px-7">
               <button
                 type="button"
-                onClick={closeDrawer}
-                className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
+                onClick={isNewRoute ? () => navigate('/expenses') : closeDrawer}
+                className="action-cancel h-10 text-sm font-semibold"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={saveNew}
-                disabled={saving}
-                className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
+                disabled={
+                  saving ||
+                  !expenseNumber.trim() ||
+                  !categoryAccountId ||
+                  !paymentAccountId ||
+                  !Number.isFinite(Number(amountStr)) ||
+                  Number(amountStr) <= 0
+                }
+                className="h-10 rounded-xl bg-green-600 px-4 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Save expense'}
+                {saving ? 'Saving…' : 'Save Expense'}
               </button>
             </div>
           </div>

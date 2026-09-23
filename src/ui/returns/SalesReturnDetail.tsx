@@ -263,7 +263,7 @@ export default function SalesReturnDetail() {
               type="button"
               onClick={onCancel}
               disabled={cancelling}
-              className="text-sm border border-rose-300 text-rose-700 rounded px-3 py-1.5 hover:bg-rose-50 disabled:opacity-50"
+              className="action-cancel text-sm disabled:opacity-50"
             >
               {cancelling ? 'Cancelling…' : 'Cancel return'}
             </button>

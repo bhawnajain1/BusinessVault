@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import type { ReactNode } from 'react';
 import { db } from '../../db';
 import Money from '../components/Money';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
@@ -8,9 +9,12 @@ import {
 } from '../../domain/dashboardStats';
 import { log } from '../../lib/log';
 import { useLiveQuery } from '../hooks/useLiveQuery';
+import { profitAndLoss, type ProfitAndLoss } from '../../domain/AccountingService';
 
 export default function Dashboard() {
   const { businessId, loading } = useActiveBusiness();
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : hour < 21 ? 'Good evening' : 'Good night';
   const stats = useLiveQuery<DashboardStats | null>(async () => {
     if (!businessId) return null;
       // Thin shim: load rows, hand to the pure computeDashboardStats. All
@@ -86,6 +90,14 @@ export default function Dashboard() {
 
       return computed;
   }, [businessId], null);
+  const profitLoss = useLiveQuery<ProfitAndLoss | null>(async () => {
+    if (!businessId) return null;
+    const today = new Date();
+    const financialYearStart = new Date(
+      Date.UTC(today.getUTCMonth() >= 3 ? today.getUTCFullYear() : today.getUTCFullYear() - 1, 3, 1),
+    );
+    return profitAndLoss(businessId, financialYearStart, today);
+  }, [businessId], null);
 
   if (loading) return <div className="p-6 text-slate-500">Loading...</div>;
 
@@ -104,18 +116,27 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="p-6 flex flex-col gap-6">
-      <h1 className="text-xl font-semibold">Dashboard</h1>
+    <div className="mx-auto flex max-w-[1500px] flex-col gap-7 p-5 sm:p-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Overview</p>
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-950">{greeting}, here is your business pulse.</h1>
+          <p className="mt-2 text-sm text-slate-500">Keep an eye on cash flow, open balances, and recent activity.</p>
+        </div>
+        <Link to="/invoices/new" className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus-visible:outline-blue-600">
+          + New invoice
+        </Link>
+      </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Card label="Invoices" value={stats?.invoices ?? '—'} to="/invoices" />
-        <Card label="Customers" value={stats?.customers ?? '—'} to="/customers" />
-        <Card label="Suppliers" value={stats?.suppliers ?? '—'} to="/suppliers" />
-        <Card label="Items" value={stats?.items ?? '—'} to="/items" />
+        <Card label="Invoices" value={stats?.invoices ?? '—'} to="/invoices" tone="blue" />
+        <Card label="Customers" value={stats?.customers ?? '—'} to="/customers" tone="green" />
+        <Card label="Suppliers" value={stats?.suppliers ?? '—'} to="/suppliers" tone="slate" />
+        <Card label="Items" value={stats?.items ?? '—'} to="/items" tone="violet" />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className="border border-slate-200 rounded p-4 bg-white">
+        <div className="dashboard-card rounded-2xl border border-slate-200/80 bg-white p-5">
           <div className="text-sm text-slate-600">Outstanding receivables</div>
           <div className="mt-1 text-2xl font-semibold text-slate-900">
             {stats ? <Money paise={stats.outstandingReceivablesPaise} /> : '—'}
@@ -127,7 +148,7 @@ export default function Dashboard() {
             View invoices →
           </Link>
         </div>
-        <div className="border border-slate-200 rounded p-4 bg-white">
+        <div className="dashboard-card rounded-2xl border border-slate-200/80 bg-white p-5">
           <div className="text-sm text-slate-600">Outstanding payables</div>
           <div className="mt-1 text-2xl font-semibold text-slate-900">
             {stats ? <Money paise={stats.outstandingPayablesPaise} /> : '—'}
@@ -143,10 +164,12 @@ export default function Dashboard() {
 
       {stats && <AnalyticsPanel stats={stats} />}
 
-      <div className="border border-slate-200 rounded bg-white">
+      {stats && <FinancialOverview stats={stats} profitLoss={profitLoss ?? null} />}
+
+      <div className="dashboard-card overflow-hidden rounded-2xl border border-slate-200/80 bg-white">
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
           <h2 className="text-sm font-semibold text-slate-700">Recent invoices</h2>
-          <Link to="/pos" className="text-sm text-blue-700 hover:underline">
+           <Link to="/invoices/new" className="text-sm text-blue-700 hover:underline">
             + New invoice
           </Link>
         </div>
@@ -183,7 +206,7 @@ export default function Dashboard() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <Link to="/pos" className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800">
+        <Link to="/invoices/new" className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800">
           New invoice
         </Link>
         <Link to="/purchases" className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100">
@@ -200,22 +223,193 @@ export default function Dashboard() {
   );
 }
 
+function FinancialOverview({
+  stats,
+  profitLoss,
+}: {
+  stats: DashboardStats;
+  profitLoss: ProfitAndLoss | null;
+}) {
+  const pnlRows = profitLoss
+    ? [
+        { label: 'Revenue', value: profitLoss.revenue_paise, color: 'bg-blue-600' },
+        { label: 'COGS', value: profitLoss.cogs_paise, color: 'bg-amber-500' },
+        { label: 'Operating expenses', value: profitLoss.operating_expenses_paise, color: 'bg-red-500' },
+        { label: 'Other income', value: profitLoss.other_income_paise, color: 'bg-green-600' },
+      ]
+    : [];
+  const balanceRows = [
+    { label: 'Receivables', value: stats.outstandingReceivablesPaise, color: 'bg-blue-600' },
+    { label: 'Payables', value: stats.outstandingPayablesPaise, color: 'bg-orange-500' },
+  ];
+  const balanceMax = Math.max(1, ...balanceRows.map((row) => row.value));
+
+  return (
+    <section className="grid gap-5 lg:grid-cols-2" aria-label="Financial overview">
+      <DashboardChartCard
+        title="Profit & Loss"
+        description="Current financial year"
+        linkTo="/reports/pnl"
+        linkLabel="View P&L report"
+      >
+        {!profitLoss ? <p className="text-sm text-slate-500">Loading...</p> : (
+          <PnlDonut rows={pnlRows} netIncome={profitLoss.net_income_paise} />
+        )}
+      </DashboardChartCard>
+      <DashboardChartCard
+        title="Receivables & Payables"
+        description="Open balances as of today"
+        linkTo="/reports/receivables-payables"
+        linkLabel="View receivables & payables"
+      >
+        <div className="space-y-5" role="img" aria-label="Receivables and payables comparison chart">
+          {balanceRows.map((row) => (
+            <DashboardBar key={row.label} {...row} max={balanceMax} />
+          ))}
+        </div>
+      </DashboardChartCard>
+    </section>
+  );
+}
+
+function PnlDonut({
+  rows,
+  netIncome,
+}: {
+  rows: Array<{ label: string; value: number; color: string }>;
+  netIncome: number;
+}) {
+  const positiveRows = rows.map((row) => ({ ...row, value: Math.max(0, row.value) }));
+  const total = positiveRows.reduce((sum, row) => sum + row.value, 0);
+  let cursor = 0;
+  const stops = total > 0
+    ? positiveRows.map((row) => {
+        const start = cursor;
+        cursor += (row.value / total) * 360;
+        return `${colorFor(row.color)} ${start}deg ${cursor}deg`;
+      })
+    : ['#e2e8f0 0deg 360deg'];
+
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-6" role="img" aria-label="Profit and loss circular chart">
+      <div
+        className="relative h-44 w-44 shrink-0 rounded-full"
+        style={{ background: `conic-gradient(${stops.join(', ')})` }}
+      >
+        <div className="absolute inset-7 flex flex-col items-center justify-center rounded-full bg-white text-center">
+          <span className="text-xs text-slate-500">Net income</span>
+          <span className={`mt-1 text-sm font-semibold ${netIncome >= 0 ? 'text-green-700' : 'text-red-600'}`}>
+            <Money paise={netIncome} />
+          </span>
+        </div>
+      </div>
+      <div className="min-w-[170px] flex-1 space-y-3">
+        {positiveRows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-3 text-sm">
+            <span className="inline-flex items-center gap-2 text-slate-600">
+              <span className={`h-2.5 w-2.5 rounded-full ${row.color}`} aria-hidden="true" />
+              {row.label}
+            </span>
+            <Money paise={row.value} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function colorFor(color: string): string {
+  if (color === 'bg-blue-600') return '#2563eb';
+  if (color === 'bg-amber-500') return '#f59e0b';
+  if (color === 'bg-red-500') return '#ef4444';
+  return '#16a34a';
+}
+
+function DashboardChartCard({
+  title,
+  description,
+  linkTo,
+  linkLabel,
+  children,
+}: {
+  title: string;
+  description: string;
+  linkTo: string;
+  linkLabel: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="dashboard-card rounded-2xl border border-slate-200/80 bg-white p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold text-slate-900">{title}</h2>
+          <p className="mt-1 text-sm text-slate-500">{description}</p>
+        </div>
+        <Link to={linkTo} className="action-link text-xs">{linkLabel}</Link>
+      </div>
+      <div className="mt-6">{children}</div>
+    </section>
+  );
+}
+
+function DashboardBar({
+  label,
+  value,
+  color,
+  max,
+  signed = false,
+}: {
+  label: string;
+  value: number;
+  color: string;
+  max: number;
+  signed?: boolean;
+}) {
+  return (
+    <div>
+      <div className="mb-1.5 flex justify-between gap-3 text-sm">
+        <span className="text-slate-600">{label}</span>
+        <Money paise={value} />
+      </div>
+      <div className="h-3 overflow-hidden rounded-full bg-slate-100">
+        <div
+          className={`h-full rounded-full ${color}`}
+          style={{ width: `${Math.max(value === 0 ? 0 : 4, (Math.abs(value) / max) * 100)}%` }}
+          title={`${label}: ${(value / 100).toFixed(2)} INR`}
+        />
+      </div>
+      {signed && value < 0 && <p className="mt-1 text-xs text-red-600">Loss</p>}
+    </div>
+  );
+}
+
 function Card({
   label,
   value,
   to,
+  tone,
 }: {
   label: string;
   value: number | string;
   to: string;
+  tone: 'blue' | 'green' | 'slate' | 'violet';
 }) {
+  const tones = {
+    blue: 'bg-blue-50 text-blue-600',
+    green: 'bg-emerald-50 text-emerald-600',
+    slate: 'bg-slate-100 text-slate-600',
+    violet: 'bg-violet-50 text-violet-600',
+  };
   return (
     <Link
       to={to}
-      className="block border border-slate-200 rounded p-4 bg-white hover:border-slate-400 hover:shadow-sm transition"
+      className="dashboard-card block rounded-2xl border border-slate-200/80 bg-white p-5"
     >
-      <div className="text-sm text-slate-600">{label}</div>
-      <div className="mt-1 text-2xl font-semibold text-slate-900">{value}</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-medium text-slate-500">{label}</div>
+        <span className={`h-2.5 w-2.5 rounded-full ${tones[tone]}`} aria-hidden="true" />
+      </div>
+      <div className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{value}</div>
     </Link>
   );
 }

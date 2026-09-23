@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import type {
   Account,
@@ -20,6 +21,9 @@ import { isActivePurchase } from '../../domain/partyLedger';
 const METHODS: PaymentMethod[] = ['cash', 'card', 'upi', 'bank', 'cheque'];
 
 export default function AdvancesPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isNewRoute = location.pathname === '/advances/new';
   const { businessId, deviceId, loading } = useActiveBusiness();
   const [directionFilter, setDirectionFilter] = useState<PartyType | ''>('');
   const [reloadKey, setReloadKey] = useState(0);
@@ -31,7 +35,7 @@ export default function AdvancesPage() {
   const [cashBankAccounts, setCashBankAccounts] = useState<Account[]>([]);
 
   // Record-drawer state
-  const [recordOpen, setRecordOpen] = useState(false);
+  const [recordOpen, setRecordOpen] = useState(isNewRoute);
   const [advNumber, setAdvNumber] = useState('');
   const [advDate, setAdvDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [partyType, setPartyType] = useState<PartyType>('customer');
@@ -82,7 +86,7 @@ export default function AdvancesPage() {
   }, [partyType, customers, suppliers]);
 
   function openRecordDrawer() {
-    setRecordOpen(true);
+    navigate('/advances/new');
     setRecordError(null);
     setAdvNumber('');
     setAdvDate(new Date().toISOString().slice(0, 10));
@@ -121,7 +125,8 @@ export default function AdvancesPage() {
         reference: reference.trim() || undefined,
         notes: advNotes.trim() || undefined,
       });
-      setRecordOpen(false);
+      if (isNewRoute) navigate('/advances');
+      else setRecordOpen(false);
       setReloadKey((k) => k + 1);
     } catch (e) {
       setRecordError(e instanceof Error ? e.message : String(e));
@@ -407,24 +412,29 @@ export default function AdvancesPage() {
         onExport={exportCsv}
       />
 
-      {recordOpen && (
+      {(recordOpen || isNewRoute) && (
         <div
-          className="fixed inset-0 z-40 bg-black/40 flex items-start justify-end"
-          onClick={() => setRecordOpen(false)}
+          className={isNewRoute ? 'fixed inset-0 z-40 overflow-y-auto bg-slate-50/95 p-5 sm:p-8' : 'fixed inset-0 z-40 flex items-start justify-end bg-black/40'}
+          onClick={() => (isNewRoute ? navigate('/advances') : setRecordOpen(false))}
         >
           <div
-            className="h-full w-full max-w-md bg-surface shadow-xl border-l border-border flex flex-col"
+            className={isNewRoute ? 'mx-auto w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm' : 'h-full w-full max-w-md border-l border-border bg-surface shadow-xl'}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-border px-4 py-3">
-              <h2 className="text-base font-semibold text-fg">Record advance</h2>
-              <button
-                type="button"
-                onClick={() => setRecordOpen(false)}
-                className="text-sm text-fg-muted hover:text-fg"
-              >
-                Close
-              </button>
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-7">
+              <div>
+                {isNewRoute && <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Accounting entry</p>}
+                <h2 className={isNewRoute ? 'mt-1 text-3xl font-semibold tracking-tight text-slate-950' : 'text-base font-semibold text-fg'}>Record advance</h2>
+              </div>
+              {!isNewRoute && (
+                <button
+                  type="button"
+                  onClick={() => setRecordOpen(false)}
+                  className="action-cancel text-sm font-semibold"
+                >
+                  Close
+                </button>
+              )}
             </div>
             <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3 text-sm">
               <label className="flex flex-col">
@@ -535,21 +545,28 @@ export default function AdvancesPage() {
               </label>
               {recordError && <div className="text-sm text-danger">{recordError}</div>}
             </div>
-            <div className="border-t border-border px-4 py-3 flex justify-end gap-2">
+            <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50/80 px-5 py-4 sm:px-7">
               <button
                 type="button"
-                onClick={() => setRecordOpen(false)}
-                className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
+                onClick={() => (isNewRoute ? navigate('/advances') : setRecordOpen(false))}
+                className="action-cancel h-10 text-sm"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={saveNewAdvance}
-                disabled={recordSaving}
-                className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
+                disabled={
+                  recordSaving ||
+                  !advNumber.trim() ||
+                  !partyId ||
+                  !cashOrBankAccountId ||
+                  !Number.isFinite(Number(amountStr)) ||
+                  Number(amountStr) <= 0
+                }
+                className="h-10 rounded-xl bg-green-600 px-4 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50"
               >
-                {recordSaving ? 'Saving…' : 'Save advance'}
+                {recordSaving ? 'Saving…' : 'Save Advance'}
               </button>
             </div>
           </div>

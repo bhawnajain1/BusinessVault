@@ -282,7 +282,7 @@ export default function SalesReturnPicker({
         <button
           type="button"
           onClick={onClose}
-          className="text-xs text-fg-muted hover:text-fg"
+          className="action-cancel text-xs"
         >
           Cancel
         </button>
@@ -410,14 +410,14 @@ export default function SalesReturnPicker({
         <button
           type="button"
           onClick={fillAll}
-          className="text-blue-700 hover:underline"
+          className="action-link text-xs"
         >
           Fill max on every line
         </button>
         <button
           type="button"
           onClick={clearAll}
-          className="text-fg-muted hover:text-fg"
+          className="action-delete text-xs"
         >
           Clear all
         </button>

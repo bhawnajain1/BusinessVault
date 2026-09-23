@@ -108,8 +108,11 @@ export function roundOffToNearestRupee(totalPaise: number): {
   final_paise: number;
   round_off_paise: number;
 } {
+  if (!Number.isFinite(totalPaise)) throw new Error('roundOffToNearestRupee: non-finite');
   const rupees = totalPaise / 100;
-  const rounded = bankersRound(rupees) * 100;
+  // Auto round-off is customer-facing total protection: keep exact whole
+  // rupee totals unchanged, otherwise always move up to the next rupee.
+  const rounded = Math.ceil(rupees - 1e-9) * 100;
   return {
     final_paise: rounded,
     round_off_paise: rounded - totalPaise,

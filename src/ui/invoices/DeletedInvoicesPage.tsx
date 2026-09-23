@@ -150,7 +150,7 @@ export default function DeletedInvoicesPage() {
                         type="button"
                         onClick={() => restore(r)}
                         disabled={busyId === r.id}
-                        className="text-xs bg-slate-900 text-white rounded px-2.5 py-1 hover:bg-slate-800 disabled:opacity-50"
+                        className="action-restore text-xs disabled:opacity-50"
                       >
                         {busyId === r.id ? 'Working...' : 'Restore'}
                       </button>
@@ -158,7 +158,7 @@ export default function DeletedInvoicesPage() {
                         type="button"
                         onClick={() => permanentlyDelete(r)}
                         disabled={busyId === r.id}
-                        className="text-xs text-rose-700 hover:underline disabled:opacity-50"
+                        className="action-delete text-xs disabled:opacity-50"
                       >
                         Delete permanently
                       </button>

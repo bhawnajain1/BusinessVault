@@ -89,7 +89,7 @@ export interface CreateInvoiceInput {
   financial_year: string;
   lines: CreateInvoiceLineInput[];
   discount_paise?: number;
-  // Round-off treatment. Default: 'auto' (nearest ₹1 via banker's rounding).
+  // Round-off treatment. Default: 'auto' (fractional totals round upward).
   // When mode is 'manual', caller must also supply round_off_paise.
   // When mode is 'none' or omitted-but-round_off_paise-supplied, that raw
   // value wins for back-compat (POS still passes round_off_paise directly).
@@ -212,7 +212,7 @@ export class InvoiceService {
     const discountPaise = input.discount_paise ?? 0;
     const preRoundTotalPaise = lineTaxable + lineCgst + lineSgst + lineIgst + lineCess;
     // Round-off resolution.
-    //   'auto'   → derive round_off from banker's rounding of preRoundTotalPaise to nearest ₹1.
+    //   'auto'   → derive round_off by rounding fractional totals upward to the next ₹1.
     //   'none'   → force round_off = 0 regardless of caller's round_off_paise.
     //   'manual' → require round_off_paise, use as-is.
     //   undefined (legacy callers) → use round_off_paise as supplied

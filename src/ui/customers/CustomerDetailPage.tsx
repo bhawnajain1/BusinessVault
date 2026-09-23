@@ -569,7 +569,7 @@ export default function CustomerDetailPage() {
               <button
                 type="button"
                 onClick={() => navigate(`/customers?edit=${customer.id}`)}
-                className="text-slate-700 hover:underline"
+                 className="action-edit"
               >
                 Edit Customer
               </button>
