@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { db } from '../../db';
 import type { Invoice, InvoiceLine, Item } from '../../db/types';
 import { downloadCsv } from '../../csv/streamCsvExport';
-import { downloadGstrCsv, downloadGstrJson, buildGstrReport, type GstrReportKind } from '../../domain/gstrExport';
+import { downloadGstrCsv, downloadGstrJson, downloadGstrExcel, buildGstrReport, type GstrReportKind } from '../../domain/gstrExport';
 import { money, toDateString, financialYearStart } from './reportUtils';
 import { useBusinessId } from './useBusinessId';
 
@@ -140,6 +140,20 @@ export default function GstSummaryPage() {
     }
   }
 
+  async function exportGstrExcel(): Promise<void> {
+    if (!businessId) return;
+    setExporting(true);
+    try {
+      const result = await downloadGstrExcel(businessId, reportKind, fromStr, toStr);
+      const warnings = result.issues.filter((issue) => issue.severity === 'warning');
+      if (warnings.length > 0) setErr(`Excel exported with ${warnings.length} validation warning(s). Verify GSTIN and filing-specific fields before submission.`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-end justify-between flex-wrap gap-3">
@@ -185,6 +199,9 @@ export default function GstSummaryPage() {
           </button>
           <button onClick={() => void exportGstr('json')} disabled={!businessId || exporting} className="border border-slate-300 rounded px-3 py-1 text-sm hover:bg-slate-50 disabled:opacity-50">
             Download GSTR JSON
+          </button>
+          <button onClick={() => void exportGstrExcel()} disabled={!businessId || exporting} className="bg-slate-800 text-white rounded px-3 py-1 text-sm hover:bg-slate-700 disabled:opacity-50">
+            {exporting ? 'Preparing...' : 'Download GSTR Excel'}
           </button>
         </div>
       </div>
