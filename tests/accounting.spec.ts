@@ -325,10 +325,10 @@ describe('GST engine', () => {
     expect(bankersRound(0.6)).toBe(1);
   });
 
-  it('round-off nudges to nearest rupee', () => {
+  it('round-off nudges fractional totals upward to the next rupee', () => {
     const r = roundOffToNearestRupee(11849);
-    expect(r.final_paise).toBe(11800);
-    expect(r.round_off_paise).toBe(-49);
+    expect(r.final_paise).toBe(11900);
+    expect(r.round_off_paise).toBe(51);
     const r2 = roundOffToNearestRupee(11851);
     expect(r2.final_paise).toBe(11900);
     expect(r2.round_off_paise).toBe(49);

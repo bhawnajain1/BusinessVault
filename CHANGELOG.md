@@ -4,6 +4,18 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.26 — 2026-09-23
+
+### Changed
+
+- Refreshed the accounting UI with larger, darker typography, clearer save actions, and full-page creation flows.
+- Added Dashboard P&L and receivables/payables visualizations with live accounting data.
+- Changed automatic invoice round-off to round fractional totals upward to the next rupee.
+
+### Deployment
+
+- Published through the public build repository deployment workflow.
+
 ## 1.0.25 — 2026-09-23
 
 ### Changed
