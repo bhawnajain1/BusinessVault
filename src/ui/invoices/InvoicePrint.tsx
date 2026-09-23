@@ -401,7 +401,13 @@ export default function InvoicePrint() {
                 <div className="mt-4">
                   <br />
                   <div className="text-xs uppercase text-slate-500 mb-1">Terms</div>
-                  <div className="whitespace-pre-wrap">{invoice.terms}</div>
+                  <div
+                    className={`whitespace-pre-wrap break-words ${
+                      invoice.terms.length > 180 ? 'text-xs leading-5' : ''
+                    }`}
+                  >
+                    {invoice.terms}
+                  </div>
                 </div>
               )}
             </div>
