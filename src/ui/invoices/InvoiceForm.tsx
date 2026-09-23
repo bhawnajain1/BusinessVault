@@ -15,6 +15,7 @@ import { AdvanceService } from '../../domain/AdvanceService';
 import { bankersRound, isInterstate, roundOffToNearestRupee, splitTax } from '../../domain/gst';
 import type { Advance } from '../../db/types';
 import { log } from '../../lib/log';
+import { addDaysYmd } from '../../lib/date';
 
 interface LineDraft {
   key: string;
@@ -75,7 +76,9 @@ export default function InvoiceForm() {
     const d = new Date();
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   });
-  const [dueDate, setDueDate] = useState<string>('');
+  const [dueDate, setDueDate] = useState<string>(() =>
+    addDaysYmd(new Date().toISOString().slice(0, 10), 15),
+  );
   const [invoiceNumberOverride, setInvoiceNumberOverride] = useState<string>('');
   const [nextInvoiceNumber, setNextInvoiceNumber] = useState<string>('');
   const [notes, setNotes] = useState('');
@@ -520,7 +523,19 @@ export default function InvoiceForm() {
             <input
               type="date"
               value={invoiceDate}
-              onChange={(e) => setInvoiceDate(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setInvoiceDate(next);
+                if (!editingId) {
+                  const nextDueDate = addDaysYmd(next, 15);
+                  setDueDate(nextDueDate);
+                  log.info('invoice-form', 'updated default due date', {
+                    businessId,
+                    invoiceDate: next,
+                    dueDate: nextDueDate,
+                  });
+                }
+              }}
               className="flex-1 h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
             <input
@@ -533,7 +548,7 @@ export default function InvoiceForm() {
           </div>
         </label>
         <label className="flex flex-col">
-          <span className="block text-[12px] text-fg-muted mb-1">Due date (optional)</span>
+          <span className="block text-[12px] text-fg-muted mb-1">Due date</span>
           <input
             type="date"
             value={dueDate}

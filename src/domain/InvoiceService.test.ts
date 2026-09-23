@@ -7,6 +7,7 @@ import { InvoiceService, InvoiceNumberConflictError } from './InvoiceService';
 import { trialBalance, profitAndLoss, balanceSheet } from './AccountingService';
 import { gstSummary } from './gst';
 import { computeReceivables } from './partyLedger';
+import { addDaysYmd } from '../lib/date';
 import {
   allocateInvoiceNumber,
   getNextAvailableInvoiceNumber,
@@ -199,6 +200,9 @@ beforeEach(async () => {
 });
 
 describe('InvoiceService.createInvoice', () => {
+  it('calculates the standard new-invoice due date as 15 days after the invoice date', () => {
+    expect(addDaysYmd('2026-08-19', 15)).toBe('2026-09-03');
+  });
   it('stores local e-invoice metadata without changing invoice totals', async () => {
     const invoice = await service.createInvoice({
       business_id: businessId,
