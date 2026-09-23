@@ -6,6 +6,7 @@ import { downloadCsv } from '../../csv/streamCsvExport';
 import { money } from './reportUtils';
 import { useBusinessId } from './useBusinessId';
 import { log } from '../../lib/log';
+import { ReportTableToolbar, useReportTableControls } from './reportTableControls';
 
 // Three report views over sales_returns, on one page so the shared date-
 // range + business filter is set once (grug: locality-of-behaviour beats
@@ -163,6 +164,9 @@ export default function SalesReturnsReportPage() {
       : tab === 'by_reason'
         ? byReasonRows.length
         : byCustomerRows.length;
+  const registerControls = useReportTableControls(registerRows, (r) => `${r.return_date} ${r.return_number} ${r.customer_name} ${r.reason} ${r.status}`, (r, key) => key === 'total' ? r.total_paise : key === 'date' ? r.return_date : key === 'customer' ? r.customer_name : r.return_number, { key: 'date', direction: 'desc' });
+  const reasonControls = useReportTableControls(byReasonRows, (r) => r.label, (r, key) => key === 'total' ? r.total_paise : key === 'count' ? r.count : r.label, { key: 'total', direction: 'desc' });
+  const customerControls = useReportTableControls(byCustomerRows, (r) => r.label, (r, key) => key === 'total' ? r.total_paise : key === 'count' ? r.count : r.label, { key: 'total', direction: 'desc' });
 
   async function exportCsv(): Promise<void> {
     const stamp = todayYmd();
@@ -281,6 +285,7 @@ export default function SalesReturnsReportPage() {
 
       {tab === 'register' && (
         <div className="overflow-auto border border-slate-200 rounded">
+          <ReportTableToolbar query={registerControls.query} onQueryChange={registerControls.setQuery} sort={registerControls.sort} onSortChange={registerControls.setSort} options={[{ key: 'date', label: 'Date' }, { key: 'customer', label: 'Customer' }, { key: 'total', label: 'Total' }]} />
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
@@ -293,7 +298,7 @@ export default function SalesReturnsReportPage() {
               </tr>
             </thead>
             <tbody>
-              {registerRows.map((r) => (
+               {registerControls.filteredRows.map((r) => (
                 <tr
                   key={r.id}
                   className={
@@ -319,7 +324,7 @@ export default function SalesReturnsReportPage() {
                   </td>
                 </tr>
               ))}
-              {registerRows.length === 0 && !loading && (
+               {registerControls.filteredRows.length === 0 && !loading && (
                 <tr>
                   <td colSpan={6} className="px-3 py-6 text-center text-slate-400">
                     No sales returns in range.
@@ -345,6 +350,7 @@ export default function SalesReturnsReportPage() {
 
       {tab === 'by_reason' && (
         <div className="overflow-auto border border-slate-200 rounded">
+          <ReportTableToolbar query={reasonControls.query} onQueryChange={reasonControls.setQuery} sort={reasonControls.sort} onSortChange={reasonControls.setSort} options={[{ key: 'label', label: 'Reason' }, { key: 'count', label: 'Count' }, { key: 'total', label: 'Total' }]} />
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
@@ -354,7 +360,7 @@ export default function SalesReturnsReportPage() {
               </tr>
             </thead>
             <tbody>
-              {byReasonRows.map((r) => (
+               {reasonControls.filteredRows.map((r) => (
                 <tr key={r.key} className="border-t border-slate-100">
                   <td className="px-3 py-1.5">{r.label}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{r.count}</td>
@@ -363,7 +369,7 @@ export default function SalesReturnsReportPage() {
                   </td>
                 </tr>
               ))}
-              {byReasonRows.length === 0 && !loading && (
+               {reasonControls.filteredRows.length === 0 && !loading && (
                 <tr>
                   <td colSpan={3} className="px-3 py-6 text-center text-slate-400">
                     No posted returns in range.
@@ -377,6 +383,7 @@ export default function SalesReturnsReportPage() {
 
       {tab === 'by_customer' && (
         <div className="overflow-auto border border-slate-200 rounded">
+          <ReportTableToolbar query={customerControls.query} onQueryChange={customerControls.setQuery} sort={customerControls.sort} onSortChange={customerControls.setSort} options={[{ key: 'label', label: 'Customer' }, { key: 'count', label: 'Count' }, { key: 'total', label: 'Total' }]} />
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
@@ -386,7 +393,7 @@ export default function SalesReturnsReportPage() {
               </tr>
             </thead>
             <tbody>
-              {byCustomerRows.map((r) => (
+               {customerControls.filteredRows.map((r) => (
                 <tr key={r.key} className="border-t border-slate-100">
                   <td className="px-3 py-1.5">
                     <Link
@@ -402,7 +409,7 @@ export default function SalesReturnsReportPage() {
                   </td>
                 </tr>
               ))}
-              {byCustomerRows.length === 0 && !loading && (
+               {customerControls.filteredRows.length === 0 && !loading && (
                 <tr>
                   <td colSpan={3} className="px-3 py-6 text-center text-slate-400">
                     No posted returns in range.

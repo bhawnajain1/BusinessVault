@@ -96,11 +96,6 @@ export default function PaymentsPage() {
       .map((p) => ({ id: p.id, number: p.bill_number, balancePaise: p.balance_paise }));
   }, [entryDirection, entryPartyId, invoices, purchases]);
 
-  const totalOutstandingPaise = openDocuments.reduce(
-    (total, document) => total + document.balancePaise,
-    0,
-  );
-
   const entryAccountOptions = accounts.filter(
     (a) => a.active === 1 && (a.code === SYSTEM_ACCOUNT_CODES.CASH || a.code === SYSTEM_ACCOUNT_CODES.BANK),
   );
@@ -130,9 +125,9 @@ export default function PaymentsPage() {
     );
     if (!entryPartyId) return setEntryError('Select a party.');
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) return setEntryError('Amount must be positive.');
-    if (amountPaise > totalOutstandingPaise) {
+    if (document && amountPaise > document.balancePaise) {
       return setEntryError(
-        `Amount cannot exceed the total outstanding balance of ₹${(totalOutstandingPaise / 100).toFixed(2)}.`,
+        `Amount cannot exceed the selected document balance of ₹${(document.balancePaise / 100).toFixed(2)}.`,
       );
     }
     if (!account) return setEntryError('Select a cash or bank account.');
@@ -150,17 +145,13 @@ export default function PaymentsPage() {
     setEntryError(null);
     try {
       let remainingPaise = amountPaise;
-      const documentsToAllocate = document ? [document] : openDocuments;
-      const allocations = documentsToAllocate.flatMap((openDocument) => {
-        if (remainingPaise <= 0) return [];
-        const allocation = Math.min(remainingPaise, openDocument.balancePaise);
-        remainingPaise -= allocation;
-        return [
-          entryDirection === 'in'
-            ? { invoice_id: openDocument.id, amount_paise: allocation }
-            : { bill_id: openDocument.id, amount_paise: allocation },
-        ];
-      });
+      const allocations = document
+        ? [
+            entryDirection === 'in'
+              ? { invoice_id: document.id, amount_paise: amountPaise }
+              : { bill_id: document.id, amount_paise: amountPaise },
+          ]
+        : [{ as_advance: true, amount_paise: remainingPaise }];
 
       await new PaymentService(db).createPayment({
         business_id: businessId,
@@ -178,6 +169,7 @@ export default function PaymentsPage() {
         reference: entryReference.trim() || undefined,
         notes: entryNotes.trim() || undefined,
         allocations,
+        advance_number: document ? undefined : `ADV-${ulid().slice(-10)}`,
       });
       setEntryDirection(null);
       setReloadKey((value) => value + 1);

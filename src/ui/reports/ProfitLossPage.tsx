@@ -3,6 +3,7 @@ import { profitAndLoss, type ProfitAndLoss } from '../../domain/AccountingServic
 import { downloadCsv } from '../../csv/streamCsvExport';
 import { money, parseDateInput, toDateString, financialYearStart } from './reportUtils';
 import { useBusinessId } from './useBusinessId';
+import { ReportTableToolbar, useReportTableControls } from './reportTableControls';
 
 export default function ProfitLossPage() {
   const { businessId, error: bizError } = useBusinessId();
@@ -122,19 +123,26 @@ interface Row {
 }
 
 function Section(props: { title: string; rows: Row[]; total: number; totalLabel: string }) {
+  const controls = useReportTableControls(
+    props.rows,
+    (r) => `${r.code} ${r.name}`,
+    (r, key) => key === 'amount' ? r.amount_paise : key === 'name' ? r.name : r.code,
+    { key: 'code', direction: 'asc' },
+  );
   return (
     <div className="border border-slate-200 rounded">
       <div className="px-3 py-2 bg-slate-50 font-semibold text-sm">{props.title}</div>
+      <div className="px-3 pt-2"><ReportTableToolbar query={controls.query} onQueryChange={controls.setQuery} sort={controls.sort} onSortChange={controls.setSort} options={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'amount', label: 'Amount' }]} /></div>
       <table className="w-full text-sm">
         <tbody>
-          {props.rows.map((r) => (
+          {controls.filteredRows.map((r) => (
             <tr key={r.code} className="border-t border-slate-100">
               <td className="px-3 py-1.5 font-mono text-xs w-20">{r.code}</td>
               <td className="px-3 py-1.5">{r.name}</td>
               <td className="px-3 py-1.5 text-right tabular-nums">{money(r.amount_paise)}</td>
             </tr>
           ))}
-          {props.rows.length === 0 && (
+          {controls.filteredRows.length === 0 && (
             <tr>
               <td colSpan={3} className="px-3 py-4 text-center text-slate-400">No entries.</td>
             </tr>

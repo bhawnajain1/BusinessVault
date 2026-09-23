@@ -14,6 +14,7 @@ import {
   type DerivedReceivables,
   type SupplierPayable,
 } from '../../domain/partyLedger';
+import { ReportTableToolbar, useReportTableControls } from './reportTableControls';
 
 // Receivables & Payables — derived from transactions per payablesRec.md.
 //
@@ -95,6 +96,18 @@ export default function ReceivablesPayablesPage() {
         : [],
     [data],
   );
+  const arControls = useReportTableControls(
+    openArRows,
+    (r) => data?.customerById.get(r.customer_id)?.name ?? r.customer_id,
+    (r, key) => key === 'outstanding' ? r.outstanding_paise : key === 'advance' ? r.advance_paise : data?.customerById.get(r.customer_id)?.name ?? r.customer_id,
+    { key: 'name', direction: 'asc' },
+  );
+  const apControls = useReportTableControls(
+    openApRows,
+    (r) => data?.supplierById.get(r.supplier_id)?.name ?? r.supplier_id,
+    (r, key) => key === 'outstanding' ? r.outstanding_paise : key === 'advance' ? r.advance_paise : data?.supplierById.get(r.supplier_id)?.name ?? r.supplier_id,
+    { key: 'name', direction: 'asc' },
+  );
 
   return (
     <div className="p-6 space-y-6">
@@ -143,6 +156,7 @@ export default function ReceivablesPayablesPage() {
 
           <section className="space-y-2">
             <h2 className="text-lg font-medium">By customer (Accounts Receivable)</h2>
+            <ReportTableToolbar query={arControls.query} onQueryChange={arControls.setQuery} sort={arControls.sort} onSortChange={arControls.setSort} options={[{ key: 'name', label: 'Customer' }, { key: 'outstanding', label: 'Outstanding' }, { key: 'advance', label: 'Advance' }]} />
             <div className="overflow-auto border border-slate-200 rounded bg-white">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50 text-slate-600">
@@ -162,7 +176,7 @@ export default function ReceivablesPayablesPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {openArRows.map((r) => (
+                   {arControls.filteredRows.map((r) => (
                     <tr key={r.customer_id} className="border-t border-slate-100">
                       <td className="px-3 py-1.5">
                         <Link
@@ -211,7 +225,7 @@ export default function ReceivablesPayablesPage() {
                       </td>
                     </tr>
                   ))}
-                  {openArRows.length === 0 && !loading && (
+                   {arControls.filteredRows.length === 0 && !loading && (
                     <tr>
                       <td colSpan={12} className="px-3 py-6 text-center text-slate-400">
                         No customers with open receivables.
@@ -265,6 +279,7 @@ export default function ReceivablesPayablesPage() {
 
           <section className="space-y-2">
             <h2 className="text-lg font-medium">By supplier (Accounts Payable)</h2>
+            <ReportTableToolbar query={apControls.query} onQueryChange={apControls.setQuery} sort={apControls.sort} onSortChange={apControls.setSort} options={[{ key: 'name', label: 'Supplier' }, { key: 'outstanding', label: 'Outstanding' }, { key: 'advance', label: 'Advance' }]} />
             <div className="overflow-auto border border-slate-200 rounded bg-white">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50 text-slate-600">
@@ -284,7 +299,7 @@ export default function ReceivablesPayablesPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {openApRows.map((r) => (
+                   {apControls.filteredRows.map((r) => (
                     <tr key={r.supplier_id} className="border-t border-slate-100">
                       <td className="px-3 py-1.5">
                         <Link
@@ -333,7 +348,7 @@ export default function ReceivablesPayablesPage() {
                       </td>
                     </tr>
                   ))}
-                  {openApRows.length === 0 && !loading && (
+                   {apControls.filteredRows.length === 0 && !loading && (
                     <tr>
                       <td colSpan={12} className="px-3 py-6 text-center text-slate-400">
                         No suppliers with open payables.

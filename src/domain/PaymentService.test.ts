@@ -520,6 +520,34 @@ describe('PaymentService.createPayment', () => {
     expect(advLine?.credit_paise).toBe(40000);
   });
 
+  it('keeps an on-account receipt out of invoice paid and balance fields', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-unallocated', 90000));
+    const svc = new PaymentService(db);
+
+    await svc.createPayment({
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-ON-ACCOUNT',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust-1',
+      method: 'cash',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 40000,
+      advance_number: 'ADV-ON-ACCOUNT',
+      allocations: [{ as_advance: true, amount_paise: 40000 }],
+    });
+
+    const invoice = await db.invoices.get('inv-unallocated');
+    expect(invoice?.paid_paise).toBe(0);
+    expect(invoice?.balance_paise).toBe(90000);
+    expect((await db.advances.toArray())[0].remaining_paise).toBe(40000);
+  });
+
   it('captures excess into a supplier advance on outbound over-pay', async () => {
     const db = freshDb();
     await seed(db);

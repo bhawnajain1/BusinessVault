@@ -91,6 +91,7 @@ function buildStatement(
   advances: Advance[],
 ): StatementRow[] {
   const out: StatementRow[] = [];
+  const paymentJournalIds = new Set(payments.map((pay) => pay.journal_entry_id));
   for (const inv of invoices) {
     if (
       inv.status === 'cancelled' ||
@@ -134,6 +135,10 @@ function buildStatement(
   }
   for (const adv of advances) {
     if (adv.deleted_at || adv.remaining_paise <= 0) continue;
+    // Payments already show the receipt/payment amount. Their matching
+    // advance is the accounting destination for that same money, not another
+    // customer-statement credit row.
+    if (paymentJournalIds.has(adv.journal_entry_id)) continue;
     out.push({
       date: adv.advance_date,
       transaction: `Advance ${adv.advance_number}`,
@@ -297,21 +302,39 @@ export default function CustomerDetailPage() {
       (s, r) => s + r.inv.total_paise,
       0,
     );
-    const totalPaid = nonCancelledOriginals.reduce((s, r) => s + r.paid_paise, 0);
+    // Total cash received includes on-account payments. Invoice paid totals
+    // remain allocation-only and are shown in the invoice table.
+    const totalPaid = payments
+      .filter((p) => !p.deleted_at)
+      .reduce((s, p) => s + p.amount_paise, 0);
+    const unallocatedPaid = payments
+      .filter((p) => !p.deleted_at)
+      .reduce(
+        (s, p) =>
+          s +
+          Math.max(
+            0,
+            p.amount_paise -
+              p.allocations
+                .filter((allocation) => allocation.invoice_id)
+                .reduce((allocated, allocation) => allocated + allocation.amount_paise, 0),
+          ),
+        0,
+      );
     const invoiceDue = nonCancelledOriginals.reduce(
       (s, r) => s + r.outstanding_paise,
       0,
     );
     const openingBalance = customer?.opening_balance_paise ?? 0;
-    const totalDue = invoiceDue + Math.max(0, openingBalance);
-    const advance =
-      advances.reduce((s, a) => s + Math.max(0, a.remaining_paise), 0) +
-      Math.max(0, -openingBalance);
+    const totalDue = Math.max(
+      0,
+      invoiceDue + Math.max(0, openingBalance) - unallocatedPaid,
+    );
     const creditLimit = customer?.credit_limit_paise ?? 0;
     const availableCredit =
       creditLimit > 0 ? Math.max(0, creditLimit - totalDue) : null;
-    return { totalInvoiced, totalPaid, totalDue, advance, creditLimit, availableCredit };
-  }, [invoiceRows, advances, customer]);
+    return { totalInvoiced, totalPaid, totalDue, creditLimit, availableCredit };
+  }, [invoiceRows, customer, payments]);
 
   const statementRows = useMemo(() => {
     const rows = buildStatement(invoices, salesReturns, payments, advances);
@@ -335,7 +358,7 @@ export default function CustomerDetailPage() {
     setPayAccountId(cash?.id ?? '');
     setPayReference('');
     setPayNotes('');
-    setPayAllocMode(preselectInvoiceId ? 'manual' : 'auto');
+    setPayAllocMode('manual');
 
     if (preselectInvoiceId) {
       const row = invoiceRows.find((r) => r.inv.id === preselectInvoiceId);
@@ -365,6 +388,7 @@ export default function CustomerDetailPage() {
 
   // Live oldest-first auto-allocation preview when in auto mode.
   const autoAllocations = useMemo(() => {
+    if (!payPreselectInvoiceId) return {};
     const amountPaise = Math.round(Number(payAmountStr || '0') * 100);
     if (!Number.isFinite(amountPaise) || amountPaise <= 0) return {};
     let remain = amountPaise;
@@ -378,7 +402,7 @@ export default function CustomerDetailPage() {
       }
     }
     return out;
-  }, [payAmountStr, openInvoiceRows]);
+  }, [payAmountStr, openInvoiceRows, payPreselectInvoiceId]);
 
   // Resolve which allocations will actually be sent to the service.
   const effectiveAllocations = useMemo(() => {
@@ -416,11 +440,7 @@ export default function CustomerDetailPage() {
         `Allocations total ${(effectiveAllocTotal / 100).toFixed(2)} exceeds payment amount ${(paymentAmountPaise / 100).toFixed(2)}.`,
       );
     }
-    if (effectiveAllocTotal < paymentAmountPaise) {
-      return setPayError(
-        `Allocations total ${(effectiveAllocTotal / 100).toFixed(2)} is less than payment amount ${(paymentAmountPaise / 100).toFixed(2)}. Reduce the amount or record the difference as an advance from the Advances page.`,
-      );
-    }
+    const unallocated = paymentAmountPaise - effectiveAllocTotal;
     for (const [invId, paise] of Object.entries(effectiveAllocations)) {
       const row = invoiceRows.find((r) => r.inv.id === invId);
       if (!row) return setPayError(`Unknown invoice ${invId}.`);
@@ -454,10 +474,14 @@ export default function CustomerDetailPage() {
         amount_paise: paymentAmountPaise,
         reference: payReference.trim() || undefined,
         notes: payNotes.trim() || undefined,
-        allocations: Object.entries(effectiveAllocations).map(([invoice_id, amount_paise]) => ({
-          invoice_id,
-          amount_paise,
-        })),
+        allocations: [
+          ...Object.entries(effectiveAllocations).map(([invoice_id, amount_paise]) => ({
+            invoice_id,
+            amount_paise,
+          })),
+          ...(unallocated > 0 ? [{ as_advance: true, amount_paise: unallocated }] : []),
+        ],
+        advance_number: unallocated > 0 ? `ADV-${ulid().slice(-10)}` : undefined,
       });
       setPayOpen(false);
       setReloadKey((k) => k + 1);
@@ -569,7 +593,7 @@ export default function CustomerDetailPage() {
               <button
                 type="button"
                 onClick={() => navigate(`/customers?edit=${customer.id}`)}
-                 className="action-edit"
+                 className="text-sm bg-blue-600 text-white rounded px-3 py-1.5 hover:bg-blue-700"
               >
                 Edit Customer
               </button>
@@ -579,18 +603,14 @@ export default function CustomerDetailPage() {
       </section>
 
       {/* Section 2: Financial Summary */}
-      <section className="grid grid-cols-5 gap-3">
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
         <SummaryCard label="Total Invoiced" paise={summary.totalInvoiced} />
         <SummaryCard label="Total Paid" paise={summary.totalPaid} tone="emerald" />
+        <SummaryCard label="Opening Balance" paise={customer.opening_balance_paise} />
         <SummaryCard
           label="Total Due"
           paise={summary.totalDue}
           tone={summary.totalDue > 0 ? 'rose' : 'slate'}
-        />
-        <SummaryCard
-          label="Customer Advance"
-          paise={summary.advance}
-          tone={summary.advance > 0 ? 'blue' : 'slate'}
         />
         <SummaryCard
           label="Available Credit"
@@ -615,8 +635,8 @@ export default function CustomerDetailPage() {
             onClick={() => setActiveTab(t)}
             className={
               activeTab === t
-                ? 'px-4 py-2 border-b-2 border-slate-900 font-medium'
-                : 'px-4 py-2 text-slate-600 hover:text-slate-900'
+                ? 'px-4 py-2 bg-blue-600 text-white border-b-2 border-blue-700 font-medium hover:bg-blue-700'
+                : 'px-4 py-2 bg-blue-500 text-white hover:bg-blue-600'
             }
           >
             {t === 'invoices'
@@ -1126,7 +1146,7 @@ function PaymentModal(props: PaymentModalProps) {
 
             {openInvoiceRows.length === 0 ? (
               <div className="text-xs text-slate-500 border border-dashed border-slate-300 rounded p-3">
-                No outstanding invoices. Record this as an advance from the Advances page instead.
+                No outstanding invoices. The payment will be recorded against the customer's overall balance.
               </div>
             ) : (
               <div className="border border-slate-200 rounded overflow-hidden">
@@ -1199,7 +1219,7 @@ function PaymentModal(props: PaymentModalProps) {
                 Allocated total: <Money paise={effectiveAllocTotal} />
               </span>
               <span>
-                Unallocated (must be 0):{' '}
+                Unallocated (held on account):{' '}
                 <strong className={unallocatedPaise !== 0 ? 'text-rose-700' : ''}>
                   <Money paise={Math.max(0, unallocatedPaise)} />
                 </strong>

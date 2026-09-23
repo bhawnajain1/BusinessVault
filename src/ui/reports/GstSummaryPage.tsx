@@ -5,6 +5,7 @@ import { downloadCsv } from '../../csv/streamCsvExport';
 import { downloadGstrCsv, downloadGstrJson, downloadGstrExcel, buildGstrReport, type GstrReportKind } from '../../domain/gstrExport';
 import { money, toDateString, financialYearStart } from './reportUtils';
 import { useBusinessId } from './useBusinessId';
+import { ReportTableToolbar, useReportTableControls } from './reportTableControls';
 
 interface SlabRow {
   rate_bps: number;
@@ -27,6 +28,12 @@ export default function GstSummaryPage() {
   const [err, setErr] = useState<string | null>(null);
   const [reportKind, setReportKind] = useState<GstrReportKind>('gstr1');
   const [exporting, setExporting] = useState(false);
+  const controls = useReportTableControls(
+    rows,
+    (r) => `${r.rate_bps / 100}% ${r.invoice_count} ${r.line_count}`,
+    (r, key) => key === 'rate' ? r.rate_bps : key === 'tax' ? r.cgst_paise + r.sgst_paise + r.igst_paise + r.cess_paise : key === 'taxable' ? r.taxable_paise : r.line_count,
+    { key: 'rate', direction: 'asc' },
+  );
 
   useEffect(() => {
     if (!businessId) return;
@@ -220,6 +227,7 @@ export default function GstSummaryPage() {
       {loading && <div className="text-slate-500 text-sm">Loading...</div>}
 
       <div className="overflow-auto border border-slate-200 rounded">
+        <ReportTableToolbar query={controls.query} onQueryChange={controls.setQuery} sort={controls.sort} onSortChange={controls.setSort} options={[{ key: 'rate', label: 'Tax rate' }, { key: 'taxable', label: 'Taxable' }, { key: 'tax', label: 'Total tax' }, { key: 'lines', label: 'Lines' }]} />
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
@@ -235,7 +243,7 @@ export default function GstSummaryPage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {controls.filteredRows.map((r) => (
               <tr key={r.rate_bps} className="border-t border-slate-100">
                 <td className="px-3 py-1.5">{(r.rate_bps / 100).toFixed(2)}%</td>
                 <td className="px-3 py-1.5 text-right tabular-nums">{r.invoice_count}</td>
@@ -250,7 +258,7 @@ export default function GstSummaryPage() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && !loading && (
+            {controls.filteredRows.length === 0 && !loading && (
               <tr>
                 <td colSpan={9} className="px-3 py-6 text-center text-slate-400">
                   No taxable {reportKind === 'gstr1' ? 'outward supplies' : 'inward purchases'} in this period.
@@ -258,7 +266,7 @@ export default function GstSummaryPage() {
               </tr>
             )}
           </tbody>
-          {rows.length > 0 && (
+          {controls.filteredRows.length > 0 && (
             <tfoot className="bg-slate-50 font-semibold">
               <tr>
                 <td className="px-3 py-2 text-right">Totals</td>

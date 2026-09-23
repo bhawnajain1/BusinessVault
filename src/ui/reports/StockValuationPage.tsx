@@ -4,6 +4,7 @@ import type { Item, ItemStock, Warehouse } from '../../db/types';
 import { downloadCsv } from '../../csv/streamCsvExport';
 import { money } from './reportUtils';
 import { useBusinessId } from './useBusinessId';
+import { ReportTableToolbar, useReportTableControls } from './reportTableControls';
 
 interface Row {
   item_id: string;
@@ -20,7 +21,6 @@ export default function StockValuationPage() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [q, setQ] = useState<string>('');
 
   useEffect(() => {
     if (!businessId) return;
@@ -66,11 +66,13 @@ export default function StockValuationPage() {
     };
   }, [businessId]);
 
-  const filtered = useMemo(() => {
-    if (!q.trim()) return rows;
-    const needle = q.toLowerCase();
-    return rows.filter((r) => r.name.toLowerCase().includes(needle) || r.sku.toLowerCase().includes(needle));
-  }, [rows, q]);
+  const controls = useReportTableControls(
+    rows,
+    (r) => `${r.name} ${r.sku} ${r.warehouse_name}`,
+    (r, key) => key === 'value' ? r.value_paise : key === 'quantity' ? r.qty : key === 'cost' ? r.avg_cost_paise : key === 'warehouse' ? r.warehouse_name : r.name,
+    { key: 'name', direction: 'asc' },
+  );
+  const filtered = controls.filteredRows;
 
   const totalValue = useMemo(() => filtered.reduce((s, r) => s + r.value_paise, 0), [filtered]);
   const totalQty = useMemo(() => filtered.reduce((s, r) => s + r.qty, 0), [filtered]);
@@ -99,12 +101,7 @@ export default function StockValuationPage() {
           <p className="text-sm text-slate-500">Per-item quantities and value at weighted-average cost.</p>
         </div>
         <div className="flex items-end gap-2">
-          <input
-            placeholder="Search item or SKU"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            className="border border-slate-300 rounded px-2 py-1 text-sm w-56"
-          />
+          <ReportTableToolbar query={controls.query} onQueryChange={controls.setQuery} sort={controls.sort} onSortChange={controls.setSort} options={[{ key: 'name', label: 'Item' }, { key: 'warehouse', label: 'Warehouse' }, { key: 'quantity', label: 'Quantity' }, { key: 'cost', label: 'Avg cost' }, { key: 'value', label: 'Value' }]} />
           <button
             onClick={exportCsv}
             disabled={filtered.length === 0}

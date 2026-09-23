@@ -210,6 +210,65 @@ html:not(.dark) .text-slate-700 { color: #0f172a; }
 html:not(.dark) .text-slate-800 { color: #0f172a; }
 html:not(.dark) .text-slate-900 { color: #020617; }
 
+/* Keep shared data-table headers aligned as one continuous surface. */
+.data-table thead {
+  background: #eef2f7 !important;
+  border-bottom: 1px solid #d7dee8 !important;
+}
+
+.data-table thead th {
+  background: #eef2f7 !important;
+  color: #475569 !important;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1rem;
+  white-space: nowrap;
+}
+
+.data-table thead th,
+.data-table thead th > button {
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.data-table thead th > button.table-sort-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  width: calc(100% + 1rem);
+  min-height: 3rem;
+  margin: -0.75rem -0.5rem;
+  padding: 0 0.5rem;
+  background: transparent;
+  border: 0;
+  border-radius: 0.375rem;
+  color: #475569 !important;
+  font: inherit;
+}
+
+.data-table thead th.text-right > button.table-sort-button {
+  justify-content: flex-end;
+}
+
+.data-table thead th > button.table-sort-button:hover,
+.data-table thead th > button.table-sort-button:focus-visible {
+  background: #e1e7ef;
+  color: #1e3a8a !important;
+  outline: none;
+}
+
+.table-sort-icon {
+  color: #94a3b8;
+  font-size: 0.8rem;
+  line-height: 1;
+  letter-spacing: -0.1em;
+}
+
+.data-table thead th > button.table-sort-button:focus-visible {
+  box-shadow: inset 0 0 0 2px #60a5fa;
+}
+
 /* Better default focus ring on interactive elements */
 :where(button, [role='button'], a, input, select, textarea):focus-visible {
   outline: 2px solid rgb(var(--bv-ring));

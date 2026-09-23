@@ -6,6 +6,8 @@ export interface ColumnDef<T> {
   render: (row: T) => ReactNode;
   className?: string;
   filterable?: boolean;
+  sortValue?: (row: T) => string | number;
+  sortable?: boolean;
 }
 
 export interface DataTablePage<T> {
@@ -57,6 +59,7 @@ export default function DataTable<T>(props: DataTableProps<T>) {
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [filters, setFilters] = useState<Record<string, string>>({});
+  const [sort, setSort] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
   const [rows, setRows] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -109,6 +112,19 @@ export default function DataTable<T>(props: DataTableProps<T>) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const from = total === 0 ? 0 : page * pageSize + 1;
   const to = Math.min(total, (page + 1) * pageSize);
+  const sortedRows = useMemo(() => {
+    if (!sort) return rows;
+    const column = columns.find((c) => c.key === sort.key && c.sortable !== false);
+    if (!column) return rows;
+    return [...rows].sort((a, b) => {
+      const av = column.sortValue ? column.sortValue(a) : (a as unknown as Record<string, unknown>)[column.key];
+      const bv = column.sortValue ? column.sortValue(b) : (b as unknown as Record<string, unknown>)[column.key];
+      const result = typeof av === 'number' && typeof bv === 'number'
+        ? av - bv
+        : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+      return sort.direction === 'asc' ? result : -result;
+    });
+  }, [columns, rows, sort]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -175,16 +191,42 @@ export default function DataTable<T>(props: DataTableProps<T>) {
       </div>
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-        <table className="w-full text-[13px]">
+      <div className="overflow-x-auto rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+        <table className="data-table w-full min-w-[920px] text-[13px]">
           <thead className="bg-app border-b border-border">
             <tr>
               {columns.map((c) => (
                 <th
                   key={c.key}
-                  className={`text-left px-3 h-9 font-medium text-fg-muted text-[11px] uppercase tracking-wider ${c.className ?? ''}`}
+                  scope="col"
+                  aria-sort={
+                    c.sortable !== false
+                      ? sort?.key === c.key
+                        ? sort.direction === 'asc' ? 'ascending' : 'descending'
+                        : 'none'
+                      : undefined
+                  }
+                  className={`table-header-cell text-left px-4 h-12 font-semibold text-slate-600 text-xs ${c.className ?? ''}`}
                 >
-                  {c.header}
+                  {c.sortable !== false ? (
+                    <button
+                      type="button"
+                      aria-label={`Sort by ${c.header}${sort?.key === c.key ? `, currently ${sort.direction === 'asc' ? 'ascending' : 'descending'}` : ''}`}
+                      onClick={() =>
+                        setSort((current) =>
+                          current?.key === c.key
+                            ? { key: c.key, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+                            : { key: c.key, direction: 'asc' },
+                        )
+                      }
+                      className="table-sort-button"
+                    >
+                      <span>{c.header}</span>
+                      <span aria-hidden="true" className="table-sort-icon">
+                        {sort?.key === c.key ? (sort.direction === 'asc' ? '⌃' : '⌄') : '⇅'}
+                      </span>
+                    </button>
+                  ) : c.header}
                 </th>
               ))}
             </tr>
@@ -220,7 +262,7 @@ export default function DataTable<T>(props: DataTableProps<T>) {
                 </td>
               </tr>
             )}
-            {rows.map((row) => (
+            {sortedRows.map((row) => (
               <tr
                 key={rowKey(row)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
@@ -229,7 +271,7 @@ export default function DataTable<T>(props: DataTableProps<T>) {
                 } transition-colors`}
               >
                 {columns.map((c) => (
-                  <td key={c.key} className={`px-3 py-2 ${c.className ?? ''}`}>
+                  <td key={c.key} className={`px-4 py-2.5 ${c.className ?? ''}`}>
                     {c.render(row)}
                   </td>
                 ))}
