@@ -398,7 +398,8 @@ export default function InvoicePrint() {
                 </div>
               )}
               {invoice.terms && (
-                <div className="mt-3">
+                <div className="mt-4">
+                  <br />
                   <div className="text-xs uppercase text-slate-500 mb-1">Terms</div>
                   <div className="whitespace-pre-wrap">{invoice.terms}</div>
                 </div>
