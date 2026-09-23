@@ -348,6 +348,7 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'party_type', type: 'string' },
       { name: 'party_id', type: 'string' },
       { name: 'method', type: 'string' },
+      { name: 'bank_name', type: 'string_or_null' },
       { name: 'account_id', type: 'string' },
       { name: 'amount_paise', type: 'number' },
       { name: 'reference', type: 'string' },

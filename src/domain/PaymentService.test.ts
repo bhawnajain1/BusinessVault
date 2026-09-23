@@ -267,6 +267,37 @@ describe('PaymentService.createPayment', () => {
     expect((await db.invoices.get('inv-payment-conflict'))?.paid_paise).toBe(60000);
   });
 
+  it('rejects reusing a payment number with a different bank name', async () => {
+    const db = freshDb();
+    await seed(db);
+    await db.invoices.add(makeInvoice('inv-bank-conflict', 100000));
+    const svc = new PaymentService(db);
+    const input = {
+      business_id: BIZ,
+      device_id: DEV,
+      payment_number: 'PAY-BANK-CONFLICT',
+      payment_date: '2026-08-19',
+      direction: 'in' as const,
+      party_type: 'customer' as const,
+      party_id: 'cust-1',
+      method: 'bank' as const,
+      bank_name: 'State Bank of India',
+      cash_or_bank_account_id: 'acc-cash',
+      ar_or_ap_account_id: 'acc-ar',
+      amount_paise: 60000,
+      allocations: [{ invoice_id: 'inv-bank-conflict', amount_paise: 60000 }],
+    };
+
+    await svc.createPayment(input);
+
+    await expect(
+      svc.createPayment({
+        ...input,
+        bank_name: 'HDFC Bank',
+      }),
+    ).rejects.toThrow('already used by a different payment');
+  });
+
   it('refuses over-allocation vs payment amount', async () => {
     const db = freshDb();
     await seed(db);

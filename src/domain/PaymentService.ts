@@ -49,6 +49,7 @@ export interface CreatePaymentInput {
   party_type: PartyType;
   party_id: string;
   method: PaymentMethod;
+  bank_name?: string;
   cash_or_bank_account_id: string;
   ar_or_ap_account_id: string;
   amount_paise: number;
@@ -154,6 +155,7 @@ export class PaymentService {
       party_type: input.party_type,
       party_id: input.party_id,
       method: input.method,
+      bank_name: input.bank_name?.trim() || null,
       account_id: input.cash_or_bank_account_id,
       amount_paise: input.amount_paise,
       reference: input.reference ?? '',
@@ -869,6 +871,7 @@ function samePaymentRequest(a: Payment, b: Payment): boolean {
     a.party_type === b.party_type &&
     a.party_id === b.party_id &&
     a.method === b.method &&
+    (a.bank_name ?? null) === (b.bank_name ?? null) &&
     a.account_id === b.account_id &&
     a.amount_paise === b.amount_paise &&
     JSON.stringify(a.allocations) === JSON.stringify(b.allocations)

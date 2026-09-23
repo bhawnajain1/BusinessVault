@@ -444,6 +444,7 @@ export interface Payment {
   party_type: PartyType;
   party_id: string;
   method: PaymentMethod;
+  bank_name?: string | null;
   account_id: string;
   amount_paise: number; // money: integer paise
   reference: string;

@@ -19,6 +19,7 @@ import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
+import { INDIAN_BANKS } from './indianBanks';
 
 const METHODS: PaymentMethod[] = ['cash', 'bank', 'upi', 'card', 'cheque'];
 
@@ -49,6 +50,8 @@ export default function PaymentsPage() {
   const [entryAmount, setEntryAmount] = useState('');
   const [entryDate, setEntryDate] = useState(today);
   const [entryMethod, setEntryMethod] = useState<PaymentMethod>('cash');
+  const [entryBank, setEntryBank] = useState('');
+  const [entryOtherBankName, setEntryOtherBankName] = useState('');
   const [entryAccountId, setEntryAccountId] = useState('');
   const [entryReference, setEntryReference] = useState('');
   const [entryNotes, setEntryNotes] = useState('');
@@ -109,6 +112,8 @@ export default function PaymentsPage() {
     setEntryAmount('');
     setEntryDate(today());
     setEntryMethod('cash');
+    setEntryBank('');
+    setEntryOtherBankName('');
     setEntryAccountId(entryAccountOptions.find((a) => a.code === SYSTEM_ACCOUNT_CODES.CASH)?.id ?? '');
     setEntryReference('');
     setEntryNotes('');
@@ -131,6 +136,10 @@ export default function PaymentsPage() {
       );
     }
     if (!account) return setEntryError('Select a cash or bank account.');
+    const bankName = entryBank === 'Other' ? entryOtherBankName.trim() : entryBank;
+    if (entryMethod === 'bank' && !bankName) {
+      return setEntryError('Select a bank or enter the bank name.');
+    }
     if (!arOrApAccount) {
       return setEntryError(
         `${entryDirection === 'in' ? 'Accounts Receivable' : 'Accounts Payable'} account is missing. Repair the chart of accounts in Settings.`,
@@ -162,6 +171,7 @@ export default function PaymentsPage() {
         party_type: entryDirection === 'in' ? 'customer' : 'supplier',
         party_id: entryPartyId,
         method: entryMethod,
+        bank_name: entryMethod === 'bank' ? bankName : undefined,
         cash_or_bank_account_id: account.id,
         ar_or_ap_account_id: arOrApAccount.id,
         amount_paise: amountPaise,
@@ -262,7 +272,7 @@ export default function PaymentsPage() {
       filterable: true,
       render: (r) => partyById.get(r.party_id)?.name ?? r.party_id,
     },
-    { key: 'method', header: 'Method', filterable: true, render: (r) => r.method },
+    { key: 'method', header: 'Method', filterable: true, render: (r) => r.bank_name ? `bank — ${r.bank_name}` : r.method },
     { key: 'reference', header: 'Reference', render: (r) => r.reference || '—' },
     {
       key: 'amount',
@@ -307,7 +317,7 @@ export default function PaymentsPage() {
           header: 'Party',
           get: (r: Payment) => partyById.get(r.party_id)?.name ?? r.party_id,
         },
-        { header: 'Method', get: (r: Payment) => r.method },
+        { header: 'Method', get: (r: Payment) => r.bank_name ? `bank — ${r.bank_name}` : r.method },
         { header: 'Reference', get: (r: Payment) => r.reference },
         { header: 'Amount', get: (r: Payment) => (r.amount_paise / 100).toFixed(2) },
         {
@@ -390,7 +400,9 @@ export default function PaymentsPage() {
               </label>
               <label className="flex flex-col gap-1"><span>Amount ₹</span><input type="number" min="0.01" step="0.01" value={entryAmount} onChange={(e) => setEntryAmount(e.target.value)} className="rounded border px-2 py-1.5" /></label>
               <label className="flex flex-col gap-1"><span>Date</span><input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} className="rounded border px-2 py-1.5" /></label>
-              <label className="flex flex-col gap-1"><span>Payment method</span><select value={entryMethod} onChange={(e) => setEntryMethod(e.target.value as PaymentMethod)} className="rounded border px-2 py-1.5">{METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</select></label>
+              <label className="flex flex-col gap-1"><span>Payment method</span><select value={entryMethod} onChange={(e) => { setEntryMethod(e.target.value as PaymentMethod); setEntryBank(''); setEntryOtherBankName(''); }} className="rounded border px-2 py-1.5">{METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</select></label>
+              {entryMethod === 'bank' && <label className="flex flex-col gap-1"><span>Bank</span><select value={entryBank} onChange={(e) => { setEntryBank(e.target.value); setEntryOtherBankName(''); }} className="rounded border px-2 py-1.5"><option value="">Select bank</option>{INDIAN_BANKS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}</select></label>}
+              {entryMethod === 'bank' && entryBank === 'Other' && <label className="flex flex-col gap-1"><span>Other bank name</span><input value={entryOtherBankName} onChange={(e) => setEntryOtherBankName(e.target.value)} placeholder="Enter bank name" className="rounded border px-2 py-1.5" /></label>}
               <label className="flex flex-col gap-1"><span>Cash / bank account</span><select value={entryAccountId} onChange={(e) => setEntryAccountId(e.target.value)} className="rounded border px-2 py-1.5"><option value="">Select account</option>{entryAccountOptions.map((account) => <option key={account.id} value={account.id}>{account.code} — {account.name}</option>)}</select></label>
               <label className="flex flex-col gap-1 sm:col-span-2"><span>Reference</span><input value={entryReference} onChange={(e) => setEntryReference(e.target.value)} className="rounded border px-2 py-1.5" /></label>
               <label className="flex flex-col gap-1 sm:col-span-2"><span>Notes</span><textarea value={entryNotes} onChange={(e) => setEntryNotes(e.target.value)} className="rounded border px-2 py-1.5" rows={2} /></label>
