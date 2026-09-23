@@ -4,7 +4,7 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
-## 1.0.24 — 2026-09-23
+## 1.0.25 — 2026-09-23
 
 ### Changed
 
@@ -13,6 +13,10 @@ per-PR-version-bump policy.
 ### Release Rule
 
 - Every push to the main branch increments the application version.
+
+### Deployment
+
+- Restored deployment through the public build repository used by GitHub Pages.
 
 ## 1.0.9 — 2026-09-07
 

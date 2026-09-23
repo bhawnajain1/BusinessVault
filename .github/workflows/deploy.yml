@@ -1,4 +1,4 @@
-name: Deploy to GitHub Pages
+name: Build and publish to public build repo
 
 on:
   push:
@@ -7,15 +7,13 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: publish-to-build-repo
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-publish:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
@@ -25,30 +23,43 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: '20'
-          cache: npm
+          cache: 'npm'
 
       - name: Install
         run: npm ci
 
       - name: Build
         env:
-          BV_BASE: /businessvault-app-test/
+          BV_BASE: /businessvault-app/
           VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           VITE_FEEDBACK_EMAIL: ${{ secrets.FEEDBACK_EMAIL }}
         run: npm run build
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
+      - name: Setup SSH deploy key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy Pages artifact
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publish dist/ to build repo
+        env:
+          GIT_AUTHOR_NAME: businessvault-deploy
+          GIT_AUTHOR_EMAIL: businessvault-deploy@users.noreply.github.com
+          GIT_COMMITTER_NAME: businessvault-deploy
+          GIT_COMMITTER_EMAIL: businessvault-deploy@users.noreply.github.com
+        run: |
+          set -e
+          SRC_SHA="${GITHUB_SHA}"
+          SRC_SHORT="${SRC_SHA:0:7}"
+
+          cd dist
+          touch .nojekyll
+
+          git init -q -b main
+          git remote add origin git@github.com:bhawnajain1/businessvault-app.git
+          git add -A
+          git commit -q -m "Deploy build from bhawnajain1/BusinessVault@${SRC_SHORT}"
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519 -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            git push --force origin main
