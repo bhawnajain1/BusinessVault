@@ -11,7 +11,7 @@ import {
   type GstinStatePair,
 } from '../../lib/gstinStateSync';
 import GstinStateBadge from '../components/GstinStateBadge';
-import { seedDefaultMasters } from '../../domain/defaults';
+import { DEFAULT_INVOICE_TERMS, seedDefaultMasters } from '../../domain/defaults';
 import { seedChartOfAccounts } from '../../domain/coa';
 import { appendSyncEvent } from '../../domain/syncEventLog';
 import { getDeviceId } from '../../lib/device';
@@ -76,7 +76,7 @@ export default function Settings() {
       }
       setBusiness(b);
       if (b) {
-        setForm(b);
+        setForm({ ...b, default_invoice_terms: b.default_invoice_terms || DEFAULT_INVOICE_TERMS });
         setStateManuallySet(inferManuallySet(b.gstin ?? '', b.state_code ?? ''));
         await loadCounts(b.id);
       }

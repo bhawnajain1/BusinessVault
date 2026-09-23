@@ -1,4 +1,5 @@
 import type { Business } from '../../db/types';
+import { DEFAULT_INVOICE_TERMS } from '../../domain/defaults';
 
 export type OnboardingStep =
   | 'welcome'
@@ -97,6 +98,7 @@ export function formToBusiness(
     currency: 'INR',
     logo_ref: null,
     invoice_prefix: 'INV',
+    default_invoice_terms: DEFAULT_INVOICE_TERMS,
     invoice_next_seq: 1,
     drive_folder_id: form.driveFolderId,
     drive_connected_email: form.driveEmail,

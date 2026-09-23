@@ -17,6 +17,7 @@ import type { Advance } from '../../db/types';
 import { log } from '../../lib/log';
 import { addDaysYmd } from '../../lib/date';
 import { appendSyncEvent } from '../../domain/syncEventLog';
+import { DEFAULT_INVOICE_TERMS } from '../../domain/defaults';
 
 interface LineDraft {
   key: string;
@@ -135,7 +136,7 @@ export default function InvoiceForm() {
       ]);
       setBusiness(biz ?? null);
       if (!editingId) {
-        const defaultTerms = biz?.default_invoice_terms ?? '';
+        const defaultTerms = biz?.default_invoice_terms || DEFAULT_INVOICE_TERMS;
         setTerms(defaultTerms);
         log.info('invoice-form', 'loaded default invoice terms', {
           businessId,
