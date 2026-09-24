@@ -327,6 +327,7 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
   private folderIdCache = new Map<string, string>();
   /** Cache of "path relative to business root" → Drive file ref (spec §12, §20). */
   private fileRefCache = new Map<string, DriveFileRef>();
+  private journalWriteTail: Promise<void> = Promise.resolve();
   /** Cursor for changes API. */
   private changesToken: string | null = null;
 
@@ -542,6 +543,22 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
   // -------------------------------------------------------------------------
 
   async writeJournalEvents(events: SyncEvent[]): Promise<WriteJournalResult> {
+    // Journal updates are read/append/write operations. Serialize them so two
+    // concurrent flushes cannot overwrite each other's events on Drive.
+    let release!: () => void;
+    const previous = this.journalWriteTail;
+    this.journalWriteTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await this.writeJournalEventsUnlocked(events);
+    } finally {
+      release();
+    }
+  }
+
+  private async writeJournalEventsUnlocked(events: SyncEvent[]): Promise<WriteJournalResult> {
     this.assertBusiness();
     if (events.length === 0) {
       log.debug('drive.provider', 'writeJournalEvents called with 0 events', {});

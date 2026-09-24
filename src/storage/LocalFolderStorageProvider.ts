@@ -463,6 +463,7 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
   private business: BusinessLocation | null = null;
   private connectError: string | undefined;
   private injectedHandle: DirHandle | null = null;
+  private journalWriteTail: Promise<void> = Promise.resolve();
 
   /** Pre-seed the folder handle from a click-gesture call, bypassing the
    *  saved-handle silent-reuse path. connect() will use this handle instead
@@ -660,6 +661,22 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
   }
 
   async writeJournalEvents(events: SyncEvent[]): Promise<WriteJournalResult> {
+    // Keep read/append/write journal updates atomic from the provider's point
+    // of view, even when multiple sync jobs flush concurrently.
+    let release!: () => void;
+    const previous = this.journalWriteTail;
+    this.journalWriteTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await this.writeJournalEventsUnlocked(events);
+    } finally {
+      release();
+    }
+  }
+
+  private async writeJournalEventsUnlocked(events: SyncEvent[]): Promise<WriteJournalResult> {
     const fs = this.requireFs();
     if (events.length === 0) {
       return { written: 0, duplicates: [], journalPath: '' };
