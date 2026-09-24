@@ -771,7 +771,7 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       const years = await fs.list(journalRoot);
       for (const y of years) {
         if (y.kind !== 'directory') continue;
-        const months = await fs.list(`${journalRoot}/${y.name}`);
+        const months = await fs.list(`${journalRoot}/${y.name}`).catch(() => []);
         for (const m of months) {
           if (m.kind === 'file' && m.name.endsWith('.events.jsonl')) {
             files.push(`${journalRoot}/${y.name}/${m.name}`);
@@ -940,7 +940,7 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
     for (const e of entries) {
       if (e.kind !== 'directory') continue;
       const snapDir = `${dir}/${e.name}`;
-      const files = await fs.list(snapDir);
+      const files = await fs.list(snapDir).catch(() => []);
       let sizeBytes = 0;
       let fileCount = 0;
       let verified = false;
@@ -1081,7 +1081,7 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       const years = await fs.list(journalRoot);
       for (const y of years) {
         if (y.kind !== 'directory') continue;
-        const months = await fs.list(`${journalRoot}/${y.name}`);
+        const months = await fs.list(`${journalRoot}/${y.name}`).catch(() => []);
         for (const m of months) {
           if (m.kind !== 'file' || !m.name.endsWith('.events.jsonl')) continue;
           filesChecked++;
@@ -1168,7 +1168,7 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       const years = await fs.list(journalRoot);
       for (const y of years) {
         if (y.kind !== 'directory') continue;
-        const months = await fs.list(`${journalRoot}/${y.name}`);
+        const months = await fs.list(`${journalRoot}/${y.name}`).catch(() => []);
         for (const m of months) {
           if (m.kind !== 'file' || !m.name.endsWith('.events.jsonl')) continue;
           const rel = `journal/${y.name}/${m.name}`;
