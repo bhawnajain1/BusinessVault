@@ -81,6 +81,7 @@ interface AttachmentPayload {
 }
 
 const HEALTH_KV_KEY = 'sync.backupHealth';
+let healthWriteTail: Promise<void> = Promise.resolve();
 const DEFAULT_TICK_MS = 5_000;
 const DEFAULT_OFFLINE_TICK_MS = 30_000;
 const DEFAULT_BATCH_WINDOW_MS = 5_000;
@@ -115,7 +116,30 @@ async function loadHealth(): Promise<BackupHealth> {
 }
 
 async function saveHealth(h: BackupHealth): Promise<void> {
-  await db.kv.put({ key: HEALTH_KV_KEY, value: h, updated_at: h.updatedAt });
+  let release!: () => void;
+  const previous = healthWriteTail;
+  healthWriteTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    const existingRow = await db.kv.get(HEALTH_KV_KEY);
+    const existing = existingRow?.value as BackupHealth | undefined;
+    const newest = (a: string | null | undefined, b: string | null | undefined): string | null => {
+      if (!a) return b ?? null;
+      if (!b) return a;
+      return a >= b ? a : b;
+    };
+    const merged: BackupHealth = {
+      ...h,
+      lastEventSyncAt: newest(existing?.lastEventSyncAt, h.lastEventSyncAt),
+      lastFullSnapshotAt: newest(existing?.lastFullSnapshotAt, h.lastFullSnapshotAt),
+      updatedAt: newest(existing?.updatedAt, h.updatedAt) ?? h.updatedAt,
+    };
+    await db.kv.put({ key: HEALTH_KV_KEY, value: merged, updated_at: merged.updatedAt });
+  } finally {
+    release();
+  }
 }
 
 export function toProviderEvent(e: SyncEvent): ProviderSyncEvent {
