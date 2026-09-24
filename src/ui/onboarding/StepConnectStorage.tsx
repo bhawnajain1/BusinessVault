@@ -25,7 +25,7 @@ export default function StepConnectStorage({ onChoose, onBack, error }: Props) {
   // Runs synchronously from the button click so Chrome still has the user
   // gesture and the folder picker can open. Awaiting anything before this is
   // the reason "Setup could not complete / not connected" happened.
-  const onLocalClick = async () => {
+  const onLocalClick = async (): Promise<void> => {
     setPickError(null);
     if (!pickerAvailable()) {
       setPickError(
@@ -40,11 +40,11 @@ export default function StepConnectStorage({ onChoose, onBack, error }: Props) {
         }) => Promise<FileSystemDirectoryHandle>;
       }).showDirectoryPicker;
       const handle = await picker({ mode: 'readwrite' });
-      onChoose('local-folder', handle);
+      await onChoose('local-folder', handle);
     } catch (e) {
       const msg = (e as Error).message ?? String(e);
       if (msg.toLowerCase().includes('abort')) return; // user cancelled
-      setPickError(msg);
+        setPickError(`Local folder setup failed: ${msg}`);
     }
   };
 
@@ -93,7 +93,7 @@ export default function StepConnectStorage({ onChoose, onBack, error }: Props) {
 
       <button
         type="button"
-        onClick={onLocalClick}
+        onClick={() => void onLocalClick()}
         className="mt-6 w-full rounded border border-slate-300 bg-white px-4 py-3 text-slate-700 hover:bg-slate-50"
       >
         Choose local folder…
