@@ -432,8 +432,11 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
 
   const onDisconnect = useCallback(async (): Promise<void> => {
     clearMessages();
+    const switchingToLocal = disconnected;
     const ok = window.confirm(
-      'Disconnect Google Drive?\n\nLocal data will be kept — you can reconnect any time. Pending events will replay after reconnect.',
+      switchingToLocal
+        ? 'Switch to local folder backup?\n\nLocal data will be kept. Google Drive files will not be deleted, and you can reconnect Google Drive later.'
+        : 'Disconnect Google Drive?\n\nLocal data will be kept — you can reconnect any time. Pending events will replay after reconnect.',
     );
     if (!ok) return;
     setBusy('disconnect');
@@ -444,6 +447,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       stopSyncWorker();
       // Clear the connected email from the business row per §30 (local data stays).
       await db.businesses.update(businessId, {
+        drive_folder_id: switchingToLocal ? null : business?.drive_folder_id ?? null,
         drive_connected_email: null,
         updated_at: new Date().toISOString(),
       });
@@ -615,7 +619,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
         </div>
       </section>
 
-      {!disconnected && driveFolderId != null && (
+       {!disconnected && driveFolderId != null && (
         <section className="backup-settings-danger-zone">
           <div>
             <TriangleAlert size={24} strokeWidth={2} aria-hidden="true" />
@@ -632,7 +636,23 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
             {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect Google Drive'}
           </button>
         </section>
-      )}
+       )}
+
+       {disconnected && driveFolderId != null && (
+         <section className="backup-settings-card backup-settings-action-card">
+           <p className="backup-settings-action-copy">
+             Google Drive is disconnected. Switch to a local folder to continue testing backups on this device.
+           </p>
+           <button
+             type="button"
+             onClick={onDisconnect}
+             disabled={!!busy}
+             className="backup-settings-button backup-settings-button-secondary"
+           >
+             {busy === 'disconnect' ? 'Switching…' : 'Switch to local folder backup'}
+           </button>
+         </section>
+       )}
 
       {message && (
         <div className="backup-settings-feedback backup-settings-feedback-success">
