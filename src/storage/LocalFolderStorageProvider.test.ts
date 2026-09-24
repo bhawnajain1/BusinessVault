@@ -137,6 +137,29 @@ describe('LocalFolderStorageProvider', () => {
     ]);
   });
 
+  it('reads a snapshot that stores its manifest at the business metadata path', async () => {
+    const p = await connectAndInit(root);
+    const snapshotDir = path.join(
+      root,
+      'BusinessVault/Acme Traders/snapshots/ondemand/2026-09-24T09-26-06.407Z',
+    );
+    await fs.mkdir(snapshotDir, { recursive: true });
+    const csv = 'id,business_id\n1,biz_1\n';
+    await fs.writeFile(path.join(snapshotDir, 'businesses.csv'), csv);
+    await fs.writeFile(
+      path.join(snapshotDir, 'checksums.json'),
+      JSON.stringify({ files: { 'businesses.csv': await sha256(new TextEncoder().encode(csv)) } }),
+    );
+
+    const snapshots = await p.listSnapshots({ kind: 'ondemand' });
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].verified).toBe(true);
+
+    const snapshot = await p.readSnapshot(snapshots[0].handle);
+    expect(snapshot.manifest.businessId).toBe('biz_1');
+    expect(snapshot.files).toHaveLength(1);
+  });
+
   it('writeJournalEvents appends to YYYY-MM.events.jsonl and is idempotent', async () => {
     const p = await connectAndInit(root);
 

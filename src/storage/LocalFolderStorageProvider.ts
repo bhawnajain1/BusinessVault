@@ -900,10 +900,10 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       throw new Error(`readSnapshot: not found at ${dir}`);
     }
 
-    const manifest = JSON.parse(await fs.readFileText(`${dir}/manifest.json`)) as Record<
-      string,
-      unknown
-    >;
+    const manifestPath = (await fs.exists(`${dir}/manifest.json`))
+      ? `${dir}/manifest.json`
+      : `${business.folderPath}/metadata/manifest.json`;
+    const manifest = JSON.parse(await fs.readFileText(manifestPath)) as Record<string, unknown>;
     let checksums: Record<string, string> = {};
     if (await fs.exists(`${dir}/checksums.json`)) {
       checksums = JSON.parse(await fs.readFileText(`${dir}/checksums.json`));
@@ -939,6 +939,7 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
     const out: SnapshotIndex[] = [];
     for (const e of entries) {
       if (e.kind !== 'directory') continue;
+      if (e.name === '.staging') continue;
       const snapDir = `${dir}/${e.name}`;
       const files = await fs.list(snapDir).catch(() => []);
       let sizeBytes = 0;
