@@ -460,7 +460,8 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
   }, [businessId]);
 
   const disconnected = status === 'DISCONNECTED';
-  const localFolderNeedsReconnect = driveFolderId == null && status === 'ERROR';
+  const usingLocalFolder = driveFolderId == null;
+  const localFolderNeedsReconnect = usingLocalFolder && status === 'ERROR';
 
   return (
     <div className="backup-settings-page">
@@ -481,10 +482,10 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
         >
           <div>
             <div className="backup-settings-alert-title">
-              {driveFolderId == null ? 'Local backup folder needs to be reconnected.' : 'Google Drive backup disconnected.'}
+              {usingLocalFolder ? 'Local backup folder' : 'Google Drive backup disconnected.'}
             </div>
             <div className="backup-settings-alert-copy">
-              {driveFolderId == null
+              {usingLocalFolder
                 ? 'The saved folder is no longer available. Choose the BusinessVault folder again to resume backups.'
                 : 'Your business continues to work on this device. Reconnect to resume backups — pending events will upload automatically.'}
             </div>
@@ -494,7 +495,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
             className="backup-settings-alert-action"
             onClick={() => void handleReconnect()}
           >
-            {driveFolderId == null ? 'Choose local folder' : 'Reconnect'}
+            {usingLocalFolder ? 'Choose local folder' : 'Reconnect'}
           </button>
         </div>
       )}
@@ -599,6 +600,16 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
             className="backup-settings-button backup-settings-button-secondary backup-settings-button-drive"
           >
             {busy === 'switch' ? 'Switching…' : 'Switch to Google Drive backup'}
+          </button>
+        )}
+        {usingLocalFolder && onReconnect && (
+          <button
+            type="button"
+            onClick={() => void handleReconnect()}
+            disabled={!!busy}
+            className="backup-settings-button backup-settings-button-secondary"
+          >
+            {busy === 'reconnect' ? 'Choosing…' : 'Choose local folder'}
           </button>
         )}
         </div>
