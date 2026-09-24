@@ -249,7 +249,8 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       setMessage('Reconnecting to Google Drive…');
       await onReconnect();
     }
-    if (!getActiveProvider()) {
+    const provider = getActiveProvider();
+    if (!provider) {
       setError('Google Drive is not connected — click Reconnect above, then try again.');
       return;
     }
@@ -258,6 +259,21 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     try {
       if (!business) {
         throw new Error('Business is still loading.');
+      }
+      // The user may have deleted the vault in Drive while this tab was open.
+      // Re-run initialization so the provider rediscovers or recreates the
+      // remote folder instead of using its stale cached folder id.
+      const initialized = await provider.initializeBusiness({
+        businessId,
+        businessName: business.name,
+      });
+      if (business.drive_folder_id !== null && business.drive_folder_id !== initialized.providerFolderId) {
+        await db.businesses.update(businessId, {
+          drive_folder_id: initialized.providerFolderId,
+          updated_at: new Date().toISOString(),
+        });
+        const refreshed = await db.businesses.get(businessId);
+        if (refreshed) setBusiness(refreshed);
       }
        // On-demand snapshots need a unique path. A date-only value makes a
        // second manual backup on the same day look like an idempotent retry.
