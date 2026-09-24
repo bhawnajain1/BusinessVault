@@ -463,6 +463,39 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     }
   }, [businessId]);
 
+  const onSwitchToLocal = useCallback(async (): Promise<void> => {
+    clearMessages();
+    const ok = window.confirm(
+      'Switch this business to local folder backup?\n\n' +
+        'Your local data will be kept and existing Google Drive files will not be deleted.',
+    );
+    if (!ok) return;
+    setBusy('local');
+    try {
+      const provider = getActiveProvider();
+      if (provider) await provider.disconnect();
+      await disconnectDrive(businessId);
+      stopSyncWorker();
+      await db.businesses.update(businessId, {
+        drive_folder_id: null,
+        drive_connected_email: null,
+        updated_at: new Date().toISOString(),
+      });
+      const refreshed = await db.businesses.get(businessId);
+      if (refreshed) setBusiness(refreshed);
+      setManuallyDisconnected(false);
+      setConn(null);
+      setMessage('Choose your local backup folder to continue.');
+      // This remains inside the user click handler, so the File System Access
+      // picker is allowed to open immediately after the provider switch.
+      if (onReconnect) await onReconnect();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }, [businessId, onReconnect]);
+
   const disconnected = status === 'DISCONNECTED';
   const usingLocalFolder = driveFolderId == null;
   const localFolderNeedsReconnect = usingLocalFolder && status === 'ERROR';
@@ -620,7 +653,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       </section>
 
        {!disconnected && driveFolderId != null && (
-        <section className="backup-settings-danger-zone">
+         <section className="backup-settings-danger-zone">
           <div>
             <TriangleAlert size={24} strokeWidth={2} aria-hidden="true" />
             <h2>Disconnect Google Drive</h2>
@@ -650,6 +683,14 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
              className="backup-settings-button backup-settings-button-secondary"
            >
              {busy === 'disconnect' ? 'Switching…' : 'Switch to local folder backup'}
+           </button>
+           <button
+             type="button"
+             onClick={() => void onSwitchToLocal()}
+             disabled={!!busy}
+             className="backup-settings-button backup-settings-button-secondary"
+           >
+             {busy === 'local' ? 'Switching…' : 'Switch to local folder backup'}
            </button>
          </section>
        )}
