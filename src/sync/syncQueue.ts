@@ -29,6 +29,7 @@ export interface DueQueryOptions {
 
 const DEFAULT_MAX_ATTEMPTS = 12;
 const DEAD_LETTER_SENTINEL: SyncJobStatus = 'failed';
+const STALE_RUNNING_MS = 5 * 60_000;
 
 const iso = (d: Date): string => d.toISOString();
 
@@ -67,6 +68,30 @@ export async function listDue(
     .limit(limit)
     .toArray();
   return rows;
+}
+
+/** Requeue jobs abandoned by a tab or worker that stopped mid-operation. */
+export async function recoverStaleRunningJobs(
+  now: Date = new Date(),
+  staleMs: number = STALE_RUNNING_MS,
+): Promise<number> {
+  const cutoff = now.getTime() - staleMs;
+  const stale = await db.sync_queue
+    .where('status')
+    .equals('running')
+    .filter((job) => new Date(job.updated_at).getTime() <= cutoff)
+    .toArray();
+  if (stale.length === 0) return 0;
+  await db.sync_queue.bulkPut(
+    stale.map((job) => ({
+      ...job,
+      status: 'pending' as const,
+      next_attempt_at: iso(now),
+      updated_at: iso(now),
+      last_error: job.last_error ?? 'Recovered stale running job after worker restart',
+    })),
+  );
+  return stale.length;
 }
 
 export async function markInFlight(id: string, now: Date): Promise<void> {

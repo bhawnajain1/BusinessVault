@@ -14,6 +14,7 @@ import {
   markFailure,
   markInFlight,
   pendingCount,
+  recoverStaleRunningJobs,
 } from './syncQueue';
 import {
   addPokeListener,
@@ -468,6 +469,8 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
       });
       return;
     }
+
+    await recoverStaleRunningJobs(clock());
 
     // Promote LOCAL_ONLY → QUEUED. Every domain service (Invoice, Payment,
     // Advance, Purchase, Return, ...) writes new sync_events with
