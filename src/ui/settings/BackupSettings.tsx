@@ -560,6 +560,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
   const disconnected = status === 'DISCONNECTED';
   const usingLocalFolder = driveFolderId == null;
   const localFolderNeedsReconnect = usingLocalFolder && status === 'ERROR';
+  const providerLabel = usingLocalFolder ? 'Local folder' : 'Google Drive';
 
   return (
     <div className="backup-settings-page">
@@ -601,11 +602,15 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
       <section className="backup-settings-card">
         <header className="backup-settings-card-header">
           <div className="backup-settings-card-icon" aria-hidden="true">
-            <img src={`${import.meta.env.BASE_URL}icons/google-drive-logo.svg`} alt="" />
-          </div>
-          <div>
-            <h2>Google Drive</h2>
-            <p>Cloud backup storage</p>
+             {usingLocalFolder ? (
+               <CloudBackup size={32} strokeWidth={2} aria-hidden="true" />
+             ) : (
+               <img src={`${import.meta.env.BASE_URL}icons/google-drive-logo.svg`} alt="" />
+             )}
+           </div>
+           <div>
+             <h2>{providerLabel}</h2>
+             <p>{usingLocalFolder ? 'Local backup storage' : 'Cloud backup storage'}</p>
           </div>
           <span className={`backup-settings-connected-pill ${connected ? '' : 'backup-settings-connected-pill-offline'}`}>
             <span className="backup-settings-status-dot" aria-hidden="true" />
@@ -648,7 +653,9 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
           <span className="backup-settings-health-value">{status}</span>
           <span className="backup-settings-health-divider" aria-hidden="true" />
           <span className="backup-settings-health-copy">
-            {status === 'HEALTHY' ? 'Google Drive connection is active.' : 'Google Drive needs attention.'}
+             {status === 'HEALTHY'
+               ? `${providerLabel} connection is active.`
+               : `${providerLabel} needs attention.`}
           </span>
         </div>
       </section>
