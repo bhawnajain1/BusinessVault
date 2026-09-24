@@ -120,9 +120,10 @@ export function shouldShowDisconnectedDuringBoot(
 interface Props {
   businessId: string;
   onReconnect?: (selectedLocalHandle?: FileSystemDirectoryHandle) => void | Promise<void>;
+  onResetFresh?: () => void | Promise<void>;
 }
 
-export default function BackupSettings({ businessId, onReconnect }: Props) {
+export default function BackupSettings({ businessId, onReconnect, onResetFresh }: Props) {
   const health = useBackupHealth();
   const [business, setBusiness] = useState<Business | null>(null);
   const [conn, setConn] = useState<ConnectionStatus | null>(null);
@@ -243,7 +244,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     setError(null);
   };
 
-  const onBackupNow = useCallback(async (): Promise<void> => {
+  const runBackup = useCallback(async (): Promise<boolean> => {
     clearMessages();
     if (!getActiveProvider() && onReconnect) {
       setMessage('Reconnecting to Google Drive…');
@@ -252,7 +253,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     const provider = getActiveProvider();
     if (!provider) {
       setError('Google Drive is not connected — click Reconnect above, then try again.');
-      return;
+      return false;
     }
     setBusy('backup');
     setMessage('Preparing backup…');
@@ -298,20 +299,20 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
         if (!row) {
           // Job row disappeared — worker completed and cleaned it up, or
           // db was cleared. Treat as success rather than error.
-          setMessage('Backup complete.');
-          break;
+           setMessage('Backup complete.');
+          return true;
         }
         if (row.status === 'done') {
-          setMessage('Backup complete.');
-          break;
+           setMessage('Backup complete.');
+          return true;
         }
         if (row.status === 'failed') {
-          setError(`Backup failed: ${row.last_error ?? 'unknown error'}`);
-          break;
+           setError(`Backup failed: ${row.last_error ?? 'unknown error'}`);
+          return false;
         }
         if (Date.now() - startedAt > TIMEOUT_MS) {
-          setError('Backup is still running after 10 minutes. Check back later — it may finish in the background.');
-          break;
+           setError('Backup is still running after 10 minutes. Check back later — it may finish in the background.');
+          return false;
         }
         if (row.status === 'running') {
           setMessage(`Backup uploading… (attempt ${row.attempts + 1})`);
@@ -320,10 +321,15 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       }
     } catch (e) {
       setError((e as Error).message);
+      return false;
     } finally {
       setBusy(null);
     }
   }, [businessId, business, onReconnect]);
+
+  const onBackupNow = useCallback(async (): Promise<void> => {
+    await runBackup();
+  }, [runBackup]);
 
   const onVerifyNow = useCallback(async (): Promise<void> => {
     clearMessages();
@@ -462,6 +468,57 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       setBusy(null);
     }
   }, [businessId]);
+
+  const onStartFresh = useCallback(async (): Promise<void> => {
+    if (!onResetFresh) return;
+    clearMessages();
+    const confirmed = window.confirm(
+      'Start fresh on this device?\n\n' +
+        'BusinessVault will first create a fresh backup in Google Drive. Only after that succeeds will this browser be signed out and cleared. ' +
+        'Your existing local folder and Google Drive files will not be deleted.\n\n' +
+        'Continue?',
+    );
+    if (!confirmed) return;
+
+    setBusy('start-fresh');
+    try {
+      let current = await db.businesses.get(businessId);
+      if (!current) throw new Error('Business is still loading.');
+
+      if (!current.drive_folder_id) {
+        setMessage('Google Drive is required. Connect it to continue.');
+        await onSwitchToDrive();
+        current = await db.businesses.get(businessId);
+        if (!current?.drive_folder_id) {
+          throw new Error('Google Drive connection was not completed. Nothing was cleared.');
+        }
+      } else if (!getActiveProvider()) {
+        setMessage('Reconnecting to Google Drive…');
+        await onReconnect?.();
+      }
+
+      const provider = getActiveProvider();
+      if (!provider || !current?.drive_folder_id) {
+        throw new Error('Google Drive is not connected. Nothing was cleared.');
+      }
+      const status = await provider.connectionStatus();
+      if (status.state !== 'CONNECTED') {
+        throw new Error('Google Drive is not connected. Nothing was cleared.');
+      }
+
+      setMessage('Creating final Google Drive backup…');
+      const backedUp = await runBackup();
+      if (!backedUp) {
+        throw new Error('Final Google Drive backup did not complete. Nothing was cleared.');
+      }
+
+      setMessage('Backup complete. Clearing this browser…');
+      await onResetFresh();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(null);
+    }
+  }, [businessId, onReconnect, onResetFresh, runBackup]);
 
   const onSwitchToLocal = useCallback(async (): Promise<void> => {
     clearMessages();
@@ -673,6 +730,24 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
             {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect Google Drive'}
           </button>
         </section>
+       )}
+
+       {onResetFresh && (
+         <section className="backup-settings-danger-zone">
+           <div>
+             <TriangleAlert size={24} strokeWidth={2} aria-hidden="true" />
+             <h2>Start fresh on this device</h2>
+             <p>Delete all local app data and sign out. Backup files are not deleted.</p>
+           </div>
+           <button
+             type="button"
+             onClick={() => void onStartFresh()}
+             disabled={!!busy}
+             className="backup-settings-button backup-settings-button-danger"
+           >
+             Start fresh
+           </button>
+         </section>
        )}
 
        {disconnected && driveFolderId != null && (
