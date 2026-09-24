@@ -245,6 +245,10 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
 
   const onBackupNow = useCallback(async (): Promise<void> => {
     clearMessages();
+    if (!getActiveProvider() && onReconnect) {
+      setMessage('Reconnecting to Google Drive…');
+      await onReconnect();
+    }
     if (!getActiveProvider()) {
       setError('Google Drive is not connected — click Reconnect above, then try again.');
       return;
@@ -301,7 +305,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     } finally {
       setBusy(null);
     }
-  }, [businessId, business]);
+  }, [businessId, business, onReconnect]);
 
   const onVerifyNow = useCallback(async (): Promise<void> => {
     clearMessages();
