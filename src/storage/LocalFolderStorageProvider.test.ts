@@ -115,6 +115,28 @@ describe('LocalFolderStorageProvider', () => {
     expect(r2.reused).toBe(true);
   });
 
+  it('discovers every business when the picked folder contains multiple layouts', async () => {
+    await fs.mkdir(path.join(root, 'BusinessVault', 'Real Buiness', 'metadata'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, 'BusinessVault', 'Real Buiness', 'metadata', 'manifest.json'),
+      JSON.stringify({ businessId: 'real-1', businessName: 'Real Buiness', schemaVersion: 1 }),
+    );
+    await fs.mkdir(path.join(root, 'Tiger Marketing', 'metadata'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, 'Tiger Marketing', 'metadata', 'manifest.json'),
+      JSON.stringify({ businessId: 'tiger-1', businessName: 'Tiger Marketing', schemaVersion: 1 }),
+    );
+
+    const p = new LocalFolderStorageProvider();
+    await p.connect({ kind: 'local-folder', rootPath: root });
+    const businesses = await p.listBusinesses();
+
+    expect(businesses.map((business) => business.businessName)).toEqual([
+      'Real Buiness',
+      'Tiger Marketing',
+    ]);
+  });
+
   it('writeJournalEvents appends to YYYY-MM.events.jsonl and is idempotent', async () => {
     const p = await connectAndInit(root);
 

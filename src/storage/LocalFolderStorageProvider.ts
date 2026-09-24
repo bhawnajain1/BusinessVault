@@ -1275,7 +1275,6 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
           manifest,
         });
       }
-      if (out.length > 0) return out;
     }
     return out;
   }
