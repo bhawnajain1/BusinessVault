@@ -166,7 +166,7 @@ export interface SnapshotCsvFile {
 export interface WriteSnapshotInput {
   businessId: string;
   kind: SnapshotKind;
-  /** ISO date the snapshot describes, e.g. '2026-08-19'. */
+  /** Snapshot date or unique on-demand timestamp used in its folder path. */
   asOf: string;
   files: SnapshotCsvFile[];
   /** Manifest describing the snapshot (schema version, row counts, …). */

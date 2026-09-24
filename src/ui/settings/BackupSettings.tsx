@@ -259,7 +259,9 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       if (!business) {
         throw new Error('Business is still loading.');
       }
-      const asOf = new Date().toISOString().slice(0, 10);
+       // On-demand snapshots need a unique path. A date-only value makes a
+       // second manual backup on the same day look like an idempotent retry.
+       const asOf = new Date().toISOString().replace(/:/g, '-');
       const input = await buildSnapshotInput(db, businessId, business.name, 'ondemand', asOf);
       const job = await enqueue({
         businessId,
