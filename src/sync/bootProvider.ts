@@ -173,7 +173,9 @@ async function tryBootDrive(business: Business): Promise<boolean> {
  *  showDirectoryPicker (no saved handle) or requestPermission (saved handle,
  *  permission expired) can succeed. For Drive-backed businesses this opens
  *  the GIS popup instead. */
-export async function reconnectWithUserGesture(): Promise<boolean> {
+export async function reconnectWithUserGesture(
+  selectedLocalHandle?: FileSystemDirectoryHandle,
+): Promise<boolean> {
   // If a worker is already running but the user is clicking Reconnect, it's
   // because sync is failing (e.g. businessId mismatch after creating a new
   // business, or a stale handle mid-session). Clear the provider + binding
@@ -231,6 +233,7 @@ export async function reconnectWithUserGesture(): Promise<boolean> {
 
   const provider = new LocalFolderStorageProvider();
   try {
+    if (selectedLocalHandle) provider.setDirectoryHandle(selectedLocalHandle);
     // connect() handles: (a) prompt via showDirectoryPicker if no saved
     // handle, or (b) requestPermission on the saved handle. Both require a
     // user gesture, which is why this function is only called from onClick.

@@ -33,7 +33,7 @@ export default function DataAndBackup() {
     };
   }, []);
 
-  const onReconnect = useCallback(async (): Promise<void> => {
+  const onReconnect = useCallback(async (selectedLocalHandle?: FileSystemDirectoryHandle): Promise<void> => {
     setReconnectError(null);
     if (!businessId) {
       setReconnectError('No active business.');
@@ -49,7 +49,7 @@ export default function DataAndBackup() {
       // kept the stale DISCONNECTED provider + old worker, so the yellow
       // "needs to reconnect" banner and the DISCONNECTED status never
       // cleared even though sign-in succeeded.
-      const ok = await reconnectWithUserGesture();
+      const ok = await reconnectWithUserGesture(selectedLocalHandle);
       if (ok) {
         log.info('DataAndBackup', 'reconnect: success — provider adopted', { businessId });
       } else {

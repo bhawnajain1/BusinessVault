@@ -119,7 +119,7 @@ export function shouldShowDisconnectedDuringBoot(
 
 interface Props {
   businessId: string;
-  onReconnect?: () => void | Promise<void>;
+  onReconnect?: (selectedLocalHandle?: FileSystemDirectoryHandle) => void | Promise<void>;
 }
 
 export default function BackupSettings({ businessId, onReconnect }: Props) {
@@ -470,6 +470,10 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
         'Your local data will be kept and existing Google Drive files will not be deleted.',
     );
     if (!ok) return;
+    const picker = (window as unknown as {
+      showDirectoryPicker: (options?: { mode?: 'readwrite' }) => Promise<FileSystemDirectoryHandle>;
+    }).showDirectoryPicker;
+    const selectedLocalHandle = await picker({ mode: 'readwrite' });
     setBusy('local');
     try {
       const provider = getActiveProvider();
@@ -488,7 +492,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
       setMessage('Choose your local backup folder to continue.');
       // This remains inside the user click handler, so the File System Access
       // picker is allowed to open immediately after the provider switch.
-      if (onReconnect) await onReconnect();
+      if (onReconnect) await onReconnect(selectedLocalHandle);
     } catch (e) {
       setError((e as Error).message);
     } finally {
