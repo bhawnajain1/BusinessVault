@@ -1247,10 +1247,10 @@ function customLine(unitPaise: number): ReturnType<typeof intrastateLine> {
 }
 
 describe('InvoiceService — round-off modes (feedback §1)', () => {
-  it('auto: rounds a fractional total upward to the next rupee', async () => {
+  it('auto: rounds a total below 50 paise down to the current rupee', async () => {
     // ₹100.30 taxable + 18% = 118.36 after per-line tax rounding.
     // Actually per-line taxable is 10030 paise; cgst/sgst = round(10030*0.09)=903+903=1806.
-    // Line total = 10030 + 1806 = 11836. auto rounds 11836 → 11900.
+    // Line total = 10030 + 1806 = 11836. auto rounds 11836 → 11800.
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -1267,7 +1267,7 @@ describe('InvoiceService — round-off modes (feedback §1)', () => {
     expect(inv.round_off_mode).toBe('auto');
     expect(inv.total_paise % 100).toBe(0);
     expect(inv.pre_round_total_paise + inv.round_off_paise).toBe(inv.total_paise);
-    expect(inv.round_off_paise).toBeGreaterThan(0);
+    expect(inv.round_off_paise).toBe(-36);
   });
 
   it("auto: rounds UP a total ending in >50 paise to the nearest rupee", async () => {

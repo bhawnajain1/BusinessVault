@@ -16,7 +16,7 @@
  *      → bulk-insert into Dexie in ONE transaction (all-or-nothing)
  *   6. replay journal events after snapshot's checkpoint, idempotent handlers
  *   7. rebuild derived caches (item_stock qty/cost; invoice/purchase settlement)
- *   8. accountingSelfCheck + verifyInventoryIdentity + GST reconciliation
+ *   8. repair legacy journal headers + accountingSelfCheck + inventory/GST checks
  *   9. emit RECOVERY_DIAGNOSTIC_REPORT on any inconsistency — never silently
  *      modify accounting records
  */
@@ -474,6 +474,17 @@ export async function rebuildFromDrive(
     issues.push({ severity: 'error', code: 'REPLAY_FAILURE', message: d });
   }
 
+  const repairedJournalHeaders = await repairLegacyJournalHeaders(selected.businessId, opts.db);
+  if (repairedJournalHeaders.length > 0) {
+    issues.push({
+      severity: 'warning',
+      code: 'LEGACY_JOURNAL_HEADER_TOTALS_REPAIRED',
+      message:
+        'Legacy journal header totals were corrected from their balanced journal lines.',
+      detail: { entries: repairedJournalHeaders.slice(0, 20) },
+    });
+  }
+
   const acct = await accountingSelfCheck(selected.businessId, { db: opts.db });
   const accountingBalanced = acct.debitsEqCredits && acct.unbalancedEntries.length === 0;
   if (!accountingBalanced) {
@@ -570,6 +581,54 @@ export async function rebuildFromDrive(
     gstReconciled,
     diagnostics: report,
   };
+}
+
+/**
+ * Older app versions could persist balanced journal lines with stale entry
+ * header totals, especially when an invoice included round-off. The lines are
+ * the accounting source of truth. Repair only headers whose lines are balanced;
+ * genuinely unbalanced lines remain a restore failure below.
+ */
+export async function repairLegacyJournalHeaders(
+  businessId: string,
+  db: BusinessVaultDB,
+): Promise<string[]> {
+  const [entries, lines] = await Promise.all([
+    db.journal_entries.where('business_id').equals(businessId).toArray(),
+    db.journal_lines.where('business_id').equals(businessId).toArray(),
+  ]);
+  const totals = new Map<string, { debit: number; credit: number }>();
+  for (const line of lines) {
+    const current = totals.get(line.entry_id) ?? { debit: 0, credit: 0 };
+    current.debit += line.debit_paise;
+    current.credit += line.credit_paise;
+    totals.set(line.entry_id, current);
+  }
+
+  const repairs = entries
+    .filter((entry) => {
+      if (entry.posted !== 1) return false;
+      const total = totals.get(entry.id);
+      return !!total &&
+        total.debit === total.credit &&
+        (entry.total_debit_paise !== total.debit || entry.total_credit_paise !== total.credit);
+    })
+    .map((entry) => {
+      const total = totals.get(entry.id)!;
+      return { id: entry.id, debit: total.debit, credit: total.credit };
+    });
+
+  if (repairs.length === 0) return [];
+
+  await db.transaction('rw', db.journal_entries, async () => {
+    for (const repair of repairs) {
+      await db.journal_entries.update(repair.id, {
+        total_debit_paise: repair.debit,
+        total_credit_paise: repair.credit,
+      });
+    }
+  });
+  return repairs.map((repair) => repair.id);
 }
 
 // ---------------------------------------------------------------------------

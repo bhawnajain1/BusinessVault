@@ -203,7 +203,7 @@ export default function DataTable<T>(props: DataTableProps<T>) {
                     c.sortable !== false
                       ? sort?.key === c.key
                         ? sort.direction === 'asc' ? 'ascending' : 'descending'
-                        : 'none'
+                        : undefined
                       : undefined
                   }
                   className={`table-header-cell text-left px-4 h-12 font-semibold text-slate-600 text-xs ${c.className ?? ''}`}
@@ -223,7 +223,7 @@ export default function DataTable<T>(props: DataTableProps<T>) {
                     >
                       <span>{c.header}</span>
                       <span aria-hidden="true" className="table-sort-icon">
-                        {sort?.key === c.key ? (sort.direction === 'asc' ? '⌃' : '⌄') : '⇅'}
+                        {sort?.key === c.key ? (sort.direction === 'asc' ? '↑' : '↓') : '⇅'}
                       </span>
                     </button>
                   ) : c.header}

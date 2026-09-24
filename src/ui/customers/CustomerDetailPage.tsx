@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ulid } from 'ulid';
 import { db } from '../../db';
@@ -18,6 +18,14 @@ import Money from '../components/Money';
 import { streamCsvExport } from '../../csv/streamCsvExport';
 
 type Tab = 'invoices' | 'payments' | 'statement';
+type InvoiceSortKey =
+  | 'invoice_number'
+  | 'invoice_date'
+  | 'due_date'
+  | 'total_paise'
+  | 'paid_paise'
+  | 'outstanding_paise'
+  | 'dyn_status';
 
 interface InvoiceRow {
   inv: Invoice;
@@ -34,8 +42,13 @@ function todayYmd(): string {
 
 function fmtDateShort(ymd: string): string {
   if (!ymd || ymd.length < 10) return ymd;
-  const [y, m, d] = ymd.split('-');
-  return `${d}/${m}/${y.slice(2)}`;
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Intl.DateTimeFormat('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(new Date(Date.UTC(y, m - 1, d)));
 }
 
 // Derived outstanding for a single invoice, ignoring cached invoice.paid_paise.
@@ -168,6 +181,10 @@ export default function CustomerDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [activeTab, setActiveTab] = useState<Tab>('invoices');
+  const [invoiceSort, setInvoiceSort] = useState<{
+    key: InvoiceSortKey;
+    direction: 'asc' | 'desc';
+  }>({ key: 'invoice_date', direction: 'desc' });
 
   // Payment modal state
   const [payOpen, setPayOpen] = useState(false);
@@ -277,6 +294,53 @@ export default function CustomerDetailPage() {
     );
   }, [originals, payments, advances, creditsByOriginalId, asOfYmd]);
 
+  const sortedInvoiceRows = useMemo(() => {
+    return [...invoiceRows].sort((a, b) => {
+      const value = (row: InvoiceRow): string | number => {
+        switch (invoiceSort.key) {
+          case 'invoice_number': return row.inv.invoice_number;
+          case 'invoice_date': return row.inv.invoice_date;
+          case 'due_date': return row.inv.due_date ?? '';
+          case 'total_paise': return row.inv.total_paise;
+          case 'paid_paise': return row.paid_paise;
+          case 'outstanding_paise': return row.outstanding_paise;
+          case 'dyn_status': return row.dyn_status;
+        }
+      };
+      const av = value(a);
+      const bv = value(b);
+      const result = typeof av === 'number' && typeof bv === 'number'
+        ? av - bv
+        : String(av ?? '').localeCompare(String(bv ?? ''), undefined, {
+            numeric: true,
+            sensitivity: 'base',
+          });
+      return invoiceSort.direction === 'asc' ? result : -result;
+    });
+  }, [invoiceRows, invoiceSort]);
+
+  function sortInvoices(key: InvoiceSortKey) {
+    setInvoiceSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  }
+
+  function invoiceSortHeader(label: string, key: InvoiceSortKey, className = '') {
+    const active = invoiceSort.key === key;
+    return (
+      <button
+        type="button"
+        className={`customer-table-sort-button ${className}`}
+        aria-label={`Sort by ${label}${active ? `, currently ${invoiceSort.direction === 'asc' ? 'ascending' : 'descending'}` : ''}`}
+        onClick={() => sortInvoices(key)}
+      >
+        <span>{label}</span>
+        <span aria-hidden="true" className="customer-table-sort-icon">{active ? (invoiceSort.direction === 'asc' ? '↑' : '↓') : '⇅'}</span>
+      </button>
+    );
+  }
+
   const openInvoiceRows = useMemo(
     () =>
       invoiceRows
@@ -370,6 +434,18 @@ export default function CustomerDetailPage() {
       setPayAllocations({});
     }
     setPayOpen(true);
+  }
+
+  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, tab: Tab) {
+    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+    event.preventDefault();
+    const tabs: Tab[] = ['invoices', 'payments', 'statement'];
+    const current = tabs.indexOf(tab);
+    const next = event.key === 'ArrowRight'
+      ? tabs[(current + 1) % tabs.length]
+      : tabs[(current - 1 + tabs.length) % tabs.length];
+    setActiveTab(next);
+    window.setTimeout(() => document.getElementById(`customer-tab-${next}`)?.focus(), 0);
   }
 
   // On method change, auto-pick cash vs bank account.
@@ -537,27 +613,28 @@ export default function CustomerDetailPage() {
   if (error) return <div className="p-6 text-rose-600 whitespace-pre-wrap">{error}</div>;
 
   return (
-    <div className="p-6 flex flex-col gap-4 max-w-6xl">
-      <div className="flex items-center gap-3">
-        <Link to="/customers" className="text-sm text-blue-700 hover:underline">
+    <div className="customer-detail-page">
+      <div className="customer-detail-container">
+        <div className="customer-detail-back">
+          <Link to="/customers" className="text-sm text-blue-700 hover:underline">
           ← Customers
-        </Link>
-      </div>
+          </Link>
+        </div>
 
       {/* Section 1: Header */}
-      <section className="border border-slate-200 rounded p-4 bg-white flex flex-col gap-2">
-        <div className="flex items-start justify-between">
+      <section className="customer-detail-header">
+        <div className="customer-detail-header-content">
           <div>
-            <h1 className="text-2xl font-semibold">{customer.name}</h1>
-            <div className="text-sm text-slate-600 flex flex-wrap gap-x-4 gap-y-0.5 mt-1">
+            <h1 className="customer-detail-title">{customer.name}</h1>
+            <div className="customer-detail-meta">
               {customer.phone && <span>📞 {customer.phone}</span>}
               {customer.gstin && <span>GSTIN: {customer.gstin}</span>}
               {customer.state && <span>State: {customer.state}</span>}
             </div>
-            <div className="text-sm text-slate-600 mt-1">
-              {customer.billing_address || '—'}
-            </div>
-            <div className="text-xs text-slate-500 mt-2 flex gap-4">
+            {customer.billing_address && (
+              <div className="customer-detail-address">{customer.billing_address}</div>
+            )}
+            <div className="customer-detail-meta customer-detail-meta-secondary">
               <span>
                 Credit limit: <Money paise={customer.credit_limit_paise} />
               </span>
@@ -566,101 +643,97 @@ export default function CustomerDetailPage() {
               </span>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-1.5">
-            <div className="flex gap-2">
+          <div className="customer-detail-actions">
               <button
                 type="button"
                 onClick={() => navigate(`/invoices/new?customer=${customer.id}`)}
-                className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800"
+                className="customer-button customer-button-primary"
               >
-                + New Invoice
+                <svg aria-hidden="true" className="customer-action-svg" viewBox="0 0 20 20" fill="none">
+                  <path d="M10 4v12M4 10h12" />
+                </svg>
+                <span>New Invoice</span>
               </button>
               <button
                 type="button"
                 onClick={() => openPaymentModal()}
-                className="text-sm bg-emerald-700 text-white rounded px-3 py-1.5 hover:bg-emerald-800"
+                className="customer-button customer-button-secondary"
               >
-                + Add Payment
+                <svg aria-hidden="true" className="customer-action-svg" viewBox="0 0 20 20" fill="none">
+                  <path d="M10 4v12M4 10h12" />
+                </svg>
+                <span>Add Payment</span>
               </button>
-            </div>
-            <div className="flex gap-2 text-xs">
-              <Link
-                to={`/parties/customer/${customer.id}/ledger`}
-                className="text-blue-700 hover:underline"
-              >
-                View Statement
-              </Link>
               <button
                 type="button"
                 onClick={() => navigate(`/customers?edit=${customer.id}`)}
-                 className="text-sm bg-blue-600 text-white rounded px-3 py-1.5 hover:bg-blue-700"
+                className="customer-button customer-button-tertiary"
               >
+                <svg aria-hidden="true" className="customer-action-svg customer-edit-svg" viewBox="0 0 20 20" fill="none">
+                  <path d="m13.8 3.2 3 3-8.9 8.9-3.7.7.7-3.7 8.9-8.9Z" />
+                  <path d="m12.2 4.8 3 3" />
+                </svg>
                 Edit Customer
               </button>
-            </div>
           </div>
         </div>
       </section>
 
       {/* Section 2: Financial Summary */}
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+      <section className="customer-metrics-grid">
         <SummaryCard label="Total Invoiced" paise={summary.totalInvoiced} />
-        <SummaryCard label="Total Paid" paise={summary.totalPaid} tone="emerald" />
+        <SummaryCard label="Total Paid" paise={summary.totalPaid} />
         <SummaryCard label="Opening Balance" paise={customer.opening_balance_paise} />
         <SummaryCard
           label="Total Due"
           paise={summary.totalDue}
-          tone={summary.totalDue > 0 ? 'rose' : 'slate'}
         />
         <SummaryCard
           label="Available Credit"
           paise={summary.availableCredit}
-          tone={
-            summary.availableCredit === null
-              ? 'slate'
-              : summary.availableCredit === 0
-                ? 'rose'
-                : 'emerald'
-          }
-          fallback={summary.availableCredit === null ? 'No limit set' : undefined}
+          fallback={summary.availableCredit === null ? 'Not set' : undefined}
         />
       </section>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-slate-200 text-sm">
+      <div className="customer-tabs" role="tablist" aria-label="Customer details">
         {(['invoices', 'payments', 'statement'] as Tab[]).map((t) => (
           <button
             key={t}
             type="button"
+            role="tab"
+            id={`customer-tab-${t}`}
+            aria-controls={`customer-panel-${t}`}
+            aria-selected={activeTab === t}
+            tabIndex={activeTab === t ? 0 : -1}
             onClick={() => setActiveTab(t)}
-            className={
-              activeTab === t
-                ? 'px-4 py-2 bg-blue-600 text-white border-b-2 border-blue-700 font-medium hover:bg-blue-700'
-                : 'px-4 py-2 bg-blue-500 text-white hover:bg-blue-600'
-            }
+            onKeyDown={(event) => handleTabKeyDown(event, t)}
+            className={`customer-tab ${activeTab === t ? 'customer-tab-active' : ''}`}
           >
-            {t === 'invoices'
-              ? `Invoices (${invoiceRows.filter((r) => r.dyn_status !== 'CANCELLED').length})`
-              : t === 'payments'
-                ? `Payments (${payments.length})`
-                : 'Statement'}
+            <span>{t === 'invoices' ? 'Invoices' : t === 'payments' ? 'Payments' : 'Statement'}</span>
+            {t !== 'statement' && (
+              <span className="customer-tab-count">
+                {t === 'invoices' ? invoiceRows.filter((r) => r.dyn_status !== 'CANCELLED').length : payments.length}
+              </span>
+            )}
           </button>
         ))}
       </div>
 
       {activeTab === 'invoices' && (
-        <section className="border border-slate-200 rounded overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-xs uppercase text-slate-600">
+        <section id="customer-panel-invoices" role="tabpanel" aria-labelledby="customer-tab-invoices" className="customer-table-shell">
+          <div className="customer-table-scroll">
+            <table className="customer-table data-table min-w-[820px]">
+            <thead>
               <tr>
-                <th className="text-left px-2 py-2">Invoice #</th>
-                <th className="text-left px-2 py-2">Date</th>
-                <th className="text-left px-2 py-2">Due Date</th>
-                <th className="text-right px-2 py-2">Amount</th>
-                <th className="text-right px-2 py-2">Paid</th>
-                <th className="text-right px-2 py-2">Due</th>
-                <th className="text-left px-2 py-2">Status</th>
-                <th className="text-right px-2 py-2">Actions</th>
+                <th scope="col" aria-sort={invoiceSort.key === 'invoice_number' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Invoice #', 'invoice_number')}</th>
+                <th scope="col" aria-sort={invoiceSort.key === 'invoice_date' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Date', 'invoice_date')}</th>
+                <th scope="col" aria-sort={invoiceSort.key === 'due_date' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Due date', 'due_date')}</th>
+                <th scope="col" className="text-right" aria-sort={invoiceSort.key === 'total_paise' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Amount', 'total_paise', 'customer-table-sort-button-right')}</th>
+                <th scope="col" className="text-right" aria-sort={invoiceSort.key === 'paid_paise' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Paid', 'paid_paise', 'customer-table-sort-button-right')}</th>
+                <th scope="col" className="text-right" aria-sort={invoiceSort.key === 'outstanding_paise' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Due', 'outstanding_paise', 'customer-table-sort-button-right')}</th>
+                <th scope="col" aria-sort={invoiceSort.key === 'dyn_status' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Status', 'dyn_status')}</th>
+                <th scope="col" className="text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -671,9 +744,9 @@ export default function CustomerDetailPage() {
                   </td>
                 </tr>
               )}
-              {invoiceRows.map((r) => (
+              {sortedInvoiceRows.map((r) => (
                 <tr key={r.inv.id} className="border-t border-slate-100">
-                  <td className="px-2 py-1.5">
+                  <td>
                     <Link
                       to={`/invoices/${r.inv.id}`}
                       className="text-blue-700 hover:underline font-mono text-xs"
@@ -681,64 +754,69 @@ export default function CustomerDetailPage() {
                       {r.inv.invoice_number}
                     </Link>
                   </td>
-                  <td className="px-2 py-1.5">{fmtDateShort(r.inv.invoice_date)}</td>
-                  <td className="px-2 py-1.5">
+                  <td>{fmtDateShort(r.inv.invoice_date)}</td>
+                  <td>
                     {r.inv.due_date ? fmtDateShort(r.inv.due_date) : '—'}
                   </td>
-                  <td className="px-2 py-1.5 text-right">
+                  <td className="text-right customer-money">
                     <Money paise={r.inv.total_paise} />
                   </td>
-                  <td className="px-2 py-1.5 text-right">
+                  <td className="text-right customer-money">
                     <Money paise={r.paid_paise} />
                   </td>
-                  <td className="px-2 py-1.5 text-right">
+                  <td className="text-right customer-money">
                     <Money paise={r.outstanding_paise} />
                   </td>
-                  <td className="px-2 py-1.5">
+                  <td>
                     <StatusPill status={r.dyn_status} />
                   </td>
-                  <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                  <td className="text-right whitespace-nowrap">
                     {r.outstanding_paise > 0 && r.dyn_status !== 'CANCELLED' && (
                       <button
                         type="button"
                         onClick={() => openPaymentModal(r.inv.id)}
-                        className="text-xs text-emerald-700 hover:underline mr-2"
+                        className="customer-row-button customer-row-button-outline"
                       >
                         Record Payment
                       </button>
                     )}
                     <Link
                       to={`/invoices/${r.inv.id}/print`}
-                      className="text-xs text-slate-600 hover:underline"
+                      className="customer-row-button customer-row-button-quiet"
                     >
+                      <svg aria-hidden="true" className="customer-print-svg" viewBox="0 0 20 20" fill="none">
+                        <path d="M5 7V3h10v4M5 14H3V8h14v6h-2M5 11h10v6H5v-6Z" />
+                      </svg>
                       Print
                     </Link>
                   </td>
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </div>
         </section>
       )}
 
       {activeTab === 'payments' && (
-        <section className="border border-slate-200 rounded overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-xs uppercase text-slate-600">
+        <section id="customer-panel-payments" role="tabpanel" aria-labelledby="customer-tab-payments" className="customer-table-shell">
+          <div className="customer-table-scroll">
+          <table className="customer-table data-table min-w-[760px]">
+            <thead>
               <tr>
-                <th className="text-left px-2 py-2">Date</th>
-                <th className="text-left px-2 py-2">Receipt #</th>
-                <th className="text-right px-2 py-2">Amount</th>
-                <th className="text-left px-2 py-2">Method</th>
-                <th className="text-left px-2 py-2">Reference</th>
-                <th className="text-left px-2 py-2">Allocated to</th>
-                <th className="text-right px-2 py-2">Unallocated</th>
+                <th scope="col">Date</th>
+                <th scope="col">Receipt #</th>
+                <th scope="col" className="text-right">Amount</th>
+                <th scope="col">Method</th>
+                <th scope="col">Reference</th>
+                <th scope="col">Allocated to</th>
+                <th scope="col" className="text-right">Unallocated</th>
               </tr>
             </thead>
             <tbody>
               {payments.length === 0 && (
                 <tr>
-                  <td className="px-2 py-4 text-slate-500 text-center" colSpan={7}>
+                <td className="py-10 text-center text-fg-subtle" colSpan={7}>
                     No payments recorded for this customer yet.
                   </td>
                 </tr>
@@ -747,15 +825,15 @@ export default function CustomerDetailPage() {
                 const allocTotal = p.allocations.reduce((s, a) => s + a.amount_paise, 0);
                 const unalloc = Math.max(0, p.amount_paise - allocTotal);
                 return (
-                  <tr key={p.id} className="border-t border-slate-100 align-top">
-                    <td className="px-2 py-1.5">{fmtDateShort(p.payment_date)}</td>
-                    <td className="px-2 py-1.5 font-mono text-xs">{p.payment_number}</td>
-                    <td className="px-2 py-1.5 text-right">
+                  <tr key={p.id} className="align-top">
+                    <td>{fmtDateShort(p.payment_date)}</td>
+                    <td className="font-mono text-xs">{p.payment_number}</td>
+                    <td className="text-right customer-money">
                       <Money paise={p.amount_paise} />
                     </td>
-                    <td className="px-2 py-1.5">{p.method}</td>
-                    <td className="px-2 py-1.5">{p.reference || '—'}</td>
-                    <td className="px-2 py-1.5 text-xs">
+                    <td>{p.method}</td>
+                    <td>{p.reference || '—'}</td>
+                    <td className="text-xs">
                       {p.allocations.length === 0 ? (
                         <span className="text-slate-500">—</span>
                       ) : (
@@ -779,7 +857,7 @@ export default function CustomerDetailPage() {
                         </div>
                       )}
                     </td>
-                    <td className="px-2 py-1.5 text-right">
+                    <td className="text-right customer-money">
                       {unalloc > 0 ? (
                         <span className="text-blue-700">
                           <Money paise={unalloc} />
@@ -793,11 +871,12 @@ export default function CustomerDetailPage() {
               })}
             </tbody>
           </table>
+          </div>
         </section>
       )}
 
       {activeTab === 'statement' && (
-        <section className="flex flex-col gap-2">
+        <section id="customer-panel-statement" role="tabpanel" aria-labelledby="customer-tab-statement" className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <div className="text-xs text-slate-500">
               Chronological running-balance statement (Debit = customer owes you, Credit = money received).
@@ -818,8 +897,9 @@ export default function CustomerDetailPage() {
               </Link>
             </div>
           </div>
-          <div className="border border-slate-200 rounded overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="customer-table-shell">
+            <div className="customer-table-scroll">
+            <table className="customer-table data-table min-w-[680px]">
               <thead className="bg-slate-50 text-xs uppercase text-slate-600">
                 <tr>
                   <th className="text-left px-2 py-2 w-28">Date</th>
@@ -854,6 +934,7 @@ export default function CustomerDetailPage() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         </section>
       )}
@@ -894,6 +975,7 @@ export default function CustomerDetailPage() {
           onSave={savePayment}
         />
       )}
+      </div>
     </div>
   );
 }
@@ -909,18 +991,10 @@ function SummaryCard({
   tone?: 'slate' | 'emerald' | 'rose' | 'blue';
   fallback?: string;
 }) {
-  const toneClass =
-    tone === 'emerald'
-      ? 'border-emerald-200 bg-emerald-50/60'
-      : tone === 'rose'
-        ? 'border-rose-200 bg-rose-50/60'
-        : tone === 'blue'
-          ? 'border-blue-200 bg-blue-50/60'
-          : 'border-slate-200 bg-white';
   return (
-    <div className={`border ${toneClass} rounded p-3`}>
-      <div className="text-xs text-slate-600">{label}</div>
-      <div className="text-xl font-semibold mt-1">
+    <div className="customer-metric-card">
+      <div className="customer-metric-label">{label}</div>
+      <div className={`customer-metric-value ${tone !== 'slate' ? `customer-metric-value-${tone}` : ''}`}>
         {paise === null ? (
           <span className="text-slate-400 text-base font-normal">{fallback ?? '—'}</span>
         ) : (
@@ -1246,7 +1320,7 @@ function PaymentModal(props: PaymentModalProps) {
             type="button"
             disabled={saving}
             onClick={onSave}
-            className="text-sm bg-emerald-700 text-white rounded px-3 py-1.5 hover:bg-emerald-800 disabled:opacity-50"
+            className="customer-button customer-button-primary disabled:opacity-50"
           >
             {saving ? 'Saving...' : 'Save Payment'}
           </button>

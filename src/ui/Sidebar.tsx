@@ -17,6 +17,10 @@ const SECTIONS: NavSection[] = [
     items: [{ to: '/', label: 'Dashboard', end: true }],
   },
   {
+    title: 'Customers',
+    items: [{ to: '/customers', label: 'Customers' }],
+  },
+  {
     title: 'Sell',
     items: [
       { to: '/pos', label: 'POS' },
@@ -43,10 +47,6 @@ const SECTIONS: NavSection[] = [
       { to: '/warehouses', label: 'Warehouses' },
       { to: '/stock-movements', label: 'Stock Movements' },
     ],
-  },
-  {
-    title: 'Customers',
-    items: [{ to: '/customers', label: 'Customers' }],
   },
   {
     title: 'Reports',
@@ -78,7 +78,7 @@ const linkActive = 'bg-blue-50 text-blue-700 shadow-sm';
 export default function Sidebar() {
   return (
     <nav
-      className="h-full min-h-0 w-60 shrink-0 overflow-y-auto border-r border-slate-200/80 bg-white/70 px-4 py-5 backdrop-blur-xl"
+      className="app-sidebar h-full min-h-0 w-60 shrink-0 overflow-y-auto border-r border-slate-200/80 bg-white/70 px-4 py-5 backdrop-blur-xl"
       aria-label="Primary"
     >
       <ul className="space-y-6">

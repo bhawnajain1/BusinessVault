@@ -10,6 +10,7 @@ import {
   rebuildFromDrive,
   EmptyBackupError,
   UnshippedEventsError,
+  repairLegacyJournalHeaders,
 } from './rebuildFromDrive';
 import { metaDb, __resetMetaDbForTests } from '../lib/device';
 import { writeCsv } from '../csv/csvCodec';
@@ -22,6 +23,8 @@ import type {
   SalesReturn,
   SalesReturnItem,
   StockMovement,
+  JournalEntry,
+  JournalLine,
 } from '../db/types';
 import { applyEvent } from './eventHandlers';
 
@@ -528,6 +531,39 @@ describe('rebuildFromDrive', () => {
   let root: string;
   let db: BusinessVaultDB;
   let provider: LocalFolderStorageProvider;
+
+  it('repairs stale totals only when journal lines are balanced', async () => {
+    const testDb = new BusinessVaultDB(`bv-header-repair-${Date.now()}-${Math.random()}`);
+    const entry = {
+      ...je1,
+      total_debit_paise: 100,
+      total_credit_paise: 100,
+    } as unknown as JournalEntry;
+    const badEntry = {
+      ...je2,
+      total_debit_paise: 99,
+      total_credit_paise: 99,
+    } as unknown as JournalEntry;
+    await testDb.journal_entries.bulkPut([entry, badEntry]);
+    const snapshotLines = [
+      ...(je1_lines as unknown as JournalLine[]),
+      ...(je2_lines as unknown as JournalLine[]),
+    ];
+    const badLine = {
+      ...je2_lines[0],
+      id: 'unbalanced-line',
+      debit_paise: 1,
+    } as unknown as JournalLine;
+    await testDb.journal_lines.bulkPut([...snapshotLines, badLine]);
+
+    const repaired = await repairLegacyJournalHeaders(BID, testDb);
+
+    expect(repaired).toContain(entry.id);
+    expect(repaired).not.toContain(badEntry.id);
+    expect((await testDb.journal_entries.get(entry.id))?.total_debit_paise).toBe(23600);
+    expect((await testDb.journal_entries.get(badEntry.id))?.total_debit_paise).toBe(99);
+    testDb.close();
+  });
 
   it('rejects journal events from another business before dispatch', async () => {
     const testDb = new BusinessVaultDB(`bv-event-scope-${Date.now()}-${Math.random()}`);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deriveDisplayStatus } from './BackupSettings';
+import { deriveDisplayStatus, shouldShowDisconnectedDuringBoot } from './BackupSettings';
 import type {
   ConnectionStatus,
   IntegrityReport,
@@ -78,5 +78,21 @@ describe('deriveDisplayStatus — precedence spec', () => {
     );
     expect(result).toBe('HEALTHY');
     expect(result).not.toBe('DISCONNECTED');
+  });
+});
+
+describe('shouldShowDisconnectedDuringBoot', () => {
+  it('does not show a disconnected state while boot is idle or starting', () => {
+    expect(shouldShowDisconnectedDuringBoot('idle', false)).toBe(false);
+    expect(shouldShowDisconnectedDuringBoot('starting', false)).toBe(false);
+  });
+
+  it('shows disconnected after boot definitively needs permission or fails', () => {
+    expect(shouldShowDisconnectedDuringBoot('needs-permission', false)).toBe(true);
+    expect(shouldShowDisconnectedDuringBoot('error', false)).toBe(true);
+  });
+
+  it('never shows disconnected when a provider is available', () => {
+    expect(shouldShowDisconnectedDuringBoot('error', true)).toBe(false);
   });
 });

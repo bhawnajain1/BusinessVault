@@ -136,7 +136,11 @@ type DirHandle = FileSystemDirectoryHandle;
 function makeFsApiBackend(root: DirHandle): FsBackend {
   async function resolveDir(path: string, create: boolean): Promise<DirHandle> {
     if (path === '' || path === '.') return root;
-    const parts = path.split('/').filter(Boolean);
+    // File System Access rejects '.' as a directory name. Directly selected
+    // business folders use '.' as their provider-relative root path, so drop
+    // dot segments before resolving the remaining path.
+    const parts = path.split('/').filter((part) => part && part !== '.');
+    if (parts.length === 0) return root;
     let cur: DirHandle = root;
     for (const part of parts) {
       cur = await cur.getDirectoryHandle(part, { create });
@@ -566,7 +570,11 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
     const canonicalPath = `BusinessVault/${slug}`;
     const rootedPath = slug;
     let folderPath: string;
-    if (await fs.exists(`${rootedPath}/metadata/manifest.json`)) {
+    // The picker may point directly at the extracted business folder. In that
+    // layout metadata/manifest.json is at the provider root.
+    if (await fs.exists('metadata/manifest.json')) {
+      folderPath = '.';
+    } else if (await fs.exists(`${rootedPath}/metadata/manifest.json`)) {
       folderPath = rootedPath;
     } else {
       folderPath = canonicalPath;
@@ -991,7 +999,15 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
         }
         let declared: Record<string, string>;
         try {
-          declared = JSON.parse(await fs.readFileText(checksumsPath));
+          const parsed = JSON.parse(await fs.readFileText(checksumsPath)) as
+            | Record<string, unknown>
+            | Record<string, string>;
+          // Current snapshots wrap hashes in metadata alongside the files
+          // map; older local snapshots used the direct map format.
+          const files = (parsed as Record<string, unknown>).files;
+          declared = files && typeof files === 'object'
+            ? files as Record<string, string>
+            : parsed as Record<string, string>;
         } catch (err) {
           issues.push({
             severity: 'error',
@@ -1171,6 +1187,29 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
 
     const out: DiscoveredBusinessOnProvider[] = [];
     const seen = new Set<string>();
+
+    // Also accept selecting the extracted BusinessVault/<business> folder
+    // itself, where metadata/manifest.json is directly under the picked root.
+    if (await fs.exists('metadata/manifest.json')) {
+      try {
+        const manifest = JSON.parse(await fs.readFileText('metadata/manifest.json')) as Record<string, unknown>;
+        const nested = (manifest.userManifest ?? {}) as {
+          businessId?: unknown;
+          businessName?: unknown;
+        };
+        const name = String(manifest.businessName ?? nested.businessName ?? fs.rootLabel);
+        out.push({
+          businessId: String(manifest.businessId ?? nested.businessId ?? name),
+          businessName: name,
+          folderPath: '.',
+          manifest,
+        });
+        return out;
+      } catch {
+        // Continue with the standard parent/BusinessVault layouts below.
+      }
+    }
+
     for (const cand of candidates) {
       for (const e of cand.entries) {
         if (e.kind !== 'directory') continue;

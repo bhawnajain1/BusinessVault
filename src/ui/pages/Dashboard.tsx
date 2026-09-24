@@ -116,49 +116,55 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="mx-auto flex max-w-[1500px] flex-col gap-7 p-5 sm:p-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="dashboard-page">
+      <div className="dashboard-hero">
         <div>
-          <p className="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Overview</p>
-          <h1 className="text-3xl font-semibold tracking-tight text-slate-950">{greeting}, here is your business pulse.</h1>
-          <p className="mt-2 text-sm text-slate-500">Keep an eye on cash flow, open balances, and recent activity.</p>
+          <p className="dashboard-eyebrow">Overview</p>
+          <h1 className="dashboard-title">{greeting}, here is your business pulse.</h1>
+          <p className="dashboard-subtitle">Keep an eye on cash flow, open balances, and recent activity.</p>
         </div>
-        <Link to="/invoices/new" className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus-visible:outline-blue-600">
+        <Link to="/invoices/new" className="dashboard-primary-action">
           + New invoice
         </Link>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="dashboard-count-grid">
         <Card label="Invoices" value={stats?.invoices ?? '—'} to="/invoices" tone="blue" />
         <Card label="Customers" value={stats?.customers ?? '—'} to="/customers" tone="green" />
         <Card label="Suppliers" value={stats?.suppliers ?? '—'} to="/suppliers" tone="slate" />
         <Card label="Items" value={stats?.items ?? '—'} to="/items" tone="violet" />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className="dashboard-card rounded-2xl border border-slate-200/80 bg-white p-5">
-          <div className="text-sm text-slate-600">Outstanding receivables</div>
-          <div className="mt-1 text-2xl font-semibold text-slate-900">
+      <div className="dashboard-balance-grid">
+        <div className="dashboard-balance-card dashboard-balance-receivable">
+          <div className="dashboard-balance-icon" aria-hidden="true">▧</div>
+          <div>
+          <div className="dashboard-card-label">Outstanding receivables</div>
+          <div className="dashboard-balance-value">
             {stats ? <Money paise={stats.outstandingReceivablesPaise} /> : '—'}
           </div>
           <Link
             to="/invoices"
-            className="mt-2 inline-block text-sm text-blue-700 hover:underline"
+            className="dashboard-card-link"
           >
             View invoices →
           </Link>
+          </div>
         </div>
-        <div className="dashboard-card rounded-2xl border border-slate-200/80 bg-white p-5">
-          <div className="text-sm text-slate-600">Outstanding payables</div>
-          <div className="mt-1 text-2xl font-semibold text-slate-900">
+        <div className="dashboard-balance-card dashboard-balance-payable">
+          <div className="dashboard-balance-icon" aria-hidden="true">▧</div>
+          <div>
+          <div className="dashboard-card-label">Outstanding payables</div>
+          <div className="dashboard-balance-value">
             {stats ? <Money paise={stats.outstandingPayablesPaise} /> : '—'}
           </div>
           <Link
             to="/purchases"
-            className="mt-2 inline-block text-sm text-blue-700 hover:underline"
+            className="dashboard-card-link"
           >
             View purchases →
           </Link>
+          </div>
         </div>
       </div>
 
@@ -166,38 +172,38 @@ export default function Dashboard() {
 
       {stats && <FinancialOverview stats={stats} profitLoss={profitLoss ?? null} />}
 
-      <div className="dashboard-card overflow-hidden rounded-2xl border border-slate-200/80 bg-white">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-          <h2 className="text-sm font-semibold text-slate-700">Recent invoices</h2>
-           <Link to="/invoices/new" className="text-sm text-blue-700 hover:underline">
+      <div className="dashboard-recent-card">
+        <div className="dashboard-section-heading">
+          <h2>Recent invoices</h2>
+           <Link to="/invoices/new" className="dashboard-card-link">
             + New invoice
           </Link>
         </div>
         {stats && stats.recentInvoices.length === 0 ? (
           <div className="p-4 text-sm text-slate-500">No invoices yet.</div>
         ) : (
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate-600 border-b border-slate-100">
+           <table className="dashboard-recent-table">
+            <thead>
               <tr>
-                <th className="px-4 py-2">Number</th>
-                <th className="px-4 py-2">Date</th>
-                <th className="px-4 py-2">Customer</th>
-                <th className="px-4 py-2 text-right">Total</th>
-                <th className="px-4 py-2 text-right">Balance</th>
+                <th>Number</th>
+                <th>Date</th>
+                <th>Customer</th>
+                <th className="text-right">Total</th>
+                <th className="text-right">Balance</th>
               </tr>
             </thead>
             <tbody>
               {stats?.recentInvoices.map((r) => (
                 <tr key={r.id} className="border-b border-slate-50 last:border-0">
-                  <td className="px-4 py-2">
+                  <td>
                     <Link to={`/invoices/${r.id}`} className="text-blue-700 hover:underline">
                       {r.number}
                     </Link>
                   </td>
-                  <td className="px-4 py-2">{r.date}</td>
-                  <td className="px-4 py-2">{r.customerName}</td>
-                  <td className="px-4 py-2 text-right"><Money paise={r.total_paise} /></td>
-                  <td className="px-4 py-2 text-right"><Money paise={r.balance_paise} /></td>
+                  <td>{r.date}</td>
+                  <td>{r.customerName}</td>
+                  <td className="text-right"><Money paise={r.total_paise} /></td>
+                  <td className="text-right"><Money paise={r.balance_paise} /></td>
                 </tr>
               ))}
             </tbody>
@@ -205,19 +211,24 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        <Link to="/invoices/new" className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800">
-          New invoice
+      <div className="dashboard-quick-actions">
+        <h2>Quick actions</h2>
+        <div className="dashboard-quick-action-list">
+        <Link to="/invoices/new" className="dashboard-quick-action dashboard-quick-action-primary">
+          <span aria-hidden="true">+</span> New invoice
         </Link>
-        <Link to="/purchases" className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100">
-          New purchase
+        <Link to="/purchases" className="dashboard-quick-action">
+          <span aria-hidden="true">+</span> New purchase
         </Link>
-        <Link to="/reports" className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100">
+        <Link to="/reports" className="dashboard-quick-action">
+          <span aria-hidden="true">▥</span>
           Reports
         </Link>
-        <Link to="/settings/backup" className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100">
+        <Link to="/settings/backup" className="dashboard-quick-action">
+          <span aria-hidden="true">☁</span>
           Backup status
         </Link>
+        </div>
       </div>
     </div>
   );
@@ -245,7 +256,7 @@ function FinancialOverview({
   const balanceMax = Math.max(1, ...balanceRows.map((row) => row.value));
 
   return (
-    <section className="grid gap-5 lg:grid-cols-2" aria-label="Financial overview">
+    <section className="dashboard-financial-grid" aria-label="Financial overview">
       <DashboardChartCard
         title="Profit & Loss"
         description="Current financial year"
@@ -339,15 +350,15 @@ function DashboardChartCard({
   children: ReactNode;
 }) {
   return (
-    <section className="dashboard-card rounded-2xl border border-slate-200/80 bg-white p-5">
+    <section className="dashboard-panel">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-slate-900">{title}</h2>
-          <p className="mt-1 text-sm text-slate-500">{description}</p>
+          <h2 className="dashboard-panel-title">{title}</h2>
+          <p className="dashboard-panel-description">{description}</p>
         </div>
         <Link to={linkTo} className="action-link text-xs">{linkLabel}</Link>
       </div>
-      <div className="mt-6">{children}</div>
+      <div className="dashboard-panel-body">{children}</div>
     </section>
   );
 }
@@ -403,13 +414,15 @@ function Card({
   return (
     <Link
       to={to}
-      className="dashboard-card block rounded-2xl border border-slate-200/80 bg-white p-5"
+      className={`dashboard-count-card dashboard-count-card-${tone}`}
     >
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-sm font-medium text-slate-500">{label}</div>
-        <span className={`h-2.5 w-2.5 rounded-full ${tones[tone]}`} aria-hidden="true" />
+      <div className={`dashboard-count-icon ${tones[tone]}`} aria-hidden="true">
+        {tone === 'blue' ? '▤' : tone === 'green' ? '♧' : tone === 'violet' ? '▣' : '◇'}
       </div>
-      <div className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{value}</div>
+      <div>
+        <div className="dashboard-count-label">{label}</div>
+        <div className="dashboard-count-value">{value}</div>
+      </div>
     </Link>
   );
 }
@@ -426,16 +439,17 @@ function AnalyticsPanel({ stats }: { stats: DashboardStats }) {
   );
 
   return (
-    <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5" aria-labelledby="analytics-heading">
+    <section className="dashboard-pulse-grid" aria-labelledby="analytics-heading">
+      <div className="dashboard-panel dashboard-pulse-chart">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2 id="analytics-heading" className="text-base font-semibold text-slate-900">Business pulse</h2>
-          <p className="mt-1 text-sm text-slate-600">A quick view of sales, collections, and customer exposure.</p>
+          <h2 id="analytics-heading" className="dashboard-panel-title">Business pulse</h2>
+          <p className="dashboard-panel-description">A quick view of sales, collections, and customer exposure.</p>
         </div>
         <span className="text-xs text-slate-500">Last 6 months</span>
       </div>
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-[1.6fr_1fr]">
+      <div className="dashboard-pulse-chart-body">
         <div>
           <div className="mb-3 flex items-center gap-4 text-xs text-slate-600">
             <Legend color="bg-blue-600" label="Sales" />
@@ -454,10 +468,12 @@ function AnalyticsPanel({ stats }: { stats: DashboardStats }) {
           </div>
         </div>
 
-        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-1">
-          <BarList title="Payment mix" empty="No payments yet." rows={stats.analytics.paymentMix.map((row) => ({ label: row.method.toUpperCase(), value: row.amount_paise, max: mixMax }))} />
-          <BarList title="Top customer balances" empty="No outstanding balances." rows={stats.analytics.topCustomers.map((row) => ({ label: row.name, value: row.outstanding_paise, max: customerMax }))} />
-        </div>
+      </div>
+      </div>
+      <div className="dashboard-panel dashboard-cash-snapshot">
+        <h2 className="dashboard-panel-title">Cash snapshot</h2>
+        <BarList title="Payment mix" empty="No payments yet." rows={stats.analytics.paymentMix.map((row) => ({ label: row.method.toUpperCase(), value: row.amount_paise, max: mixMax }))} />
+        <BarList title="Top customer balances" empty="No outstanding balances." rows={stats.analytics.topCustomers.map((row) => ({ label: row.name, value: row.outstanding_paise, max: customerMax }))} />
       </div>
     </section>
   );

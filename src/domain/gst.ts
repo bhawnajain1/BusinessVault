@@ -109,10 +109,11 @@ export function roundOffToNearestRupee(totalPaise: number): {
   round_off_paise: number;
 } {
   if (!Number.isFinite(totalPaise)) throw new Error('roundOffToNearestRupee: non-finite');
-  const rupees = totalPaise / 100;
-  // Auto round-off is customer-facing total protection: keep exact whole
-  // rupee totals unchanged, otherwise always move up to the next rupee.
-  const rounded = Math.ceil(rupees - 1e-9) * 100;
+  const wholeRupees = Math.floor(totalPaise / 100);
+  const paise = totalPaise - wholeRupees * 100;
+  // Standard half-up rounding: 50 paise or more goes to the next rupee;
+  // anything below 50 paise goes down to the current rupee.
+  const rounded = (wholeRupees + (paise >= 50 ? 1 : 0)) * 100;
   return {
     final_paise: rounded,
     round_off_paise: rounded - totalPaise,

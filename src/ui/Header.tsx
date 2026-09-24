@@ -28,10 +28,10 @@ function buildFeedbackHref(): string {
 
 export default function Header() {
   return (
-    <header className="flex h-16 items-center justify-between border-b border-slate-200/80 bg-white/85 px-5 backdrop-blur-xl">
+    <header className="app-header flex h-16 items-center justify-between border-b border-slate-200/80 bg-white/85 px-5 backdrop-blur-xl">
       <Link
         to="/"
-        className="flex items-center gap-3 text-sm font-semibold tracking-tight text-slate-900 hover:text-blue-700"
+        className="app-header-brand flex items-center gap-3 text-sm font-semibold tracking-tight text-slate-900 hover:text-blue-700"
         aria-label="BusinessVault home"
       >
         <img

@@ -1,4 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  CheckCircle2,
+  CloudBackup,
+  Download,
+  ExternalLink,
+  ShieldCheck,
+  TriangleAlert,
+  Unplug,
+} from 'lucide-react';
 import { db } from '../../db';
 import { useBackupHealth } from '../BackupHealthContext';
 import type { BackupHealthStatus } from '../../sync/syncWorker';
@@ -6,8 +15,13 @@ import { getActiveProvider } from '../../sync/providerRegistry';
 import { enqueue } from '../../sync/syncQueue';
 import { buildSnapshotInput } from '../../sync/buildSnapshotInput';
 import { pokeSyncWorker } from '../../sync/syncWorker';
-import { adoptConnectedProvider, stopSyncWorker } from '../../sync/bootProvider';
-import { connectDrive } from '../../drive/connectDrive';
+import {
+  adoptConnectedProvider,
+  getBootState,
+  stopSyncWorker,
+  subscribeBoot,
+} from '../../sync/bootProvider';
+import { connectDrive, disconnectDrive } from '../../drive/connectDrive';
 import { buildDriveProvider } from '../onboarding/driveGlue';
 import { hasGoogleClientId } from '../../auth/gis';
 import { log } from '../../lib/log';
@@ -95,9 +109,17 @@ export function deriveDisplayStatus(
   return healthStatus;
 }
 
+export function shouldShowDisconnectedDuringBoot(
+  bootStatus: ReturnType<typeof getBootState>['status'],
+  hasProvider: boolean,
+): boolean {
+  if (hasProvider) return false;
+  return bootStatus !== 'idle' && bootStatus !== 'starting';
+}
+
 interface Props {
   businessId: string;
-  onReconnect?: () => void;
+  onReconnect?: () => void | Promise<void>;
 }
 
 export default function BackupSettings({ businessId, onReconnect }: Props) {
@@ -109,6 +131,38 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showExport, setShowExport] = useState(false);
+  const connectionReadRef = useRef(0);
+  const [bootStatus, setBootStatus] = useState(getBootState().status);
+  const [manuallyDisconnected, setManuallyDisconnected] = useState(false);
+
+  const readConnectionStatus = useCallback(async (): Promise<void> => {
+    const readId = ++connectionReadRef.current;
+    if (manuallyDisconnected) {
+      setConn({ state: 'DISCONNECTED' });
+      return;
+    }
+    const provider = getActiveProvider();
+    if (!provider) {
+      if (readId === connectionReadRef.current) {
+        setConn(
+          shouldShowDisconnectedDuringBoot(getBootState().status, false)
+            ? { state: 'DISCONNECTED' }
+            : null,
+        );
+      }
+      return;
+    }
+    try {
+      const next = await provider.connectionStatus();
+      // Reconnect can replace the provider while an older status read is
+      // still pending. Only the newest read may update the UI.
+      if (readId === connectionReadRef.current) setConn(next);
+    } catch (e) {
+      if (readId === connectionReadRef.current) {
+        setConn({ state: 'ERROR', error: (e as Error).message });
+      }
+    }
+  }, [manuallyDisconnected]);
 
   // Re-read the business row + provider connection status every 2s. A one-shot
   // read at mount would leave the DISCONNECTED banner stuck if the user
@@ -117,54 +171,12 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
   // BackupHealthContext pattern already used for `health` above.
   useEffect(() => {
     let cancelled = false;
-    let previousState: ConnectionStatus['state'] | 'no-provider' | null = null;
     log.debug('BackupSettings', 'mount: starting connection poll', { businessId });
     const readOnce = async (): Promise<void> => {
       const b = await db.businesses.get(businessId);
       if (cancelled) return;
       setBusiness(b ?? null);
-      const provider = getActiveProvider();
-      if (provider) {
-        try {
-          const c = await provider.connectionStatus();
-          if (!cancelled) {
-            setConn(c);
-            if (previousState !== c.state) {
-              log.info('BackupSettings', 'connectionStatus changed', {
-                businessId,
-                previous: previousState,
-                next: c.state,
-                account: c.account,
-              });
-              previousState = c.state;
-            }
-          }
-        } catch (e) {
-          if (!cancelled) {
-            const msg = (e as Error).message;
-            setConn({ state: 'ERROR', error: msg });
-            if (previousState !== 'ERROR') {
-              log.warn('BackupSettings', 'connectionStatus threw', {
-                businessId,
-                previous: previousState,
-                error: msg,
-              });
-              previousState = 'ERROR';
-            }
-          }
-        }
-      } else {
-        if (!cancelled) {
-          setConn({ state: 'DISCONNECTED' });
-          if (previousState !== 'no-provider') {
-            log.info('BackupSettings', 'no active provider', {
-              businessId,
-              previous: previousState,
-            });
-            previousState = 'no-provider';
-          }
-        }
-      }
+      await readConnectionStatus();
     };
     void readOnce();
     const id = setInterval(() => {
@@ -173,14 +185,32 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     return () => {
       cancelled = true;
       clearInterval(id);
+      connectionReadRef.current += 1;
       log.debug('BackupSettings', 'unmount: stopping connection poll', { businessId });
     };
-  }, [businessId]);
+  }, [businessId, readConnectionStatus]);
 
-  const status: BackupHealthStatus = useMemo(
-    () => deriveDisplayStatus(conn, health.status, integrity),
-    [conn, integrity, health.status],
-  );
+  useEffect(() => {
+    const unsubscribe = subscribeBoot((next) => {
+      setBootStatus(next.status);
+      void readConnectionStatus();
+    });
+    return unsubscribe;
+  }, [readConnectionStatus]);
+
+  const handleReconnect = useCallback(async (): Promise<void> => {
+    if (!onReconnect) return;
+    setManuallyDisconnected(false);
+    await onReconnect();
+    await readConnectionStatus();
+  }, [onReconnect, readConnectionStatus]);
+
+  const status: BackupHealthStatus = useMemo(() => {
+    const booting = !conn && (bootStatus === 'idle' || bootStatus === 'starting');
+    const healthStatus = booting && health.status === 'DISCONNECTED' ? 'HEALTHY' : health.status;
+    return deriveDisplayStatus(conn, healthStatus, integrity);
+  }, [bootStatus, conn, integrity, health.status]);
+  const connected = status !== 'DISCONNECTED' && status !== 'ERROR';
 
   const lastLoggedStatusRef = useRef<BackupHealthStatus | null>(null);
   useEffect(() => {
@@ -388,11 +418,16 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
     try {
       const provider = getActiveProvider();
       if (provider) await provider.disconnect();
+      await disconnectDrive(businessId);
+      stopSyncWorker();
       // Clear the connected email from the business row per §30 (local data stays).
       await db.businesses.update(businessId, {
         drive_connected_email: null,
         updated_at: new Date().toISOString(),
       });
+      const refreshed = await db.businesses.get(businessId);
+      if (refreshed) setBusiness(refreshed);
+      setManuallyDisconnected(true);
       setConn({ state: 'DISCONNECTED' });
       setMessage('Google Drive disconnected. Local data is intact.');
     } catch (e) {
@@ -405,36 +440,54 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
   const disconnected = status === 'DISCONNECTED';
 
   return (
-    <div className="space-y-6 p-6 max-w-3xl">
-      <h1 className="text-2xl font-semibold text-slate-900">Data & Backup</h1>
+    <div className="backup-settings-page">
+      <header className="backup-settings-header">
+        <div>
+          <p className="backup-settings-eyebrow">Settings</p>
+          <h1>Data &amp; Backup</h1>
+          <p className="backup-settings-intro">
+            Manage cloud backups, verify your data, and export a local copy.
+          </p>
+        </div>
+      </header>
 
       {disconnected && (
         <div
           role="status"
-          className="flex items-center justify-between gap-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900"
+          className="backup-settings-alert"
         >
           <div>
-            <div className="font-semibold">Google Drive backup disconnected.</div>
-            <div className="text-sm">
+            <div className="backup-settings-alert-title">Google Drive backup disconnected.</div>
+            <div className="backup-settings-alert-copy">
               Your business continues to work on this device. Reconnect to
               resume backups — pending events will upload automatically.
             </div>
           </div>
           <button
             type="button"
-            className="rounded-md bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700"
-            onClick={onReconnect}
+            className="backup-settings-alert-action"
+            onClick={() => void handleReconnect()}
           >
             Reconnect
           </button>
         </div>
       )}
 
-      <section className="rounded-lg border border-slate-200 bg-white">
-        <header className="border-b border-slate-100 px-5 py-3 font-semibold text-slate-900">
-          Google Drive
+      <section className="backup-settings-card">
+        <header className="backup-settings-card-header">
+          <div className="backup-settings-card-icon" aria-hidden="true">
+            <img src={`${import.meta.env.BASE_URL}icons/google-drive-logo.svg`} alt="" />
+          </div>
+          <div>
+            <h2>Google Drive</h2>
+            <p>Cloud backup storage</p>
+          </div>
+          <span className={`backup-settings-connected-pill ${connected ? '' : 'backup-settings-connected-pill-offline'}`}>
+            <span className="backup-settings-status-dot" aria-hidden="true" />
+            {connected ? 'Connected' : 'Disconnected'}
+          </span>
         </header>
-        <dl className="divide-y divide-slate-100">
+        <dl className="backup-settings-details">
           <Row label="Connected as" value={email} />
           <Row
             label="Business folder"
@@ -446,96 +499,123 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
                     href={DRIVE_FOLDER_URL(driveFolderId)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-sm text-blue-600 hover:underline"
+                    className="backup-settings-drive-link"
                   >
+                    <ExternalLink size={20} strokeWidth={2} aria-hidden="true" />
                     Open My Google Drive Folder
                   </a>
                 ) : null}
               </span>
             }
           />
-          <Row label="Last event sync" value={relativeTime(health.lastEventSyncAt)} />
-          <Row label="Last full backup" value={relativeTime(health.lastFullSnapshotAt)} />
-          <Row label="Pending" value={String(health.pending)} />
-          <Row label="Backup integrity" value={integrityLabel} />
-          <Row
-            label="Status"
-            value={
-              <span
-                className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ${STATUS_TONE[status]}`}
-              >
-                {status}
-              </span>
-            }
-          />
         </dl>
+        <dl className="backup-settings-metrics">
+          <Metric label="Last event sync" value={relativeTime(health.lastEventSyncAt)} />
+          <Metric label="Last full backup" value={relativeTime(health.lastFullSnapshotAt)} />
+          <Metric label="Pending" value={String(health.pending)} />
+          <Metric label="Backup integrity" value={integrityLabel} />
+        </dl>
+        <div className={`backup-settings-health ${STATUS_TONE[status]}`}>
+          <span className="backup-settings-health-icon" aria-hidden="true">
+            {status === 'HEALTHY' ? <CheckCircle2 size={20} strokeWidth={2} /> : <TriangleAlert size={20} strokeWidth={2} />}
+          </span>
+          <span className="backup-settings-health-label">Status</span>
+          <span className="backup-settings-health-value">{status}</span>
+          <span className="backup-settings-health-divider" aria-hidden="true" />
+          <span className="backup-settings-health-copy">
+            {status === 'HEALTHY' ? 'Google Drive connection is active.' : 'Google Drive needs attention.'}
+          </span>
+        </div>
       </section>
 
-      <div className="flex flex-wrap gap-3">
+      <section className="backup-settings-card backup-settings-action-card">
+        <header className="backup-settings-action-header">
+          <div className="backup-settings-action-icon" aria-hidden="true">
+            <CloudBackup size={32} strokeWidth={2} aria-hidden="true" />
+          </div>
+          <div>
+            <h2>Backup &amp; export</h2>
+            <p>Create, verify, or download a copy of your business data.</p>
+          </div>
+        </header>
+        <div className="backup-settings-actions">
         <button
           type="button"
           onClick={onBackupNow}
           disabled={!!busy || disconnected}
-          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+          className="backup-settings-button backup-settings-button-primary"
         >
+          <CloudBackup size={20} strokeWidth={2} aria-hidden="true" />
           {busy === 'backup' ? 'Backup in progress…' : 'Backup now'}
         </button>
         <button
           type="button"
           onClick={onVerifyNow}
           disabled={!!busy || disconnected}
-          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-900 hover:bg-slate-50 disabled:opacity-50"
+          className="backup-settings-button backup-settings-button-secondary"
         >
+          <ShieldCheck size={20} strokeWidth={2} aria-hidden="true" />
           {busy === 'verify' ? 'Verifying…' : 'Verify integrity now'}
         </button>
         <button
           type="button"
           onClick={() => setShowExport((v) => !v)}
-          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-900 hover:bg-slate-50"
+          className="backup-settings-button backup-settings-button-tertiary"
         >
+          <Download size={20} strokeWidth={2} aria-hidden="true" />
           Export My Business
         </button>
         {driveFolderId == null && (
-          <button
+            <button
             type="button"
             onClick={onSwitchToDrive}
             disabled={!!busy}
-            className="rounded-md border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-800 hover:bg-blue-100 disabled:opacity-50"
+            className="backup-settings-button backup-settings-button-secondary backup-settings-button-drive"
           >
             {busy === 'switch' ? 'Switching…' : 'Switch to Google Drive backup'}
           </button>
         )}
-        {!disconnected && driveFolderId != null && (
+        </div>
+      </section>
+
+      {!disconnected && driveFolderId != null && (
+        <section className="backup-settings-danger-zone">
+          <div>
+            <TriangleAlert size={24} strokeWidth={2} aria-hidden="true" />
+            <h2>Disconnect Google Drive</h2>
+            <p>Stops automatic Google Drive backups. Your existing Drive files will not be deleted.</p>
+          </div>
           <button
             type="button"
             onClick={onDisconnect}
             disabled={!!busy}
-            className="ml-auto rounded-md border border-rose-300 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+            className="backup-settings-button backup-settings-button-danger"
           >
+            <Unplug size={20} strokeWidth={2} aria-hidden="true" />
             {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect Google Drive'}
           </button>
-        )}
-      </div>
+        </section>
+      )}
 
       {message && (
-        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        <div className="backup-settings-feedback backup-settings-feedback-success">
           {message}
         </div>
       )}
       {error && (
-        <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+        <div className="backup-settings-feedback backup-settings-feedback-error">
           {error}
         </div>
       )}
 
       {showExport && (
-        <section className="rounded-lg border border-slate-200 bg-white p-5">
-          <DataExport businessId={businessId} />
-        </section>
+          <section className="backup-settings-card backup-settings-export-card">
+            <DataExport businessId={businessId} />
+          </section>
       )}
 
       {integrity && !integrity.ok && (
-        <section className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">
+        <section className="backup-settings-integrity-card">
           <div className="font-semibold">Integrity issues</div>
           <ul className="mt-2 list-disc space-y-1 pl-6">
             {integrity.issues.slice(0, 20).map((iss, i) => (
@@ -555,9 +635,18 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
 
 function Row({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="grid grid-cols-3 gap-4 px-5 py-3 text-sm">
-      <dt className="text-slate-500">{label}</dt>
-      <dd className="col-span-2 text-slate-900">{value}</dd>
+    <div className="backup-settings-detail-row">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="backup-settings-metric">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
     </div>
   );
 }

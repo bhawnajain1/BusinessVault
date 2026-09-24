@@ -15,7 +15,6 @@ export default function DataAndBackup() {
   const [loading, setLoading] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState<string | null>(null);
-  const [reconnectMessage, setReconnectMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,7 +36,6 @@ export default function DataAndBackup() {
 
   const onReconnect = useCallback(async (): Promise<void> => {
     setReconnectError(null);
-    setReconnectMessage(null);
     if (!businessId) {
       setReconnectError('No active business.');
       return;
@@ -59,7 +57,6 @@ export default function DataAndBackup() {
       const ok = await reconnectWithUserGesture();
       if (ok) {
         log.info('DataAndBackup', 'reconnect: success — provider adopted', { businessId });
-        setReconnectMessage('Reconnected. Sync will resume in the background.');
       } else {
         log.warn('DataAndBackup', 'reconnect: bootProvider reported failure', { businessId });
         setReconnectError(
@@ -98,11 +95,6 @@ export default function DataAndBackup() {
       {reconnectError && (
         <div className="mx-6 mt-6 rounded-md border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
           {reconnectError}
-        </div>
-      )}
-      {reconnectMessage && (
-        <div className="mx-6 mt-6 rounded-md border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-          {reconnectMessage}
         </div>
       )}
       <BackupSettings
