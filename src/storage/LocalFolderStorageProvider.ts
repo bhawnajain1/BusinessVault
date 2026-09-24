@@ -1003,6 +1003,9 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       const entries = await fs.list(kindDir);
       for (const e of entries) {
         if (e.kind !== 'directory') continue;
+        // Atomic snapshot writes use this directory temporarily. It is not a
+        // snapshot and must not be subject to snapshot checksum validation.
+        if (e.name === '.staging') continue;
         const snapDir = `${kindDir}/${e.name}`;
         const checksumsPath = `${snapDir}/checksums.json`;
         if (!(await fs.exists(checksumsPath))) {
@@ -1110,7 +1113,12 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       }
       const payloadHashes = new Set(allJournalEvents.map((event) => event.payload_hash));
       for (const event of allJournalEvents) {
-        if (event.previous_hash !== null && event.previous_hash !== GENESIS_HASH && !payloadHashes.has(event.previous_hash)) {
+        if (
+          event.previous_hash !== null &&
+          event.previous_hash !== 'genesis' &&
+          event.previous_hash !== GENESIS_HASH &&
+          !payloadHashes.has(event.previous_hash)
+        ) {
           issues.push({
             severity: 'error',
             code: 'BROKEN_JOURNAL_CHAIN',
