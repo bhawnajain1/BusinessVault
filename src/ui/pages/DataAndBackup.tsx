@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { currentBusinessId } from '../../lib/business';
 import BackupSettings from '../settings/BackupSettings';
 import { reconnectWithUserGesture } from '../../sync/bootProvider';
-import { hasGoogleClientId } from '../../auth/gis';
 import { log } from '../../lib/log';
 
 // Settings → Data & Backup (spec §3, §28). Under GIS, Reconnect is an inline
@@ -38,10 +37,6 @@ export default function DataAndBackup() {
     setReconnectError(null);
     if (!businessId) {
       setReconnectError('No active business.');
-      return;
-    }
-    if (!hasGoogleClientId()) {
-      setReconnectError('Google Drive is not configured. Set VITE_GOOGLE_CLIENT_ID and reload.');
       return;
     }
     setReconnecting(true);

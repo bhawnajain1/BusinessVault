@@ -460,6 +460,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
   }, [businessId]);
 
   const disconnected = status === 'DISCONNECTED';
+  const localFolderNeedsReconnect = driveFolderId == null && status === 'ERROR';
 
   return (
     <div className="backup-settings-page">
@@ -473,16 +474,19 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
         </div>
       </header>
 
-      {disconnected && (
+      {(disconnected || localFolderNeedsReconnect) && (
         <div
           role="status"
           className="backup-settings-alert"
         >
           <div>
-            <div className="backup-settings-alert-title">Google Drive backup disconnected.</div>
+            <div className="backup-settings-alert-title">
+              {driveFolderId == null ? 'Local backup folder needs to be reconnected.' : 'Google Drive backup disconnected.'}
+            </div>
             <div className="backup-settings-alert-copy">
-              Your business continues to work on this device. Reconnect to
-              resume backups — pending events will upload automatically.
+              {driveFolderId == null
+                ? 'The saved folder is no longer available. Choose the BusinessVault folder again to resume backups.'
+                : 'Your business continues to work on this device. Reconnect to resume backups — pending events will upload automatically.'}
             </div>
           </div>
           <button
@@ -490,7 +494,7 @@ export default function BackupSettings({ businessId, onReconnect }: Props) {
             className="backup-settings-alert-action"
             onClick={() => void handleReconnect()}
           >
-            Reconnect
+            {driveFolderId == null ? 'Choose local folder' : 'Reconnect'}
           </button>
         </div>
       )}
