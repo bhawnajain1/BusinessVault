@@ -950,10 +950,21 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
         const s = await fs.stat(`${snapDir}/${f.name}`);
         sizeBytes += s.size;
       }
-      // Verified iff checksums.json + manifest.json both present and all
-      // declared files exist. Deep check is verifyIntegrity's job.
-      if (await fs.exists(`${snapDir}/manifest.json`) && await fs.exists(`${snapDir}/checksums.json`)) {
-        verified = true;
+      // Google Drive snapshots contain checksums.json and the CSV payloads;
+      // their manifest is stored at business metadata/manifest.json rather
+      // than duplicated inside every snapshot folder. Match that layout here.
+      if (await fs.exists(`${snapDir}/checksums.json`)) {
+        try {
+          const parsed = JSON.parse(await fs.readFileText(`${snapDir}/checksums.json`)) as
+            | { files?: Record<string, string> }
+            | Record<string, string>;
+          const declared = 'files' in parsed && parsed.files ? parsed.files : parsed;
+          verified = Object.keys(declared).every((name) =>
+            files.some((file) => file.kind === 'file' && file.name === name),
+          );
+        } catch {
+          verified = false;
+        }
       }
       out.push({
         handle: {
