@@ -713,7 +713,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
         </div>
       </section>
 
-       {!disconnected && driveFolderId != null && (
+       {driveFolderId != null && (
          <section className="backup-settings-danger-zone">
           <div>
             <TriangleAlert size={24} strokeWidth={2} aria-hidden="true" />
