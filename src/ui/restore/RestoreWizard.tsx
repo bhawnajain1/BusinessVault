@@ -296,6 +296,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           gstReconciled: result.gstReconciled,
         });
         appendLog(`Restore complete. Events replayed: ${result.eventsReplayed}.`);
+        release();
         setReport(result);
         setStep('done');
         // Restore replaces IndexedDB rows underneath the mounted application.
