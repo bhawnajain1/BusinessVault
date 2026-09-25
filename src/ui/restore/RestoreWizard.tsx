@@ -42,6 +42,7 @@ interface RestoreWizardProps {
 
 const RESTORE_BUSINESS_ID = 'pending-onboarding';
 const RESTORE_SUCCESS_NOTICE_KEY = 'bv:restore-success-notice';
+const RESTORE_SUCCESS_REPORT_KEY = 'bv:restore-success-report';
 
 type DirHandle = FileSystemDirectoryHandle;
 function pickerAvailable(): boolean {
@@ -60,6 +61,17 @@ async function clearSavedHandle(): Promise<void> {
   });
 }
 
+function readStoredRestoreReport(): RestoreReport | null {
+  const stored = sessionStorage.getItem(RESTORE_SUCCESS_REPORT_KEY);
+  if (!stored) return null;
+  sessionStorage.removeItem(RESTORE_SUCCESS_REPORT_KEY);
+  try {
+    return JSON.parse(stored) as RestoreReport;
+  } catch {
+    return null;
+  }
+}
+
 export default function RestoreWizard(props: RestoreWizardProps) {
   const [providerKind, setProviderKind] = useState<ProviderKind>('local-folder');
   const [pickedHandle, setPickedHandle] = useState<DirHandle | null>(null);
@@ -70,14 +82,14 @@ export default function RestoreWizard(props: RestoreWizardProps) {
   const [connectedDriveProvider, setConnectedDriveProvider] =
     useState<CustomerStorageProvider | null>(null);
 
-  const [step, setStep] = useState<Step>('idle');
+  const [report, setReport] = useState<RestoreReport | null>(() => readStoredRestoreReport());
+  const [step, setStep] = useState<Step>(() => (report ? 'done' : 'idle'));
   const [statusMessage, setStatusMessage] = useState('');
   const [progressPct, setProgressPct] = useState(0);
   const [businesses, setBusinesses] = useState<DiscoveredBusiness[]>([]);
   const [pickerResolve, setPickerResolve] = useState<
     ((b: DiscoveredBusiness) => void) | null
   >(null);
-  const [report, setReport] = useState<RestoreReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [log2, setLog] = useState<string[]>([]);
   const [unshipped, setUnshipped] = useState<UnshippedEventsSummary | null>(null);
@@ -307,6 +319,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           RESTORE_SUCCESS_NOTICE_KEY,
           `Restore completed successfully for ${result.businessName}. ${result.eventsReplayed} event(s) replayed.`,
         );
+        sessionStorage.setItem(RESTORE_SUCCESS_REPORT_KEY, JSON.stringify(result));
         setReport(result);
         setStep('done');
         // Restore replaces IndexedDB rows underneath the mounted application.
