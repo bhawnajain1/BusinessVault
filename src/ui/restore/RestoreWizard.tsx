@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { db as defaultDb } from '../../db';
 import { LocalFolderStorageProvider } from '../../storage/LocalFolderStorageProvider';
 import { GoogleDriveStorageProvider } from '../../drive/GoogleDriveStorageProvider';
@@ -80,6 +80,15 @@ export default function RestoreWizard(props: RestoreWizardProps) {
 
   const db = props.db ?? defaultDb;
 
+  useEffect(() => {
+    log.info('restore-ui', 'restore view state changed', {
+      step,
+      hasReport: Boolean(report),
+      hasError: Boolean(error),
+      selectedFolderName: pickedName || null,
+    });
+  }, [step, report, error, pickedName]);
+
   const appendLog = useCallback((msg: string) => {
     setLog((l) => [...l, `[${new Date().toLocaleTimeString()}] ${msg}`]);
   }, []);
@@ -108,12 +117,15 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       const handle = await picker({ mode: 'readwrite' });
       setPickedHandle(handle);
       setPickedName(handle.name);
+      log.info('restore-ui', 'folder selected', { folderName: handle.name });
       appendLog(`Picked folder: ${handle.name}`);
     } catch (e) {
       const msg = (e as Error).message;
       if (msg.toLowerCase().includes('abort')) {
+        log.info('restore-ui', 'folder selection cancelled');
         appendLog('Folder selection cancelled.');
       } else {
+        log.error('restore-ui', 'folder selection failed', { error: msg });
         setError(`Folder picker failed: ${msg}`);
       }
     }
@@ -123,6 +135,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
     await clearSavedHandle();
     setPickedHandle(null);
     setPickedName('');
+    log.info('restore-ui', 'saved folder handle cleared');
     appendLog('Cleared saved folder handle.');
   }, [appendLog]);
 
@@ -154,10 +167,12 @@ export default function RestoreWizard(props: RestoreWizardProps) {
     async (confirmDataLoss: boolean) => {
       if (!providerConfig) return;
       if (providerKind === 'local-folder' && !pickedHandle) {
+        log.warn('restore-ui', 'restore blocked: no local folder selected');
         setError('Choose a folder first.');
         return;
       }
       if (providerKind === 'google-drive' && !driveConnectedEmail) {
+        log.warn('restore-ui', 'restore blocked: Google Drive not connected');
         setError('Connect Google Drive first.');
         return;
       }
@@ -179,6 +194,12 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       setProgressPct(0);
       setStatusMessage('Connecting...');
       if (!confirmDataLoss) setLog([]);
+      log.info('restore-ui', 'restore started', {
+        providerKind,
+        confirmDataLoss,
+        selectedFolderName: pickedHandle?.name ?? null,
+        injectedProvider: Boolean(props.provider),
+      });
       appendLog(confirmDataLoss ? 'Restore restarted with data-loss confirmed.' : 'Restore started.');
 
       let provider: CustomerStorageProvider | null = props.provider ?? null;
@@ -192,6 +213,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       }
 
       if (!provider) {
+        log.error('restore-ui', 'restore blocked: provider unavailable');
         release();
         setStep('error');
         setError('Provider is not available in this build.');
@@ -200,11 +222,16 @@ export default function RestoreWizard(props: RestoreWizardProps) {
 
       if (providerKind === 'local-folder' && pickedHandle) {
         (provider as LocalFolderStorageProvider).setDirectoryHandle(pickedHandle);
+        log.info('restore-ui', 'using selected folder handle', {
+          folderName: pickedHandle.name,
+        });
         appendLog(`Using handle: ${pickedHandle.name}`);
       }
 
       try {
+        log.info('restore-ui', 'stopping sync worker before restore');
         await stopSyncWorkerAsync();
+        log.info('restore-ui', 'calling rebuildFromDrive');
         const result = await rebuildFromDrive(provider, {
           db,
           providerConfig,
@@ -217,6 +244,10 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           },
           signal: abortController.signal,
           pickBusiness: async (ctx) => {
+            log.info('restore-ui', 'business picker opened', {
+              count: ctx.businesses.length,
+              businesses: ctx.businesses.map((b) => ({ name: b.businessName, path: b.folderPath })),
+            });
             appendLog(`Found ${ctx.businesses.length} businesses: ${ctx.businesses.map((b) => b.businessName).join(', ')}`);
             setBusinesses(ctx.businesses);
             setStep('picking');
@@ -235,29 +266,48 @@ export default function RestoreWizard(props: RestoreWizardProps) {
               abortController.signal.addEventListener('abort', onAbort, { once: true });
               setPickerResolve(() => (business: DiscoveredBusiness) => {
                 abortController.signal.removeEventListener('abort', onAbort);
+                log.info('restore-ui', 'business selected', {
+                  businessId: business.businessId,
+                  businessName: business.businessName,
+                  folderPath: business.folderPath,
+                });
                 resolve(business);
               });
             });
           },
         });
+        log.info('restore-ui', 'rebuildFromDrive resolved', {
+          businessName: result.businessName,
+          eventsReplayed: result.eventsReplayed,
+          unhandledEvents: result.unhandledEvents,
+          checksumsOk: result.checksumsOk,
+          accountingBalanced: result.accountingBalanced,
+          inventoryConsistent: result.inventoryConsistent,
+          gstReconciled: result.gstReconciled,
+        });
         appendLog(`Restore complete. Events replayed: ${result.eventsReplayed}.`);
         setReport(result);
         setStep('done');
-        // Restore replaces IndexedDB rows underneath the mounted application.
-        // Reload so list pages and cached live queries read the restored rows
-        // instead of retaining the pre-restore in-memory view.
         release();
-        window.setTimeout(() => window.location.reload(), 0);
+        log.info('restore-ui', 'success state scheduled for render');
       } catch (err) {
         release();
+        log.error('restore-ui', 'restore rejected', {
+          error: err instanceof Error ? err : String(err),
+        });
         await tryBootProvider().catch(() => false);
         if (err instanceof Error && err.name === 'AbortError') {
+          log.info('restore-ui', 'restore cancelled state scheduled');
           appendLog('Restore cancelled; local data was left unchanged.');
           setError(err.message);
           setStep('error');
           return;
         }
         if (err instanceof UnshippedEventsError) {
+          log.warn('restore-ui', 'restore requires data-loss confirmation', {
+            total: err.summary.total,
+            businessName: err.summary.businessName,
+          });
           appendLog(
             `Refused to overwrite: ${err.summary.total} unshipped event(s) on this device would be lost.`,
           );
@@ -266,6 +316,10 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           return;
         }
         if (err instanceof EmptyBackupError) {
+          log.warn('restore-ui', 'restore rejected: empty backup', {
+            businessName: err.businessName,
+            folderPath: err.folderPath,
+          });
           const msg =
             `This backup folder has no data for '${err.businessName}' — ` +
             `nothing to restore. If this is unexpected, check that ` +
@@ -278,6 +332,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           return;
         }
         const msg = (err as Error).message;
+        log.error('restore-ui', 'restore error state scheduled', { message: msg });
         appendLog(`Failed: ${msg}`);
         setError(
           msg ||
@@ -296,6 +351,11 @@ export default function RestoreWizard(props: RestoreWizardProps) {
     setUnshipped(null);
     appendLog('Restore cancelled. Local unshipped data preserved.');
   }, [appendLog]);
+
+  const onReloadRestoredData = useCallback(() => {
+    log.info('restore-ui', 'manual reload requested after restore');
+    window.location.reload();
+  }, []);
 
   const onPick = (b: DiscoveredBusiness) => {
     if (pickerResolve) {
@@ -633,6 +693,18 @@ export default function RestoreWizard(props: RestoreWizardProps) {
               {renderDiagnosticReport(report.diagnostics)}
             </pre>
           </details>
+          <div className="border-t pt-4 flex items-center justify-between gap-3">
+            <p className="text-sm text-emerald-700">
+              Restore succeeded. Reload to refresh all screens with the restored data.
+            </p>
+            <button
+              type="button"
+              onClick={onReloadRestoredData}
+              className="shrink-0 rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+            >
+              Reload restored data
+            </button>
+          </div>
         </section>
       )}
 
