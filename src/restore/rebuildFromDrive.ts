@@ -368,7 +368,7 @@ export async function rebuildFromDrive(
   });
   log.info('restore.journal.loaded', 'restore: journal events loaded', {
     businessId: selected.businessId,
-    eventCount: events.length,
+    eventCount: journalEvents.length,
     sinceEventId: sinceEventId ?? null,
   });
 
@@ -376,7 +376,7 @@ export async function rebuildFromDrive(
   // populated (e.g. business onboarded to Drive but the sync worker never
   // successfully flushed). Wiping local tables and reporting "Restore
   // complete ✓" against this is silent data-loss — refuse instead.
-  if (!snapshotIndex && events.length === 0) {
+  if (!snapshotIndex && journalEvents.length === 0) {
     throw new EmptyBackupError(
       selected.businessId,
       selected.businessName,
@@ -486,7 +486,7 @@ export async function rebuildFromDrive(
     }
     log.info('restore.replay.complete', 'restore: journal replay complete', {
       businessId: selected.businessId,
-      eventCount: events.length,
+      eventCount: journalEvents.length,
       replayed,
       unhandled,
       failed: diagnostics.length,
