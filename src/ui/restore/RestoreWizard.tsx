@@ -41,6 +41,7 @@ interface RestoreWizardProps {
 }
 
 const RESTORE_BUSINESS_ID = 'pending-onboarding';
+const RESTORE_SUCCESS_NOTICE_KEY = 'bv:restore-success-notice';
 
 type DirHandle = FileSystemDirectoryHandle;
 function pickerAvailable(): boolean {
@@ -80,6 +81,11 @@ export default function RestoreWizard(props: RestoreWizardProps) {
   const [error, setError] = useState<string | null>(null);
   const [log2, setLog] = useState<string[]>([]);
   const [unshipped, setUnshipped] = useState<UnshippedEventsSummary | null>(null);
+  const [successNotice, setSuccessNotice] = useState<string | null>(() => {
+    const notice = sessionStorage.getItem(RESTORE_SUCCESS_NOTICE_KEY);
+    if (notice) sessionStorage.removeItem(RESTORE_SUCCESS_NOTICE_KEY);
+    return notice;
+  });
 
   const db = props.db ?? defaultDb;
 
@@ -297,6 +303,10 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         });
         appendLog(`Restore complete. Events replayed: ${result.eventsReplayed}.`);
         release();
+        sessionStorage.setItem(
+          RESTORE_SUCCESS_NOTICE_KEY,
+          `Restore completed successfully for ${result.businessName}. ${result.eventsReplayed} event(s) replayed.`,
+        );
         setReport(result);
         setStep('done');
         // Restore replaces IndexedDB rows underneath the mounted application.
@@ -439,6 +449,15 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       <p className="text-slate-600">
         This rebuilds your local database from a customer-owned backup folder. Nothing on the backup is modified.
       </p>
+
+      {successNotice && (
+        <div
+          role="status"
+          className="rounded border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-800"
+        >
+          {successNotice}
+        </div>
+      )}
 
       {(step === 'idle' || step === 'error') && (
         <section className="border rounded-lg p-4 space-y-4 bg-white">
