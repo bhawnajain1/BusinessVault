@@ -352,6 +352,22 @@ export async function rebuildFromDrive(
       migrated: migratedFrom !== undefined,
     });
   } else {
+    const declaredSnapshot = manifest.currentSnapshot as
+      | { path?: unknown; kind?: unknown; asOf?: unknown }
+      | undefined;
+    // A manifest that names a current snapshot must never silently degrade to
+    // journal-only restore. That can produce a successful-looking partial
+    // restore when the folder handle points at stale or unrelated contents.
+    if (declaredSnapshot?.path || declaredSnapshot?.kind || declaredSnapshot?.asOf) {
+      log.error('restore.snapshot.missing', 'restore: declared snapshot is unavailable', {
+        businessId: selected.businessId,
+        declaredSnapshot,
+      });
+      throw new BackupIntegrityError(
+        'The backup declares a current snapshot, but no verified snapshot was found. Re-select the correct backup folder and try again.',
+        { businessId: selected.businessId, declaredSnapshot },
+      );
+    }
     log.warn('restore.snapshot.missing', 'restore: no verified snapshot found; journal replay only', {
       businessId: selected.businessId,
     });

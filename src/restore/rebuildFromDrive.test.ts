@@ -8,6 +8,7 @@ import type { SyncEvent } from '../storage/CustomerStorageProvider';
 import { BusinessVaultDB } from '../db/database';
 import {
   rebuildFromDrive,
+  BackupIntegrityError,
   EmptyBackupError,
   UnshippedEventsError,
   repairLegacyJournalHeaders,
@@ -1716,6 +1717,32 @@ describe('rebuildFromDrive', () => {
     expect(await db.customers.count()).toBe(1);
 
     await fs.rm(emptyRoot, { recursive: true, force: true });
+  });
+
+  it('refuses a journal-only restore when the manifest declares a missing snapshot', async () => {
+    const manifestPath = path.join(
+      root,
+      'BusinessVault/Acme Traders/metadata/manifest.json',
+    );
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+    manifest.currentSnapshot = {
+      kind: 'daily',
+      asOf: '2026-08-19',
+      path: 'snapshots/daily/2026-08-19',
+    };
+    await fs.writeFile(manifestPath, JSON.stringify(manifest));
+    await fs.rm(
+      path.join(root, 'BusinessVault/Acme Traders/snapshots/daily/2026-08-19'),
+      { recursive: true, force: true },
+    );
+
+    await expect(
+      rebuildFromDrive(provider, {
+        db,
+        providerConfig: { kind: 'local-folder', rootPath: root },
+      }),
+    ).rejects.toBeInstanceOf(BackupIntegrityError);
+    expect(await db.customers.count()).toBe(0);
   });
 
   it('aborts with "Backup integrity verification failed" on checksum mismatch', async () => {
