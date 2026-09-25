@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { db as defaultDb } from '../../db';
 import { LocalFolderStorageProvider } from '../../storage/LocalFolderStorageProvider';
 import { GoogleDriveStorageProvider } from '../../drive/GoogleDriveStorageProvider';
@@ -9,6 +9,7 @@ import type {
 import {
   rebuildFromDrive,
   renderDiagnosticReport,
+  BackupIntegrityError,
   EmptyBackupError,
   UnshippedEventsError,
   type DiscoveredBusiness,
@@ -65,6 +66,8 @@ export default function RestoreWizard(props: RestoreWizardProps) {
   const [driveConnecting, setDriveConnecting] = useState(false);
   const [driveConnectedEmail, setDriveConnectedEmail] = useState<string | null>(null);
   const [driveError, setDriveError] = useState<string | null>(null);
+  const [connectedDriveProvider, setConnectedDriveProvider] =
+    useState<CustomerStorageProvider | null>(null);
 
   const [step, setStep] = useState<Step>('idle');
   const [statusMessage, setStatusMessage] = useState('');
@@ -79,6 +82,15 @@ export default function RestoreWizard(props: RestoreWizardProps) {
   const [unshipped, setUnshipped] = useState<UnshippedEventsSummary | null>(null);
 
   const db = props.db ?? defaultDb;
+
+  useEffect(() => {
+    log.info('restore-ui', 'restore view state changed', {
+      step,
+      hasReport: Boolean(report),
+      hasError: Boolean(error),
+      selectedFolderName: pickedName || null,
+    });
+  }, [step, report, error, pickedName]);
 
   const appendLog = useCallback((msg: string) => {
     setLog((l) => [...l, `[${new Date().toLocaleTimeString()}] ${msg}`]);
@@ -108,12 +120,15 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       const handle = await picker({ mode: 'readwrite' });
       setPickedHandle(handle);
       setPickedName(handle.name);
+      log.info('restore-ui', 'folder selected', { folderName: handle.name });
       appendLog(`Picked folder: ${handle.name}`);
     } catch (e) {
       const msg = (e as Error).message;
       if (msg.toLowerCase().includes('abort')) {
+        log.info('restore-ui', 'folder selection cancelled');
         appendLog('Folder selection cancelled.');
       } else {
+        log.error('restore-ui', 'folder selection failed', { error: msg });
         setError(`Folder picker failed: ${msg}`);
       }
     }
@@ -123,6 +138,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
     await clearSavedHandle();
     setPickedHandle(null);
     setPickedName('');
+    log.info('restore-ui', 'saved folder handle cleared');
     appendLog('Cleared saved folder handle.');
   }, [appendLog]);
 
@@ -137,8 +153,16 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       log.info('restore', 'connecting Google Drive (GIS popup)');
       const result = await connectDrive({
         businessId: RESTORE_BUSINESS_ID,
-        prompt: 'select_account',
+        prompt: 'consent',
       });
+      const api = createDriveApiClient({ businessId: RESTORE_BUSINESS_ID });
+      const provider = new GoogleDriveStorageProvider({ driveApi: api });
+      await provider.connect({
+        kind: 'google-drive',
+        clientId: env.googleClientId,
+        scope: 'drive.file',
+      });
+      setConnectedDriveProvider(provider);
       setDriveConnectedEmail(result.identity.email);
       appendLog(`Google Drive connected as ${result.identity.email}.`);
     } catch (err) {
@@ -154,10 +178,12 @@ export default function RestoreWizard(props: RestoreWizardProps) {
     async (confirmDataLoss: boolean) => {
       if (!providerConfig) return;
       if (providerKind === 'local-folder' && !pickedHandle) {
+        log.warn('restore-ui', 'restore blocked: no local folder selected');
         setError('Choose a folder first.');
         return;
       }
       if (providerKind === 'google-drive' && !driveConnectedEmail) {
+        log.warn('restore-ui', 'restore blocked: Google Drive not connected');
         setError('Connect Google Drive first.');
         return;
       }
@@ -176,9 +202,19 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       setProgressPct(0);
       setStatusMessage('Connecting...');
       if (!confirmDataLoss) setLog([]);
+      log.info('restore-ui', 'restore started', {
+        providerKind,
+        confirmDataLoss,
+        selectedFolderName: pickedHandle?.name ?? null,
+        injectedProvider: Boolean(props.provider),
+      });
       appendLog(confirmDataLoss ? 'Restore restarted with data-loss confirmed.' : 'Restore started.');
 
-      let provider: CustomerStorageProvider | null = props.provider ?? null;
+      let provider: CustomerStorageProvider | null =
+        props.provider ?? (providerKind === 'google-drive' ? connectedDriveProvider : null);
+      const preConnectedProvider = provider === connectedDriveProvider && connectedDriveProvider
+        ? connectedDriveProvider
+        : undefined;
       if (!provider) {
         if (providerKind === 'local-folder') {
           provider = new LocalFolderStorageProvider();
@@ -197,6 +233,9 @@ export default function RestoreWizard(props: RestoreWizardProps) {
 
       if (providerKind === 'local-folder' && pickedHandle) {
         (provider as LocalFolderStorageProvider).setDirectoryHandle(pickedHandle);
+        log.info('restore-ui', 'using selected folder handle', {
+          folderName: pickedHandle.name,
+        });
         appendLog(`Using handle: ${pickedHandle.name}`);
       }
 
@@ -205,21 +244,56 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         const result = await rebuildFromDrive(provider, {
           db,
           providerConfig,
+          preConnectedProvider,
           confirmDataLoss,
           onProgress: (msg, pct) => {
             setStatusMessage(msg);
             appendLog(`Progress: ${msg}${pct != null ? ` (${pct}%)` : ''}`);
             if (pct != null) setProgressPct(pct);
+            updateAppOperation({ message: msg, progress: pct });
           },
           signal: abortController.signal,
           pickBusiness: async (ctx) => {
+            log.info('restore-ui', 'business picker opened', {
+              count: ctx.businesses.length,
+              businesses: ctx.businesses.map((b) => ({ name: b.businessName, path: b.folderPath })),
+            });
             appendLog(`Found ${ctx.businesses.length} businesses: ${ctx.businesses.map((b) => b.businessName).join(', ')}`);
             setBusinesses(ctx.businesses);
             setStep('picking');
-            return await new Promise<DiscoveredBusiness>((resolve) => {
-              setPickerResolve(() => resolve);
+            return await new Promise<DiscoveredBusiness>((resolve, reject) => {
+              const onAbort = (): void => {
+                abortController.signal.removeEventListener('abort', onAbort);
+                setPickerResolve(null);
+                const error = new Error('Restore cancelled; local data was left unchanged.');
+                error.name = 'AbortError';
+                reject(error);
+              };
+              if (abortController.signal.aborted) {
+                onAbort();
+                return;
+              }
+              abortController.signal.addEventListener('abort', onAbort, { once: true });
+              setPickerResolve(() => (business: DiscoveredBusiness) => {
+                abortController.signal.removeEventListener('abort', onAbort);
+                log.info('restore-ui', 'business selected', {
+                  businessId: business.businessId,
+                  businessName: business.businessName,
+                  folderPath: business.folderPath,
+                });
+                resolve(business);
+              });
             });
           },
+        });
+        log.info('restore-ui', 'rebuildFromDrive resolved', {
+          businessName: result.businessName,
+          eventsReplayed: result.eventsReplayed,
+          unhandledEvents: result.unhandledEvents,
+          checksumsOk: result.checksumsOk,
+          accountingBalanced: result.accountingBalanced,
+          inventoryConsistent: result.inventoryConsistent,
+          gstReconciled: result.gstReconciled,
         });
         appendLog(`Restore complete. Events replayed: ${result.eventsReplayed}.`);
         setReport(result);
@@ -238,6 +312,10 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           return;
         }
         if (err instanceof UnshippedEventsError) {
+          log.warn('restore-ui', 'restore requires data-loss confirmation', {
+            total: err.summary.total,
+            businessName: err.summary.businessName,
+          });
           appendLog(
             `Refused to overwrite: ${err.summary.total} unshipped event(s) on this device would be lost.`,
           );
@@ -246,6 +324,10 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           return;
         }
         if (err instanceof EmptyBackupError) {
+          log.warn('restore-ui', 'restore rejected: empty backup', {
+            businessName: err.businessName,
+            folderPath: err.folderPath,
+          });
           const msg =
             `This backup folder has no data for '${err.businessName}' — ` +
             `nothing to restore. If this is unexpected, check that ` +
@@ -257,13 +339,74 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           setStep('error');
           return;
         }
+        if (err instanceof BackupIntegrityError) {
+          const detail = err.detail as
+            | Array<{
+                code?: string;
+                message?: string;
+                path?: string;
+                detail?: unknown;
+              }>
+            | {
+                issues?: Array<{
+                  code?: string;
+                  message?: string;
+                  path?: string;
+                  detail?: unknown;
+                }>;
+              }
+            | null
+            | undefined;
+          // Initial integrity failures pass the provider's issue array
+          // directly; post-verification failures wrap issues in { issues }.
+          const issues = Array.isArray(detail)
+            ? detail
+            : Array.isArray(detail?.issues)
+              ? detail.issues
+              : [];
+          const issueText = issues
+            .slice(0, 5)
+            .map((issue) => {
+              const suffix =
+                typeof issue.detail === 'string'
+                  ? ` (${issue.detail})`
+                  : issue.detail && typeof issue.detail === 'object'
+                    ? ` (${Object.entries(issue.detail as Record<string, unknown>)
+                        .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+                        .join(', ')})`
+                    : '';
+              const path = issue.path ? ` [${issue.path}]` : '';
+              return `${issue.code ?? 'RESTORE_VALIDATION'}${path}: ${issue.message ?? 'validation failed'}${suffix}`;
+            })
+            .join('\n');
+          const msg = issueText
+            ? `${err.message}\n\n${issueText}`
+            : err.message;
+          appendLog(`Restore validation details:\n${issueText || 'No details returned.'}`);
+          setError(msg);
+          setStep('error');
+          return;
+        }
         const msg = (err as Error).message;
+        log.error('restore-ui', 'restore error state scheduled', { message: msg });
         appendLog(`Failed: ${msg}`);
-        setError(msg);
+        setError(
+          msg ||
+            'Restore failed during journal replay. Open the diagnostic log to identify the affected event.',
+        );
         setStep('error');
       }
     },
-    [db, providerConfig, providerKind, props.provider, pickedHandle, driveConnectedEmail, appendLog],
+    [
+      db,
+      providerConfig,
+      providerKind,
+      props.provider,
+      connectedDriveProvider,
+      pickedHandle,
+      driveConnectedEmail,
+      appendLog,
+    ],
   );
 
   const onStart = useCallback(() => runRestore(false), [runRestore]);
@@ -273,6 +416,11 @@ export default function RestoreWizard(props: RestoreWizardProps) {
     setUnshipped(null);
     appendLog('Restore cancelled. Local unshipped data preserved.');
   }, [appendLog]);
+
+  const onReloadRestoredData = useCallback(() => {
+    log.info('restore-ui', 'manual reload requested after restore');
+    window.location.reload();
+  }, []);
 
   const onPick = (b: DiscoveredBusiness) => {
     if (pickerResolve) {
@@ -513,7 +661,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
             <button
               type="button"
               onClick={onCancelDataLoss}
-              className="bg-slate-900 text-white rounded px-4 py-2 hover:bg-slate-800"
+              className="action-cancel text-sm font-semibold"
             >
               Cancel restore (keep local data)
             </button>
@@ -549,7 +697,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
                 </div>
                 <button
                   type="button"
-                  className="border rounded px-3 py-1 hover:bg-slate-50"
+                  className="action-restore text-sm font-semibold"
                   onClick={() => onPick(b)}
                 >
                   Restore this
@@ -610,6 +758,18 @@ export default function RestoreWizard(props: RestoreWizardProps) {
               {renderDiagnosticReport(report.diagnostics)}
             </pre>
           </details>
+          <div className="border-t pt-4 flex items-center justify-between gap-3">
+            <p className="text-sm text-emerald-700">
+              Restore succeeded. Reload to refresh all screens with the restored data.
+            </p>
+            <button
+              type="button"
+              onClick={onReloadRestoredData}
+              className="shrink-0 rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+            >
+              Reload restored data
+            </button>
+          </div>
         </section>
       )}
 

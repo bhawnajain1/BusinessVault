@@ -25,7 +25,7 @@ export default function StepConnecting({
       </div>
 
       <h1 className="mt-6 text-xl font-semibold text-slate-900">
-        {error ? 'Setup failed' : `Creating BusinessVault/${businessName}/ in your Google Drive...`}
+        {error ? 'Setup failed' : `Creating BusinessVault - ${businessName}/ in your Google Drive...`}
       </h1>
       <p className="mt-2 text-sm text-slate-600">{status}</p>
 

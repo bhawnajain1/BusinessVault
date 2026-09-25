@@ -6,6 +6,7 @@ import { InvoiceService } from '../../domain/InvoiceService';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import Money from '../components/Money';
 import StatusBadge from '../components/StatusBadge';
+import DataTable, { type ColumnDef } from '../components/DataTable';
 
 export default function DeletedInvoicesPage() {
   const { businessId, loading } = useActiveBusiness();
@@ -49,6 +50,73 @@ export default function DeletedInvoicesPage() {
     }
   }
 
+  async function permanentlyDelete(inv: Invoice) {
+    const confirmed = window.confirm(
+      `Permanently delete invoice ${inv.invoice_number}?\n\nThis also deletes payments and advances linked only to this invoice. This cannot be undone. Accounting and audit history will be preserved.`,
+    );
+    if (!confirmed) return;
+
+    setBusyId(inv.id);
+    setError(null);
+    try {
+      const svc = new InvoiceService();
+      await svc.permanentlyDeleteInvoice(inv.id);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const fetchPage = useCallback(async ({ search }: { offset: number; limit: number; search: string; filters: Record<string, string> }) => {
+    const needle = search.toLowerCase();
+    const filtered = needle
+      ? rows.filter((invoice) => {
+          const customer = customerById.get(invoice.customer_id)?.name ?? invoice.customer_id;
+          return [invoice.invoice_number, invoice.invoice_date, customer, invoice.status, invoice.deleted_at, invoice.deleted_reason]
+            .some((value) => String(value ?? '').toLowerCase().includes(needle));
+        })
+      : rows;
+    return { rows: filtered, total: filtered.length };
+  }, [customerById, rows]);
+
+  const columns: ColumnDef<Invoice>[] = [
+    {
+      key: 'invoice_number',
+      header: 'Invoice #',
+      sortValue: (r) => r.invoice_number,
+      render: (r) => <Link to={`/invoices/${r.id}`} className="text-blue-700 hover:underline">{r.invoice_number}</Link>,
+    },
+    { key: 'invoice_date', header: 'Date', sortValue: (r) => r.invoice_date, render: (r) => r.invoice_date },
+    {
+      key: 'customer',
+      header: 'Customer',
+      sortValue: (r) => customerById.get(r.customer_id)?.name ?? r.customer_id,
+      render: (r) => customerById.get(r.customer_id)?.name ?? r.customer_id,
+    },
+    { key: 'total', header: 'Total', className: 'text-right', sortValue: (r) => r.total_paise, render: (r) => <Money paise={r.total_paise} /> },
+    { key: 'status', header: 'Status', sortValue: (r) => r.status, render: (r) => <StatusBadge status={r.status} /> },
+    { key: 'deleted', header: 'Deleted', sortValue: (r) => r.deleted_at ?? '', render: (r) => r.deleted_at?.slice(0, 10) ?? '' },
+    { key: 'reason', header: 'Reason', sortValue: (r) => r.deleted_reason ?? '', render: (r) => r.deleted_reason ?? '' },
+    {
+      key: 'actions',
+      header: 'Actions',
+      className: 'text-right',
+      sortable: false,
+      render: (r) => (
+        <div className="flex items-center justify-end gap-3">
+          <button type="button" onClick={() => restore(r)} disabled={busyId === r.id} className="action-restore text-xs disabled:opacity-50">
+            {busyId === r.id ? 'Working...' : 'Restore'}
+          </button>
+          <button type="button" onClick={() => permanentlyDelete(r)} disabled={busyId === r.id} className="action-delete text-xs disabled:opacity-50">
+            Delete permanently
+          </button>
+        </div>
+      ),
+    },
+  ];
+
   if (loading) return <div className="p-6 text-slate-500">Loading...</div>;
   if (!businessId) {
     return (
@@ -72,71 +140,20 @@ export default function DeletedInvoicesPage() {
         </span>
       </div>
 
-      {error && <div className="text-sm text-rose-600">{error}</div>}
-
-      {rows.length === 0 ? (
-        <div className="text-sm text-slate-500 border border-dashed border-slate-300 rounded p-8 text-center">
-          No deleted invoices. Items you delete from the Invoices list appear here
-          and can be restored.
-        </div>
-      ) : (
-        <div className="border border-slate-200 rounded overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>
-                <th className="text-left px-3 py-2">Invoice #</th>
-                <th className="text-left px-3 py-2">Date</th>
-                <th className="text-left px-3 py-2">Customer</th>
-                <th className="text-right px-3 py-2">Total</th>
-                <th className="text-left px-3 py-2">Status</th>
-                <th className="text-left px-3 py-2">Deleted</th>
-                <th className="text-left px-3 py-2">Reason</th>
-                <th className="text-right px-3 py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-t border-slate-100">
-                  <td className="px-3 py-2">
-                    <Link
-                      to={`/invoices/${r.id}`}
-                      className="text-blue-700 hover:underline"
-                    >
-                      {r.invoice_number}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-2">{r.invoice_date}</td>
-                  <td className="px-3 py-2">
-                    {customerById.get(r.customer_id)?.name ?? r.customer_id}
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <Money paise={r.total_paise} />
-                  </td>
-                  <td className="px-3 py-2">
-                    <StatusBadge status={r.status} />
-                  </td>
-                  <td className="px-3 py-2 text-slate-600">
-                    {r.deleted_at?.slice(0, 10) ?? ''}
-                  </td>
-                  <td className="px-3 py-2 text-slate-600">
-                    {r.deleted_reason ?? ''}
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => restore(r)}
-                      disabled={busyId === r.id}
-                      className="text-xs bg-slate-900 text-white rounded px-2.5 py-1 hover:bg-slate-800 disabled:opacity-50"
-                    >
-                      {busyId === r.id ? 'Restoring...' : 'Restore'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {error && (
+        <div role="alert" className="text-sm text-rose-600">
+          {error}
         </div>
       )}
+
+      <DataTable
+        columns={columns}
+        fetchPage={fetchPage}
+        fetchPageDeps={[rows, customerById, busyId]}
+        rowKey={(row) => row.id}
+        searchPlaceholder="Search deleted invoices..."
+        emptyMessage="No deleted invoices. Items deleted from the Invoices list appear here and can be restored."
+      />
     </div>
   );
 }

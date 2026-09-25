@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 12;
 
 export const DB_NAME = 'businessvault';
 
@@ -104,4 +104,85 @@ export const STORES_V4: Record<string, string> = {
   ...STORES_V3,
   invoices:
     'id, business_id, [business_id+invoice_number], [business_id+customer_id], [business_id+invoice_date], [business_id+status], [business_id+financial_year], [business_id+deleted_at], updated_at',
+};
+
+// v5: Sales Return domain, per SellReturnRequirement.md. Native sales returns
+// live in their own tables — NOT as a reversal Invoice row — so invoice edits
+// (which still write a reversal Invoice for journal integrity) can never leak
+// into the Sales Return UI or reports.
+//
+//   sales_returns              — one row per user-initiated Sales Return.
+//   sales_return_items         — one row per returned line (qty > 0).
+//   invoice_line_return_summary — cache: sum(active return qty) per invoice
+//                                 line. Authoritative source is still
+//                                 sales_return_items; rebuildable via
+//                                 rebuildInvoiceLineReturnSummary().
+//   legacy_reversal_audit      — one row per pre-v5 Invoice row whose
+//                                 reverses_invoice_id != null, recording the
+//                                 conservative migration classification
+//                                 (SALES_RETURN | SALES_RETURN_UNRECONSTRUCTABLE
+//                                 | EDIT_REVERSAL | UNKNOWN). Never guesses;
+//                                 preserves originals; idempotent.
+export const STORES_V5: Record<string, string> = {
+  ...STORES_V4,
+  sales_returns:
+    'id, business_id, [business_id+return_number], [business_id+original_invoice_id], [business_id+return_date], [business_id+customer_id], [business_id+status], [business_id+legacy_migration_classification], [business_id+deleted_at], updated_at',
+  sales_return_items:
+    'id, business_id, sales_return_id, original_invoice_id, original_invoice_line_id, [business_id+sales_return_id], [business_id+original_invoice_line_id], [business_id+original_invoice_id]',
+  invoice_line_return_summary:
+    '&invoice_line_id, business_id, invoice_id, [business_id+invoice_id]',
+  legacy_reversal_audit:
+    '&credit_note_invoice_id, business_id, [business_id+classification], [business_id+original_invoice_id], examined_at',
+};
+
+// v6: adds Round Off treatment fields (round_off_mode, pre_round_total_paise)
+// to invoices, purchases, and sales_returns. No new indexes required; the
+// fields are read-only sidecars for reporting + UI. Backfill happens in
+// database.ts .version(6).upgrade(): existing rows get round_off_mode='auto'
+// and pre_round_total_paise = total_paise - round_off_paise, which is
+// definitionally consistent with the existing header math.
+export const STORES_V6: Record<string, string> = {
+  ...STORES_V5,
+};
+
+// v7: feedback §9 Recycle Bin accounting fix. Adds
+// `deletion_reversal_journal_id` on invoices — the id of the mirror journal
+// entry posted when the invoice is soft-deleted (so the recycled invoice no
+// longer contributes to TB/P&L/BS/GST/party ledgers). No new index needed;
+// the field is only consulted from restoreInvoice for the specific row. Any
+// pre-v7 soft-deleted invoices are backfilled at upgrade time by posting a
+// deletion reversal for each one.
+export const STORES_V7: Record<string, string> = {
+  ...STORES_V6,
+};
+
+// v8: feedback §2 Authorised Signature. Adds two sidecar fields on
+// businesses (`signature_ref`, `show_signature_on_invoice`) and one on
+// invoices (`signature_attachment_id`). No new indexes needed — the fields
+// are read as sidecars off the row already in hand. Existing rows are
+// backfilled with null / 0 defaults on upgrade.
+export const STORES_V8: Record<string, string> = {
+  ...STORES_V7,
+};
+
+export const STORES_V9: Record<string, string> = {
+  ...STORES_V8,
+};
+
+// v10: persist payment request identities so retries can be distinguished from
+// accidental reuse of a human-facing payment number.
+export const STORES_V10: Record<string, string> = {
+  ...STORES_V9,
+  payments:
+    'id, business_id, [business_id+payment_number], [business_id+idempotency_key], [business_id+party_type+party_id], [business_id+payment_date], [business_id+direction], updated_at',
+};
+
+export const STORES_V11: Record<string, string> = {
+  ...STORES_V10,
+};
+
+export const STORES_V12: Record<string, string> = {
+  ...STORES_V11,
+  customer_item_prices:
+    'id, business_id, [business_id+customer_id], [business_id+item_id], [business_id+customer_id+item_id], updated_at',
 };

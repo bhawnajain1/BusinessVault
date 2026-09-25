@@ -34,6 +34,12 @@ let state: BootState = { status: 'idle', error: null, health: null, kind: null }
 let activeBusinessIdBound: string | null = null;
 const listeners = new Set<Listener>();
 let workerHandle: StopHandle | null = null;
+let bootGeneration = 0;
+let autoBootSuppressed = false;
+
+function bootIsCurrent(generation: number): boolean {
+  return generation === bootGeneration;
+}
 
 function emit(patch: Partial<BootState>): void {
   state = { ...state, ...patch };
@@ -91,8 +97,14 @@ function pickKind(business: Business): BootKind {
  *  a user gesture, so on any credential gap we emit `needs-permission` /
  *  `no-folder` and let the banner offer Reconnect. */
 export async function tryBootProvider(): Promise<boolean> {
+  if (autoBootSuppressed) {
+    log.info('boot', 'automatic provider boot suppressed');
+    return false;
+  }
   if (workerHandle) return true;
+  const generation = bootGeneration;
   const business = await getActiveBusiness();
+  if (!bootIsCurrent(generation)) return false;
   if (!business) {
     emit({ status: 'idle', error: null, kind: null });
     return true;
@@ -100,12 +112,13 @@ export async function tryBootProvider(): Promise<boolean> {
   const kind = pickKind(business);
   log.info('boot', 'trying provider', { business: business.name, kind });
   return kind === 'google-drive'
-    ? tryBootDrive(business)
-    : tryBootLocalFolder(business);
+    ? tryBootDrive(business, generation)
+    : tryBootLocalFolder(business, generation);
 }
 
-async function tryBootLocalFolder(business: Business): Promise<boolean> {
+async function tryBootLocalFolder(business: Business, generation: number): Promise<boolean> {
   const saved = await peekSavedHandle();
+  if (!bootIsCurrent(generation)) return false;
   if (!saved) {
     log.info('boot', 'no saved folder handle — awaiting user reconnect');
     emit({ status: 'no-folder', error: null, kind: 'local-folder' });
@@ -113,21 +126,23 @@ async function tryBootLocalFolder(business: Business): Promise<boolean> {
   }
 
   const perm = await queryHandlePermission(saved);
+  if (!bootIsCurrent(generation)) return false;
   if (perm !== 'granted') {
     log.info('boot', 'saved handle needs permission grant', { perm });
     emit({ status: 'needs-permission', error: null, kind: 'local-folder' });
     return false;
   }
 
-  return await bootWithHandle(saved, business);
+  return await bootWithHandle(saved, business, generation);
 }
 
-async function tryBootDrive(business: Business): Promise<boolean> {
+async function tryBootDrive(business: Business, generation: number): Promise<boolean> {
   // Cheap "have we ever connected?" gate. If tokens are stale but present,
   // the DriveApiClient's silent refresh handles it inside connect() below;
   // if refresh fails we surface needs-permission for the banner.
   const { isDriveConnected } = await import('../drive/connectDrive');
   const connected = await isDriveConnected(business.id).catch(() => false);
+  if (!bootIsCurrent(generation)) return false;
   if (!connected) {
     log.info('boot', 'drive not connected — awaiting user reconnect', {
       business: business.id,
@@ -144,6 +159,7 @@ async function tryBootDrive(business: Business): Promise<boolean> {
       businessId: business.id,
       businessName: business.name,
     });
+    if (!bootIsCurrent(generation)) return false;
     activeBusinessIdBound = business.id;
     setActiveProvider(provider);
     installWorker(startSyncWorker({
@@ -174,7 +190,10 @@ async function tryBootDrive(business: Business): Promise<boolean> {
  *  showDirectoryPicker (no saved handle) or requestPermission (saved handle,
  *  permission expired) can succeed. For Drive-backed businesses this opens
  *  the GIS popup instead. */
-export async function reconnectWithUserGesture(): Promise<boolean> {
+export async function reconnectWithUserGesture(
+  selectedLocalHandle?: FileSystemDirectoryHandle,
+): Promise<boolean> {
+  autoBootSuppressed = false;
   // If a worker is already running but the user is clicking Reconnect, it's
   // because sync is failing (e.g. businessId mismatch after creating a new
   // business, or a stale handle mid-session). Clear the provider + binding
@@ -233,6 +252,7 @@ export async function reconnectWithUserGesture(): Promise<boolean> {
 
   const provider = new LocalFolderStorageProvider();
   try {
+    if (selectedLocalHandle) provider.setDirectoryHandle(selectedLocalHandle);
     // connect() handles: (a) prompt via showDirectoryPicker if no saved
     // handle, or (b) requestPermission on the saved handle. Both require a
     // user gesture, which is why this function is only called from onClick.
@@ -266,6 +286,7 @@ export async function reconnectWithUserGesture(): Promise<boolean> {
 async function bootWithHandle(
   handle: FileSystemDirectoryHandle,
   business: Business,
+  generation = bootGeneration,
 ): Promise<boolean> {
   emit({ status: 'starting', error: null, kind: 'local-folder' });
   const provider = new LocalFolderStorageProvider();
@@ -276,6 +297,7 @@ async function bootWithHandle(
       businessId: business.id,
       businessName: business.name,
     });
+    if (!bootIsCurrent(generation)) return false;
     activeBusinessIdBound = business.id;
     setActiveProvider(provider);
     installWorker(startSyncWorker({
@@ -327,6 +349,7 @@ export function adoptConnectedProvider(
 }
 
 export function stopSyncWorker(): void {
+  bootGeneration += 1;
   if (workerHandle) {
     workerHandle.stop();
     workerHandle = null;

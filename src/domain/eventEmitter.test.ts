@@ -32,6 +32,8 @@ function makeInvoice(id: string, version = 1): Invoice {
     igst_paise: 0,
     cess_paise: 0,
     round_off_paise: 0,
+    round_off_mode: 'none',
+    pre_round_total_paise: 11800,
     total_paise: 11800,
     paid_paise: 0,
     balance_paise: 11800,

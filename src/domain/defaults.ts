@@ -4,6 +4,23 @@ import type { Category, Unit, Warehouse } from '../db/types';
 import { appendSyncEvent } from './syncEventLog';
 import { getDeviceId } from '../lib/device';
 
+export const DEFAULT_INVOICE_TERMS = `Thank you for your business.
+Payment is due within 15 days of the invoice date. Please include the invoice number with your payment. Any invoice discrepancy should be reported within 7 days. Taxes and TDS will apply as required by law. Returns or cancellations are subject to our agreed policy. `;
+
+const LEGACY_DEFAULT_INVOICE_TERMS = 'All bills should be cleared within 15 days.';
+const PREVIOUS_DEFAULT_INVOICE_TERMS = DEFAULT_INVOICE_TERMS.replace(
+  'business.\n',
+  'business.\n\n',
+);
+
+export function resolveDefaultInvoiceTerms(value: string | null | undefined): string {
+  return !value ||
+    value === LEGACY_DEFAULT_INVOICE_TERMS ||
+    value === PREVIOUS_DEFAULT_INVOICE_TERMS
+    ? DEFAULT_INVOICE_TERMS
+    : value;
+}
+
 const DEFAULT_UNITS: ReadonlyArray<{ code: string; name: string; decimal_places: number }> = [
   { code: 'PCS', name: 'Pieces', decimal_places: 0 },
   { code: 'BOX', name: 'Box', decimal_places: 0 },

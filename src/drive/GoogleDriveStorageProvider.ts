@@ -147,7 +147,8 @@ export interface DriveApiClient {
 // Constants
 // ---------------------------------------------------------------------------
 
-const ROOT_FOLDER_NAME = 'BusinessVault';
+const FOLDER_PREFIX = 'BusinessVault - ';
+const LEGACY_ROOT_FOLDER_NAME = 'BusinessVault';
 
 /** Files under current/ whose external edits must never be auto-imported. */
 const FINANCIALLY_DANGEROUS_FILES = new Set<string>([
@@ -308,7 +309,7 @@ function classifyExternalChange(
 
 interface BusinessRoot {
   businessName: string;
-  folderPath: string;         // 'BusinessVault/<name>'
+  folderPath: string;         // 'BusinessVault - <name>'
   providerFolderId: string;   // Drive folder id for the business
   vaultRootId: string;        // Drive folder id for BusinessVault
 }
@@ -327,6 +328,7 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
   private folderIdCache = new Map<string, string>();
   /** Cache of "path relative to business root" → Drive file ref (spec §12, §20). */
   private fileRefCache = new Map<string, DriveFileRef>();
+  private journalWriteTail: Promise<void> = Promise.resolve();
   /** Cursor for changes API. */
   private changesToken: string | null = null;
 
@@ -390,16 +392,33 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
     if (!safeName) throw new Error('businessName is required');
 
     const root = await this.api.rootFolderId();
-    const vault = await this.api.ensureFolder(root, ROOT_FOLDER_NAME);
-    const bizExisting = await this.api.findChildByName(vault.id, safeName);
-    const biz = bizExisting ?? (await this.api.ensureFolder(vault.id, safeName));
+    const folderName = `${FOLDER_PREFIX}${safeName}`;
+    let bizExisting = await this.api.findChildByName(root, folderName);
+    let parentId = root;
+    let selectedFolderPath = folderName;
+
+    // Preserve the location of legacy backups when restore re-binds the
+    // provider after discovery. New businesses still use the prefixed root
+    // folder above.
+    if (!bizExisting) {
+      const legacyVault = await this.api.findChildByName(root, LEGACY_ROOT_FOLDER_NAME);
+      if (legacyVault && legacyVault.mimeType === MIME_FOLDER) {
+        const legacyBusiness = await this.api.findChildByName(legacyVault.id, safeName);
+        if (legacyBusiness && legacyBusiness.mimeType === MIME_FOLDER) {
+          bizExisting = legacyBusiness;
+          parentId = legacyVault.id;
+          selectedFolderPath = `${LEGACY_ROOT_FOLDER_NAME}/${safeName}`;
+        }
+      }
+    }
+    const biz = bizExisting ?? (await this.api.ensureFolder(parentId, folderName));
     const reused = bizExisting !== null;
 
     this.business = {
       businessName: safeName,
-      folderPath: `${ROOT_FOLDER_NAME}/${safeName}`,
+      folderPath: selectedFolderPath,
       providerFolderId: biz.id,
-      vaultRootId: vault.id,
+      vaultRootId: root,
     };
     this.folderIdCache.clear();
     this.fileRefCache.clear();
@@ -477,19 +496,29 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
     };
   }
 
-  // Enumerate every business folder under BusinessVault/ on Drive. Reads
-  // each candidate's metadata/manifest.json inline so the caller doesn't
-  // need a second round-trip. Called by the Restore flow — without this,
-  // Restore has nothing to pick from.
+  // Enumerate new BusinessVault - <name>/ folders and legacy
+  // BusinessVault/<name>/ folders on Drive. Multiple results are returned so
+  // Restore can ask the user which one to use.
   async listBusinesses(): Promise<DiscoveredBusinessOnProvider[]> {
     if (!this.connected) throw new Error('provider not connected');
     const root = await this.api.rootFolderId();
-    const vault = await this.api.findChildByName(root, ROOT_FOLDER_NAME);
-    if (!vault || vault.mimeType !== MIME_FOLDER) return [];
-    const children = await this.api.listChildren(vault.id);
+    const rootChildren = await this.api.listChildren(root);
+    const candidates: Array<{ ref: DriveFileRef; path: string }> = rootChildren
+      .filter((c) => c.mimeType === MIME_FOLDER && c.name.startsWith(FOLDER_PREFIX))
+      .map((ref) => ({ ref, path: ref.name }));
+    const legacyVault = rootChildren.find(
+      (c) => c.mimeType === MIME_FOLDER && c.name === LEGACY_ROOT_FOLDER_NAME,
+    );
+    if (legacyVault) {
+      candidates.push(
+        ...(await this.api.listChildren(legacyVault.id))
+          .filter((ref) => ref.mimeType === MIME_FOLDER)
+          .map((ref) => ({ ref, path: `${LEGACY_ROOT_FOLDER_NAME}/${ref.name}` })),
+      );
+    }
     const out: DiscoveredBusinessOnProvider[] = [];
-    for (const c of children) {
-      if (c.mimeType !== MIME_FOLDER) continue;
+    for (const candidate of candidates) {
+      const c = candidate.ref;
       // Read <biz>/metadata/manifest.json. Missing / unparseable → skip; a
       // corrupt sibling shouldn't block the user from restoring others.
       const metadataFolder = await this.api.findChildByName(c.id, 'metadata');
@@ -514,7 +543,7 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       out.push({
         businessId: String(manifest.businessId ?? nested.businessId ?? c.name),
         businessName: String(manifest.businessName ?? nested.businessName ?? c.name),
-        folderPath: `${ROOT_FOLDER_NAME}/${c.name}`,
+        folderPath: candidate.path,
         manifest,
       });
     }
@@ -547,6 +576,22 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
   // -------------------------------------------------------------------------
 
   async writeJournalEvents(events: SyncEvent[]): Promise<WriteJournalResult> {
+    // Journal updates are read/append/write operations. Serialize them so two
+    // concurrent flushes cannot overwrite each other's events on Drive.
+    let release!: () => void;
+    const previous = this.journalWriteTail;
+    this.journalWriteTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await this.writeJournalEventsUnlocked(events);
+    } finally {
+      release();
+    }
+  }
+
+  private async writeJournalEventsUnlocked(events: SyncEvent[]): Promise<WriteJournalResult> {
     this.assertBusiness();
     if (events.length === 0) {
       log.debug('drive.provider', 'writeJournalEvents called with 0 events', {});

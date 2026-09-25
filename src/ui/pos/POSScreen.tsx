@@ -20,11 +20,13 @@ import type {
   Warehouse,
 } from '../../db/types';
 import { InvoiceService, type CreateInvoiceLineInput } from '../../domain/InvoiceService';
+import { PaymentService } from '../../domain/PaymentService';
 import { allocateInvoiceNumber } from '../../domain/invoiceNumbering';
 import { splitTax, isInterstate, roundOffToNearestRupee } from '../../domain/gst';
 import { fromMoney } from '../../domain/money';
 import type { Money } from '../../domain/money';
 import InvoicePrint, { type PrintablePayment } from './InvoicePrint';
+import { log } from '../../lib/log';
 
 type PaymentMethod = 'cash' | 'card' | 'upi' | 'credit';
 
@@ -366,7 +368,7 @@ export default function POSScreen(): JSX.Element {
           is_interstate: interstate,
           financial_year: financialYear,
           lines: invoiceInputLines,
-          round_off_paise: totals.roundOff,
+          round_off_mode: 'auto',
         });
       } else {
         const invoiceNumber = await allocateInvoiceNumber(db, business.id);
@@ -381,8 +383,32 @@ export default function POSScreen(): JSX.Element {
           is_interstate: interstate,
           financial_year: financialYear,
           lines: invoiceInputLines,
-          round_off_paise: totals.roundOff,
+          round_off_mode: 'auto',
           idempotencyKey: `pos-${invoiceNumber}`,
+        });
+      }
+
+      const paymentSvc = new PaymentService(db);
+      if (effectiveSplit.cash > 0 || effectiveSplit.card > 0 || effectiveSplit.upi > 0) {
+        log.info('pos', 'posting invoice payments', {
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoice_number,
+          editing: Boolean(editingInvoiceId),
+          cashPaise: effectiveSplit.cash,
+          cardPaise: effectiveSplit.card,
+          upiPaise: effectiveSplit.upi,
+        });
+        await paymentSvc.postInvoicePayments({
+          business_id: business.id,
+          device_id: deviceId,
+          invoice_id: invoice.id,
+          payment_date: invoiceDate,
+          split: {
+            cash_paise: effectiveSplit.cash,
+            card_paise: effectiveSplit.card,
+            upi_paise: effectiveSplit.upi,
+            credit_paise: effectiveSplit.credit,
+          },
         });
       }
 

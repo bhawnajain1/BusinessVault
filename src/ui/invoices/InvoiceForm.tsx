@@ -5,11 +5,20 @@ import { db } from '../../db';
 import type { Business, Customer, Item } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { InvoiceService, type CreateInvoiceLineInput } from '../../domain/InvoiceService';
-import { allocateInvoiceNumber } from '../../domain/invoiceNumbering';
+import {
+  allocateInvoiceNumber,
+  getNextAvailableInvoiceNumber,
+  validateInvoiceNumber,
+} from '../../domain/invoiceNumbering';
 import { PaymentService } from '../../domain/PaymentService';
 import { AdvanceService } from '../../domain/AdvanceService';
-import { bankersRound, isInterstate, splitTax } from '../../domain/gst';
+import { bankersRound, isInterstate, roundOffToNearestRupee, splitTax } from '../../domain/gst';
 import type { Advance } from '../../db/types';
+import { log } from '../../lib/log';
+import { addDaysYmd } from '../../lib/date';
+import { appendSyncEvent } from '../../domain/syncEventLog';
+import { resolveDefaultInvoiceTerms } from '../../domain/defaults';
+import { resolveCustomerItemPrice } from '../../domain/customerItemPricing';
 
 interface LineDraft {
   key: string;
@@ -70,8 +79,11 @@ export default function InvoiceForm() {
     const d = new Date();
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   });
-  const [dueDate, setDueDate] = useState<string>('');
+  const [dueDate, setDueDate] = useState<string>(() =>
+    addDaysYmd(new Date().toISOString().slice(0, 10), 15),
+  );
   const [invoiceNumberOverride, setInvoiceNumberOverride] = useState<string>('');
+  const [nextInvoiceNumber, setNextInvoiceNumber] = useState<string>('');
   const [notes, setNotes] = useState('');
   const [terms, setTerms] = useState('');
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
@@ -87,6 +99,13 @@ export default function InvoiceForm() {
   const [originalInvoiceNumber, setOriginalInvoiceNumber] = useState<string | null>(
     null,
   );
+  // Round-off treatment. 'auto' snaps total to nearest ₹1 via banker's rounding;
+  // 'none' keeps the exact pre-round total; 'manual' lets the shopkeeper key in
+  // a specific ± amount (in rupees) — handy when you're rounding to a customer-
+  // pleasing ₹5 or ₹10 rather than ₹1. Default 'auto' matches long-standing POS
+  // behaviour so cash tenders stay whole-rupee.
+  const [roundOffMode, setRoundOffMode] = useState<'auto' | 'none' | 'manual'>('auto');
+  const [manualRoundOffStr, setManualRoundOffStr] = useState<string>('0');
 
   const svc = useMemo(() => new InvoiceService(), []);
   const paymentSvc = useMemo(() => new PaymentService(), []);
@@ -117,6 +136,14 @@ export default function InvoiceForm() {
           .sortBy('name'),
       ]);
       setBusiness(biz ?? null);
+      if (!editingId) {
+        const defaultTerms = resolveDefaultInvoiceTerms(biz?.default_invoice_terms);
+        setTerms(defaultTerms);
+        log.info('invoice-form', 'loaded default invoice terms', {
+          businessId,
+          hasDefaultTerms: defaultTerms.trim().length > 0,
+        });
+      }
       setCustomers(cs);
       setItems(its);
       setWarehouseOptions(whs.map((w) => ({ id: w.id, name: w.name })));
@@ -124,6 +151,21 @@ export default function InvoiceForm() {
       setDefaultWarehouseId(def?.id ?? '');
     })();
   }, [businessId]);
+
+  useEffect(() => {
+    if (!businessId || editingId) return;
+    let cancelled = false;
+    getNextAvailableInvoiceNumber(db, businessId)
+      .then((next) => {
+        if (!cancelled) setNextInvoiceNumber(next);
+      })
+      .catch(() => {
+        if (!cancelled) setNextInvoiceNumber('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [businessId, editingId]);
 
   // Hydrate from an existing invoice when editing
   useEffect(() => {
@@ -147,6 +189,8 @@ export default function InvoiceForm() {
       setNotes(inv.notes);
       setTerms(inv.terms);
       setOriginalInvoiceNumber(inv.invoice_number);
+      setRoundOffMode(inv.round_off_mode ?? 'auto');
+      setManualRoundOffStr(((inv.round_off_paise ?? 0) / 100).toString());
       setLines(
         invLines.map((l) => ({
           key: l.id,
@@ -186,6 +230,49 @@ export default function InvoiceForm() {
     };
   }, [businessId, customerId, editingId, advanceSvc]);
 
+  // Re-resolve prices when the customer is selected after items are already on
+  // the invoice. Item selection handles the opposite order.
+  useEffect(() => {
+    if (!businessId || !customerId || editingId) return;
+    let cancelled = false;
+    (async () => {
+      const selectedLines = lines.filter((line) => line.item_id);
+      if (selectedLines.length === 0) return;
+      const remembered = await Promise.all(
+        selectedLines.map(async (line) => {
+          const item = items.find((candidate) => candidate.id === line.item_id);
+          if (!item) return [line.key, null] as const;
+          const price = await resolveCustomerItemPrice(
+            db,
+            businessId,
+            customerId,
+            line.item_id,
+            item.sale_price_paise,
+          );
+          return [line.key, price] as const;
+        }),
+      );
+      if (cancelled) return;
+      const rememberedByLine = new Map(remembered);
+      setLines((rows) =>
+        rows.map((line) => {
+          const price = rememberedByLine.get(line.key);
+          if (price === undefined || price === null) return line;
+          log.info('invoice-form', 'applied customer item price after customer selection', {
+            businessId,
+            customerId,
+            itemId: line.item_id,
+            unitPricePaise: price,
+          });
+          return { ...line, unitPriceStr: (price / 100).toString() };
+        }),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [businessId, customerId, editingId, items]);
+
   const interstate = useMemo(() => {
     if (!business || !customer) return false;
     return isInterstate(business.state_code, customer.state_code);
@@ -206,17 +293,24 @@ export default function InvoiceForm() {
   }, [lines, interstate]);
 
   const totals = useMemo(() => {
-    return computedLines.reduce(
+    const base = computedLines.reduce(
       (acc, c) => ({
         taxable: acc.taxable + c.taxable,
         cgst: acc.cgst + c.split.cgst_paise,
         sgst: acc.sgst + c.split.sgst_paise,
         igst: acc.igst + c.split.igst_paise,
-        total: acc.total + c.lineTotal,
+        preRoundTotal: acc.preRoundTotal + c.lineTotal,
       }),
-      { taxable: 0, cgst: 0, sgst: 0, igst: 0, total: 0 },
+      { taxable: 0, cgst: 0, sgst: 0, igst: 0, preRoundTotal: 0 },
     );
-  }, [computedLines]);
+    let roundOff = 0;
+    if (roundOffMode === 'auto') {
+      roundOff = roundOffToNearestRupee(base.preRoundTotal).round_off_paise;
+    } else if (roundOffMode === 'manual') {
+      roundOff = toPaise(manualRoundOffStr);
+    }
+    return { ...base, roundOff, total: base.preRoundTotal + roundOff };
+  }, [computedLines, roundOffMode, manualRoundOffStr]);
 
   function addLine() {
     setLines((rows) => [...rows, { ...emptyLine(), warehouse_id: defaultWarehouseId }]);
@@ -236,11 +330,27 @@ export default function InvoiceForm() {
     );
   }
 
-  function pickItem(key: string, itemId: string) {
+  async function pickItem(key: string, itemId: string) {
     const it = items.find((i) => i.id === itemId);
     if (!it) {
       setLineField(key, 'item_id', itemId);
       return;
+    }
+    let rememberedPrice = it.sale_price_paise;
+    if (businessId && customerId) {
+      rememberedPrice = await resolveCustomerItemPrice(
+        db,
+        businessId,
+        customerId,
+        itemId,
+        it.sale_price_paise,
+      );
+      log.info('invoice-form', 'resolved customer item price', {
+        businessId,
+        customerId,
+        itemId,
+        resolvedPricePaise: rememberedPrice,
+      });
     }
     setLines((rows) =>
       rows.map((r) =>
@@ -250,13 +360,55 @@ export default function InvoiceForm() {
               item_id: itemId,
               description: it.description,
               hsn: it.hsn,
-              unitPriceStr: (it.sale_price_paise / 100).toString(),
+              unitPriceStr: (rememberedPrice / 100).toString(),
               taxRatePctStr: (it.tax_rate_bps / 100).toString(),
               warehouse_id: r.warehouse_id || defaultWarehouseId,
             }
           : r,
       ),
-    );
+      );
+  }
+
+  async function saveCustomerItemPrices(): Promise<void> {
+    if (!businessId || !deviceId || !customerId || editingId) return;
+    const remembered = computedLines.filter((line) => {
+      const item = items.find((candidate) => candidate.id === line.l.item_id);
+      return item && line.unitPaise !== item.sale_price_paise;
+    });
+    if (remembered.length === 0) return;
+    const now = new Date().toISOString();
+    await db.transaction('rw', [db.customer_item_prices, db.sync_events], async () => {
+      for (const line of remembered) {
+        const id = `${businessId}:${customerId}:${line.l.item_id}`;
+        const existing = await db.customer_item_prices.get(id);
+        const row = {
+          id,
+          business_id: businessId,
+          customer_id: customerId,
+          item_id: line.l.item_id,
+          unit_price_paise: line.unitPaise,
+          created_at: existing?.created_at ?? now,
+          updated_at: now,
+          entity_version: (existing?.entity_version ?? 0) + 1,
+        };
+        await db.customer_item_prices.put(row);
+        await appendSyncEvent(db, {
+          businessId,
+          deviceId,
+          entityType: 'customer_item_price',
+          entityId: id,
+          operation: existing ? 'updated' : 'created',
+          payload: row,
+          timestamp: now,
+        });
+        log.info('invoice-form', 'remembered customer item price', {
+          businessId,
+          customerId,
+          itemId: line.l.item_id,
+          unitPricePaise: line.unitPaise,
+        });
+      }
+    });
   }
 
   const save = useCallback(async (opts?: { thenPrint?: boolean }) => {
@@ -265,6 +417,13 @@ export default function InvoiceForm() {
     if (!customerId) {
       setSaveError('Pick a customer.');
       return;
+    }
+    if (!editingId && invoiceNumberOverride.trim()) {
+      const format = validateInvoiceNumber(invoiceNumberOverride);
+      if (!format.ok) {
+        setSaveError(format.error);
+        return;
+      }
     }
     if (!customer) {
       setSaveError('Customer not found.');
@@ -310,13 +469,27 @@ export default function InvoiceForm() {
         is_interstate: interstate,
         financial_year: business.current_financial_year,
         lines: invLines,
+        round_off_mode: roundOffMode,
+        round_off_paise: roundOffMode === 'manual' ? toPaise(manualRoundOffStr) : 0,
         notes,
         terms,
       };
+      log.info('invoice-form', 'saving invoice terms', {
+        businessId,
+        editingId,
+        hasTerms: terms.trim().length > 0,
+        usedBusinessDefault: !editingId && terms === (business.default_invoice_terms ?? ''),
+      });
 
       let saved;
       if (editingId) {
-        saved = await svc.updateInvoice(editingId, commonInput);
+        // §3: pass the (possibly edited) invoice number through. If it matches
+        // the original, updateInvoice keeps the existing number; otherwise it
+        // validates uniqueness and writes an audit row.
+        saved = await svc.updateInvoice(editingId, {
+          ...commonInput,
+          invoice_number: originalInvoiceNumber ?? undefined,
+        });
       } else {
         const invoiceNumber =
           invoiceNumberOverride.trim() || (await allocateInvoiceNumber(db, businessId));
@@ -324,24 +497,7 @@ export default function InvoiceForm() {
           ...commonInput,
           invoice_number: invoiceNumber,
         });
-
-        const cashPaise = toPaise(payments.cashStr);
-        const cardPaise = toPaise(payments.cardStr);
-        const upiPaise = toPaise(payments.upiStr);
-        if (cashPaise > 0 || cardPaise > 0 || upiPaise > 0) {
-          await paymentSvc.postInvoicePayments({
-            business_id: businessId,
-            device_id: deviceId,
-            invoice_id: saved.id,
-            payment_date: invoiceDate,
-            split: {
-              cash_paise: cashPaise,
-              card_paise: cardPaise,
-              upi_paise: upiPaise,
-              credit_paise: toPaise(payments.creditStr),
-            },
-          });
-        }
+        await saveCustomerItemPrices();
 
         // Apply any selected advances (customer only, new invoice only).
         for (const [advId, str] of Object.entries(advanceAllocations)) {
@@ -356,6 +512,26 @@ export default function InvoiceForm() {
             applied_on: invoiceDate,
           });
         }
+      }
+
+      // Payments apply to the newly created invoice on both create and edit.
+      // updateInvoice reissues the invoice, so post after it returns.
+      const cashPaise = toPaise(payments.cashStr);
+      const cardPaise = toPaise(payments.cardStr);
+      const upiPaise = toPaise(payments.upiStr);
+      if (cashPaise > 0 || cardPaise > 0 || upiPaise > 0) {
+        await paymentSvc.postInvoicePayments({
+          business_id: businessId,
+          device_id: deviceId,
+          invoice_id: saved.id,
+          payment_date: invoiceDate,
+          split: {
+            cash_paise: cashPaise,
+            card_paise: cardPaise,
+            upi_paise: upiPaise,
+            credit_paise: toPaise(payments.creditStr),
+          },
+        });
       }
       if (opts?.thenPrint) {
         navigate(`/invoices/${saved.id}/print`);
@@ -383,12 +559,15 @@ export default function InvoiceForm() {
     terms,
     editingId,
     invoiceNumberOverride,
+    originalInvoiceNumber,
     navigate,
     svc,
     paymentSvc,
     payments,
     advanceSvc,
     advanceAllocations,
+    roundOffMode,
+    manualRoundOffStr,
   ]);
 
   if (loading) return <div className="p-6 text-fg-muted">Loading...</div>;
@@ -420,8 +599,9 @@ export default function InvoiceForm() {
 
       {editingId && (
         <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-          Saving will void the original invoice and issue a new one under the same invoice
-          number. The original stays in the audit trail (marked as reversed).
+          Saving will void the original invoice and issue a new one. Change the
+          Invoice # above to rename it — the change is recorded in the audit
+          log. The original stays in the audit trail (marked as reversed).
         </div>
       )}
 
@@ -448,7 +628,19 @@ export default function InvoiceForm() {
             <input
               type="date"
               value={invoiceDate}
-              onChange={(e) => setInvoiceDate(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setInvoiceDate(next);
+                if (!editingId) {
+                  const nextDueDate = addDaysYmd(next, 15);
+                  setDueDate(nextDueDate);
+                  log.info('invoice-form', 'updated default due date', {
+                    businessId,
+                    invoiceDate: next,
+                    dueDate: nextDueDate,
+                  });
+                }
+              }}
               className="flex-1 h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
             <input
@@ -461,7 +653,7 @@ export default function InvoiceForm() {
           </div>
         </label>
         <label className="flex flex-col">
-          <span className="block text-[12px] text-fg-muted mb-1">Due date (optional)</span>
+          <span className="block text-[12px] text-fg-muted mb-1">Due date</span>
           <input
             type="date"
             value={dueDate}
@@ -469,19 +661,34 @@ export default function InvoiceForm() {
             className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </label>
-        {!editingId && (
-          <label className="flex flex-col">
-            <span className="block text-[12px] text-fg-muted mb-1">
-              Invoice # (leave blank to auto-assign)
+        <label className="flex flex-col">
+          <span className="block text-[12px] text-fg-muted mb-1">
+            {editingId
+              ? 'Invoice # (change to rename)'
+              : 'Invoice # (leave blank to auto-assign)'}
+          </span>
+          <input
+            value={editingId ? (originalInvoiceNumber ?? '') : invoiceNumberOverride}
+            onChange={(e) => {
+              if (editingId) {
+                setOriginalInvoiceNumber(e.target.value);
+              } else {
+                setInvoiceNumberOverride(e.target.value);
+              }
+            }}
+            placeholder={nextInvoiceNumber || `${business.invoice_prefix ?? 'INV'}001`}
+            aria-describedby="invoice-number-help"
+            aria-label="Invoice number"
+            pattern="[A-Za-z][A-Za-z0-9_/-]*[0-9]+"
+            title="Use letters/numbers and end with one or more digits, for example ss3 or INV-000123."
+            className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          {!editingId && (
+            <span id="invoice-number-help" className="mt-1 text-[11px] text-fg-muted">
+              Leave blank to use the next number: {nextInvoiceNumber || 'loading...'}
             </span>
-            <input
-              value={invoiceNumberOverride}
-              onChange={(e) => setInvoiceNumberOverride(e.target.value)}
-              placeholder={`${business.invoice_prefix || 'INV'}-000123`}
-              className="h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
-            />
-          </label>
-        )}
+          )}
+        </label>
         <div className="flex flex-col justify-end text-xs text-fg-muted">
           {customer && (
             <>
@@ -691,7 +898,7 @@ export default function InvoiceForm() {
           <button
             type="button"
             onClick={addLine}
-            className="text-sm text-blue-700 hover:underline"
+            className="action-link text-sm"
           >
             + Add line
           </button>
@@ -725,6 +932,40 @@ export default function InvoiceForm() {
             {totals.cgst > 0 && <Row label="CGST" paise={totals.cgst} />}
             {totals.sgst > 0 && <Row label="SGST" paise={totals.sgst} />}
             {totals.igst > 0 && <Row label="IGST" paise={totals.igst} />}
+            {roundOffMode !== 'none' && (
+              <Row label="Subtotal" paise={totals.preRoundTotal} />
+            )}
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <div className="flex items-center gap-2">
+                <span className="text-fg-muted text-[12px]">Round off</span>
+                <select
+                  value={roundOffMode}
+                  onChange={(e) =>
+                    setRoundOffMode(e.target.value as 'auto' | 'none' | 'manual')
+                  }
+                  className="h-7 rounded-md border border-border bg-surface px-1.5 text-[12px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
+                  aria-label="Round off mode"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="none">None</option>
+                  <option value="manual">Manual</option>
+                </select>
+                {roundOffMode === 'manual' && (
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={manualRoundOffStr}
+                    onChange={(e) => setManualRoundOffStr(e.target.value)}
+                    className="w-20 h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg text-right focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
+                    aria-label="Manual round off (rupees)"
+                    placeholder="0.00"
+                  />
+                )}
+              </div>
+              <span className="text-[13px] text-fg tabular-nums">
+                {roundOffMode === 'none' ? '—' : `₹${(totals.roundOff / 100).toFixed(2)}`}
+              </span>
+            </div>
             <div className="border-t border-border mt-2 pt-2">
               <Row label="Total" paise={totals.total} strong />
             </div>
@@ -736,7 +977,7 @@ export default function InvoiceForm() {
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-medium text-fg">Payment</h2>
           <span className="text-xs text-fg-muted">
-            FULL sets the total to one method
+            Choose one method to apply the full total
           </span>
         </div>
         <div className="grid grid-cols-4 gap-3">
@@ -835,26 +1076,38 @@ export default function InvoiceForm() {
         <button
           type="button"
           onClick={() => void save()}
-          disabled={saving}
-          className="h-9 rounded-md bg-accent px-4 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
+          disabled={
+            saving ||
+            !customerId ||
+            computedLines.filter((c) => c.qtyMicros > 0 && c.unitPaise > 0 && c.l.item_id).length === 0 ||
+            (defaultWarehouseId === '' && warehouseOptions.length === 0)
+          }
+          className="h-9 rounded-md bg-blue-600 px-4 text-[13px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
         >
           {saving
             ? 'Saving…'
             : editingId
               ? 'Save changes (void & reissue)'
-              : 'Create invoice'}
+              : editingId
+                ? 'Save Changes'
+                : 'Save Invoice'}
         </button>
         <button
           type="button"
           onClick={() => void save({ thenPrint: true })}
-          disabled={saving}
-          className="h-9 rounded-md bg-emerald-600 px-4 text-[13px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+          disabled={
+            saving ||
+            !customerId ||
+            computedLines.filter((c) => c.qtyMicros > 0 && c.unitPaise > 0 && c.l.item_id).length === 0 ||
+            (defaultWarehouseId === '' && warehouseOptions.length === 0)
+          }
+          className="h-9 rounded-md bg-green-600 px-4 text-[13px] font-medium text-white hover:bg-green-700 disabled:opacity-50"
         >
-          {saving ? 'Saving…' : 'Save & print detailed invoice'}
+          {saving ? 'Saving…' : 'Save & Print Detailed Invoice'}
         </button>
         <Link
           to="/invoices"
-          className="h-9 inline-flex items-center rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
+          className="action-cancel h-9 inline-flex items-center text-[13px]"
         >
           Cancel
         </Link>
@@ -862,7 +1115,6 @@ export default function InvoiceForm() {
     </div>
   );
 }
-
 function PaymentInput({
   label,
   value,
@@ -884,10 +1136,11 @@ function PaymentInput({
           <button
             type="button"
             onClick={onFull}
-            className="text-[10px] font-semibold uppercase tracking-wide text-blue-700 hover:text-blue-900"
+            className="inline-flex min-h-10 items-center rounded-md px-2 text-xs font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:bg-blue-50 hover:text-blue-800 focus-visible:outline-2 focus-visible:outline-blue-600"
             title={`Set ${label} to full total`}
+            aria-label={`Use full invoice total for ${label}`}
           >
-            FULL
+            Use full amount
           </button>
         )}
       </div>
@@ -913,4 +1166,3 @@ function Row({ label, paise, strong }: { label: string; paise: number; strong?: 
     </div>
   );
 }
-

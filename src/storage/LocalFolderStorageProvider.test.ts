@@ -72,21 +72,21 @@ describe('LocalFolderStorageProvider', () => {
     await connectAndInit(root);
 
     const expected = [
-      'BusinessVault/Acme Traders',
-      'BusinessVault/Acme Traders/README.txt',
-      'BusinessVault/Acme Traders/metadata/manifest.json',
-      'BusinessVault/Acme Traders/metadata/schema.json',
-      'BusinessVault/Acme Traders/metadata/sync-state.json',
-      'BusinessVault/Acme Traders/metadata/checksums.json',
-      'BusinessVault/Acme Traders/current',
-      'BusinessVault/Acme Traders/journal',
-      'BusinessVault/Acme Traders/invoices',
-      'BusinessVault/Acme Traders/attachments',
-      'BusinessVault/Acme Traders/reports',
-      'BusinessVault/Acme Traders/snapshots/daily',
-      'BusinessVault/Acme Traders/snapshots/monthly',
-      'BusinessVault/Acme Traders/snapshots/annual',
-      'BusinessVault/Acme Traders/snapshots/ondemand',
+      'BusinessVault - Acme Traders',
+      'BusinessVault - Acme Traders/README.txt',
+      'BusinessVault - Acme Traders/metadata/manifest.json',
+      'BusinessVault - Acme Traders/metadata/schema.json',
+      'BusinessVault - Acme Traders/metadata/sync-state.json',
+      'BusinessVault - Acme Traders/metadata/checksums.json',
+      'BusinessVault - Acme Traders/current',
+      'BusinessVault - Acme Traders/journal',
+      'BusinessVault - Acme Traders/invoices',
+      'BusinessVault - Acme Traders/attachments',
+      'BusinessVault - Acme Traders/reports',
+      'BusinessVault - Acme Traders/snapshots/daily',
+      'BusinessVault - Acme Traders/snapshots/monthly',
+      'BusinessVault - Acme Traders/snapshots/annual',
+      'BusinessVault - Acme Traders/snapshots/ondemand',
     ];
     for (const rel of expected) {
       expect(fss.existsSync(path.join(root, rel))).toBe(true);
@@ -94,7 +94,7 @@ describe('LocalFolderStorageProvider', () => {
 
     const manifest = JSON.parse(
       await fs.readFile(
-        path.join(root, 'BusinessVault/Acme Traders/metadata/manifest.json'),
+      path.join(root, 'BusinessVault - Acme Traders/metadata/manifest.json'),
         'utf8',
       ),
     );
@@ -208,11 +208,11 @@ describe('LocalFolderStorageProvider', () => {
 
     const augFile = path.join(
       root,
-      'BusinessVault/Acme Traders/journal/2026/2026-08.events.jsonl',
+      'BusinessVault - Acme Traders/journal/2026/2026-08.events.jsonl',
     );
     const sepFile = path.join(
       root,
-      'BusinessVault/Acme Traders/journal/2026/2026-09.events.jsonl',
+      'BusinessVault - Acme Traders/journal/2026/2026-09.events.jsonl',
     );
     const augLines = (await fs.readFile(augFile, 'utf8'))
       .split('\n')
@@ -275,7 +275,7 @@ describe('LocalFolderStorageProvider', () => {
     });
     expect(h1.path).toBe('snapshots/daily/2026-08-19');
 
-    const goodFile = path.join(root, 'BusinessVault/Acme Traders', h1.path, 'invoices.csv');
+    const goodFile = path.join(root, 'BusinessVault - Acme Traders', h1.path, 'invoices.csv');
     expect(fss.existsSync(goodFile)).toBe(true);
     expect(await fs.readFile(goodFile, 'utf8')).toBe('id,name\n1,alpha\n');
 
@@ -305,7 +305,7 @@ describe('LocalFolderStorageProvider', () => {
     expect(await fs.readFile(goodFile, 'utf8')).toBe('id,name\n1,alpha\n');
 
     // Staging area should be cleaned up.
-    const stagingRoot = path.join(root, 'BusinessVault/Acme Traders/.staging');
+    const stagingRoot = path.join(root, 'BusinessVault - Acme Traders/.staging');
     const stagingEntries = fss.existsSync(stagingRoot) ? await fs.readdir(stagingRoot) : [];
     expect(stagingEntries.filter((n) => !n.startsWith('.'))).toHaveLength(0);
 
@@ -347,7 +347,7 @@ describe('LocalFolderStorageProvider', () => {
     // Hand-corrupt the CSV directly on disk (simulate an external editor).
     const csvPath = path.join(
       root,
-      'BusinessVault/Acme Traders/snapshots/daily/2026-08-19/invoices.csv',
+      'BusinessVault - Acme Traders/snapshots/daily/2026-08-19/invoices.csv',
     );
     await fs.writeFile(csvPath, 'id,name\n1,alpha\n2,BETA_TAMPERED\n');
 
@@ -382,7 +382,7 @@ describe('LocalFolderStorageProvider', () => {
 
     const jp = path.join(
       root,
-      'BusinessVault/Acme Traders/journal/2026/2026-08.events.jsonl',
+      'BusinessVault - Acme Traders/journal/2026/2026-08.events.jsonl',
     );
     // Append a garbage line.
     await fs.appendFile(jp, 'this is not json\n');
@@ -497,7 +497,7 @@ describe('LocalFolderStorageProvider', () => {
     expect(s1.state).toBe('CONNECTED');
     await p.initializeBusiness({ businessId: 'biz_1', businessName: 'Acme Traders' });
     const s2 = await p.connectionStatus();
-    expect(s2.folderPath).toBe('BusinessVault/Acme Traders');
+    expect(s2.folderPath).toBe('BusinessVault - Acme Traders');
     await p.disconnect();
     expect((await p.connectionStatus()).state).toBe('DISCONNECTED');
   });

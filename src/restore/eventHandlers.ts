@@ -439,11 +439,42 @@ const HANDLERS: Record<string, EventHandler> = {
   'journal_entry:posted': put<JournalEntry>((db) => db.journal_entries),
   'journal_entry:create': put<JournalEntry>((db) => db.journal_entries),
   'journal_entry:created': put<JournalEntry>((db) => db.journal_entries),
-  'journal_entry:update': put<JournalEntry>((db) => db.journal_entries),
+  // Older journal files can contain a full journal-entry row under `update`
+  // (the original entry was written with the wrong verb). Rebuild that row
+  // when the payload has its identifying header fields, but keep ignoring
+  // genuinely partial orphan updates so they cannot create phantom entries.
+  'journal_entry:update': async (evt, ctx) => {
+    const payload = asRecord(evt.payload, evt.event_id);
+    if (payload.entry_number !== undefined && payload.business_id !== undefined) {
+      await put<JournalEntry>((db) => db.journal_entries)(evt, ctx);
+      return;
+    }
+    await merge<JournalEntry>('journal_entry', (db) => db.journal_entries, {
+      recordMissing: false,
+    })(evt, ctx);
+  },
 
   'journal_line:create': put<JournalLine>((db) => db.journal_lines),
   'journal_line:created': put<JournalLine>((db) => db.journal_lines),
-  'journal_line:update': put<JournalLine>((db) => db.journal_lines),
+  // Some legacy writers used `update` for a complete journal-line row. Rebuild
+  // those rows when the identifying fields are present, but keep ignoring
+  // genuinely partial orphan updates.
+  'journal_line:update': async (evt, ctx) => {
+    const payload = asRecord(evt.payload, evt.event_id);
+    if (
+      payload.business_id !== undefined &&
+      payload.entry_id !== undefined &&
+      payload.account_id !== undefined &&
+      payload.debit_paise !== undefined &&
+      payload.credit_paise !== undefined
+    ) {
+      await put<JournalLine>((db) => db.journal_lines)(evt, ctx);
+      return;
+    }
+    await merge<JournalLine>('journal_line', (db) => db.journal_lines, {
+      recordMissing: false,
+    })(evt, ctx);
+  },
 
   'stock_movement:movement': put<StockMovement>((db) => db.stock_movements),
   'stock_movement:create': put<StockMovement>((db) => db.stock_movements),

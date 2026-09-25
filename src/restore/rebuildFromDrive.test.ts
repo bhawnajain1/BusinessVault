@@ -8,12 +8,26 @@ import type { SyncEvent } from '../storage/CustomerStorageProvider';
 import { BusinessVaultDB } from '../db/database';
 import {
   rebuildFromDrive,
+  BackupIntegrityError,
   EmptyBackupError,
   UnshippedEventsError,
+  repairLegacyJournalHeaders,
 } from './rebuildFromDrive';
 import { metaDb, __resetMetaDbForTests } from '../lib/device';
 import { writeCsv } from '../csv/csvCodec';
 import { TABLE_SPECS } from './tableSchema';
+import type {
+  Advance,
+  Invoice,
+  Payment,
+  Purchase,
+  SalesReturn,
+  SalesReturnItem,
+  StockMovement,
+  JournalEntry,
+  JournalLine,
+} from '../db/types';
+import { applyEvent } from './eventHandlers';
 
 // jsdom Blob has no arrayBuffer; force Node's.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -185,6 +199,8 @@ const inv1 = {
   igst_paise: 0,
   cess_paise: 0,
   round_off_paise: 0,
+  round_off_mode: 'none',
+  pre_round_total_paise: 23600,
   total_paise: 23600,
   paid_paise: 0,
   balance_paise: 23600,
@@ -419,7 +435,7 @@ async function makeSnapshotFiles(
     invoice_lines: [inv1_line],
     purchases: [],
     purchase_lines: [],
-    payments: [],
+    payments: snapshotPayments as unknown as Record<string, unknown>[],
     expenses: [],
     stock_movements: [mvOpening, mvSale],
     accounts,
@@ -468,7 +484,7 @@ function makePaymentEvent(): SyncEvent {
     operation: 'create',
     entity_version: 1,
     timestamp: '2026-08-20T10:00:00.000Z',
-    payload: payment1,
+      payload: payment1 as unknown as Readonly<Record<string, unknown>>,
     payload_hash: 'deadbeef',
     previous_hash: null,
     sync_status: 'LOCAL_ONLY',
@@ -518,6 +534,178 @@ describe('rebuildFromDrive', () => {
   let root: string;
   let db: BusinessVaultDB;
   let provider: LocalFolderStorageProvider;
+
+  it('repairs stale totals only when journal lines are balanced', async () => {
+    const testDb = new BusinessVaultDB(`bv-header-repair-${Date.now()}-${Math.random()}`);
+    const entry = {
+      ...je1,
+      total_debit_paise: 100,
+      total_credit_paise: 100,
+    } as unknown as JournalEntry;
+    const badEntry = {
+      ...je2,
+      total_debit_paise: 99,
+      total_credit_paise: 99,
+    } as unknown as JournalEntry;
+    await testDb.journal_entries.bulkPut([entry, badEntry]);
+    const snapshotLines = [
+      ...(je1_lines as unknown as JournalLine[]),
+      ...(je2_lines as unknown as JournalLine[]),
+    ];
+    const badLine = {
+      ...je2_lines[0],
+      id: 'unbalanced-line',
+      debit_paise: 1,
+    } as unknown as JournalLine;
+    await testDb.journal_lines.bulkPut([...snapshotLines, badLine]);
+
+    const repaired = await repairLegacyJournalHeaders(BID, testDb);
+
+    expect(repaired).toContain(entry.id);
+    expect(repaired).not.toContain(badEntry.id);
+    expect((await testDb.journal_entries.get(entry.id))?.total_debit_paise).toBe(23600);
+    expect((await testDb.journal_entries.get(badEntry.id))?.total_debit_paise).toBe(99);
+    testDb.close();
+  });
+
+  it('rejects journal events from another business before dispatch', async () => {
+    const testDb = new BusinessVaultDB(`bv-event-scope-${Date.now()}-${Math.random()}`);
+    const diagnostics: string[] = [];
+    await expect(
+      applyEvent(
+        {
+          event_id: 'evt-wrong-business',
+          business_id: 'other-business',
+          device_id: 'device-1',
+          entity_type: 'customer',
+          entity_id: 'customer-1',
+          operation: 'create',
+          entity_version: 1,
+          timestamp: new Date().toISOString(),
+          payload: { id: 'customer-1', business_id: 'other-business' },
+          payload_hash: 'hash',
+          previous_hash: null,
+          sync_status: 'SYNCED',
+        },
+        { db: testDb, businessId: BID, diagnostics },
+      ),
+    ).rejects.toThrow('belongs to business other-business');
+    await testDb.delete();
+  });
+
+  it('does not create a phantom journal entry from an orphaned legacy update', async () => {
+    const testDb = new BusinessVaultDB(`bv-orphan-journal-${Date.now()}-${Math.random()}`);
+    const diagnostics: string[] = [];
+    await applyEvent(
+      {
+        event_id: 'orphan-journal-update',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'journal_entry',
+        entity_id: 'missing-entry',
+        operation: 'update',
+        entity_version: 1,
+        timestamp: new Date().toISOString(),
+        payload: {
+          id: 'missing-entry',
+          business_id: BID,
+          total_debit_paise: 100,
+          total_credit_paise: 100,
+        },
+        payload_hash: 'hash',
+        previous_hash: null,
+        sync_status: 'SYNCED',
+      },
+      { db: testDb, businessId: BID, diagnostics },
+    );
+
+    expect(await testDb.journal_entries.get('missing-entry')).toBeUndefined();
+    expect(diagnostics).not.toContain('journal_entry:update missing-entry: existing row not found');
+    await testDb.delete();
+  });
+
+  it('replays a full legacy journal entry carried by an update event', async () => {
+    const testDb = new BusinessVaultDB(`bv-full-journal-update-${Date.now()}-${Math.random()}`);
+    const diagnostics: string[] = [];
+    const row = {
+      id: 'full-journal-update',
+      business_id: BID,
+      entry_number: 'JE-1',
+      entry_date: NOW.slice(0, 10),
+      narration: 'Legacy entry',
+      ref_type: 'manual',
+      ref_id: null,
+      reversed_by_id: null,
+      reverses_id: null,
+      total_debit_paise: 100,
+      total_credit_paise: 100,
+      posted: 1,
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    } satisfies JournalEntry;
+
+    await applyEvent(
+      {
+        event_id: 'full-journal-update-event',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'journal_entry',
+        entity_id: row.id,
+        operation: 'update',
+        entity_version: 1,
+        timestamp: NOW,
+        payload: row,
+        payload_hash: 'hash',
+        previous_hash: null,
+        sync_status: 'SYNCED',
+      },
+      { db: testDb, businessId: BID, diagnostics },
+    );
+
+    expect(await testDb.journal_entries.get(row.id)).toMatchObject(row);
+    expect(diagnostics).toEqual([]);
+    await testDb.delete();
+  });
+
+  it('replays a full legacy journal line carried by an update event', async () => {
+    const testDb = new BusinessVaultDB(`bv-full-journal-line-update-${Date.now()}-${Math.random()}`);
+    const diagnostics: string[] = [];
+    const line = {
+      ...je1_lines[0],
+      id: 'legacy-line-update',
+      entry_id: 'je_1',
+    };
+    await testDb.journal_entries.put({
+      ...je1,
+      id: 'je_1',
+      total_debit_paise: line.debit_paise,
+      total_credit_paise: line.credit_paise,
+    } as JournalEntry);
+
+    const result = await applyEvent(
+      {
+        event_id: 'full-journal-line-update-event',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'journal_line',
+        entity_id: line.id,
+        operation: 'update',
+        entity_version: 1,
+        timestamp: NOW,
+        payload: line,
+        payload_hash: 'hash',
+        previous_hash: null,
+        sync_status: 'SYNCED',
+      },
+      { db: testDb, businessId: BID, diagnostics },
+    );
+
+    expect(result).toBe('applied');
+    expect(await testDb.journal_lines.get(line.id)).toEqual(line);
+    expect(diagnostics).toEqual([]);
+    await testDb.delete();
+  });
 
   beforeEach(async () => {
     root = await mktmp();
@@ -609,6 +797,98 @@ describe('rebuildFromDrive', () => {
     expect(inv!.status).toBe('partial');
   });
 
+  it('does not replay historical allocation events already covered by a snapshot', async () => {
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeSnapshot({
+      businessId: BID,
+      kind: 'daily',
+      asOf: '2026-08-21T10-00-00.000Z',
+      files: await makeSnapshotFiles(business, [payment1 as unknown as Payment]),
+      manifest: { schemaVersion: 1 },
+    });
+    await producer.writeJournalEvents([{
+      event_id: '01HISTORICALALLOCATION0000001',
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: 'payment',
+      entity_id: payment1.id,
+      operation: 'update',
+      entity_version: 2,
+      timestamp: '2026-08-18T10:00:00.000Z',
+      payload: {
+        payment_id: payment1.id,
+        allocations: payment1.allocations,
+      },
+      payload_hash: 'historical-allocation',
+      previous_hash: null,
+      sync_status: 'LOCAL_ONLY',
+    }]);
+
+    const report = await rebuildFromDrive(new LocalFolderStorageProvider(), {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(report.eventsReplayed).toBe(0);
+    expect(report.diagnostics.ok).toBe(true);
+    expect(await db.payments.get(payment1.id)).toMatchObject({
+      allocations: payment1.allocations,
+    });
+  });
+
+  it('reorders same-timestamp payment create before allocation update', async () => {
+    const payment: Payment = {
+      ...(payment1 as Payment),
+      id: 'payment_out_of_order',
+      payment_number: 'PAY-OUT-OF-ORDER',
+    };
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeJournalEvents([
+      {
+        event_id: '01ORDEREDUPDATE00000000000001',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'payment',
+        entity_id: payment.id,
+        operation: 'update',
+        entity_version: 2,
+        timestamp: '2026-08-20T10:00:00.000Z',
+        payload: { payment_id: payment.id, allocations: payment.allocations },
+        payload_hash: 'update-first',
+        previous_hash: null,
+        sync_status: 'LOCAL_ONLY',
+      },
+      {
+        event_id: '01ORDEREDCREATE00000000000001',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'payment',
+        entity_id: payment.id,
+        operation: 'create',
+        entity_version: 1,
+        timestamp: '2026-08-20T10:00:00.000Z',
+        payload: payment as unknown as Readonly<Record<string, unknown>>,
+        payload_hash: 'create-second',
+        previous_hash: null,
+        sync_status: 'LOCAL_ONLY',
+      },
+    ]);
+
+    const report = await rebuildFromDrive(new LocalFolderStorageProvider(), {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(report.diagnostics.ok).toBe(true);
+    expect(await db.payments.get(payment.id)).toMatchObject({
+      allocations: payment.allocations,
+    });
+  });
+
   it('is idempotent — running restore twice yields the same DB state', async () => {
     await rebuildFromDrive(provider, {
       db,
@@ -629,6 +909,322 @@ describe('rebuildFromDrive', () => {
     expect(await db.customers.count()).toBe(cust);
     expect(await db.invoices.count()).toBe(inv);
     expect(await db.journal_entries.count()).toBe(je);
+  });
+
+  it('rebuilds purchase payments and supplier advance applications', async () => {
+    const purchase: Purchase = {
+      id: 'purchase_settlement',
+      business_id: BID,
+      bill_number: 'BILL-SETTLEMENT',
+      supplier_bill_number: 'SUP-SETTLEMENT',
+      bill_date: '2026-08-20',
+      due_date: null,
+      supplier_id: 'supplier_1',
+      supplier_state_code: '27',
+      is_interstate: 0,
+      financial_year: '2026-27',
+      subtotal_paise: 10000,
+      discount_paise: 0,
+      taxable_paise: 10000,
+      cgst_paise: 900,
+      sgst_paise: 900,
+      igst_paise: 0,
+      cess_paise: 0,
+      round_off_paise: 0,
+      round_off_mode: 'none',
+      pre_round_total_paise: 11800,
+      total_paise: 11800,
+      paid_paise: 0,
+      balance_paise: 11800,
+      status: 'received',
+      reversed_by_purchase_id: null,
+      reverses_purchase_id: null,
+      notes: '',
+      attachment_id: null,
+      journal_entry_id: 'je_purchase_settlement',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const supplierPayment: Payment = {
+      id: 'payment_supplier',
+      business_id: BID,
+      payment_number: 'PMT-SUPPLIER',
+      payment_date: '2026-08-20',
+      direction: 'out',
+      party_type: 'supplier',
+      party_id: purchase.supplier_id,
+      method: 'cash',
+      account_id: 'acc_cash',
+      amount_paise: 3000,
+      reference: '',
+      notes: '',
+      allocations: [{ bill_id: purchase.id, amount_paise: 3000 }],
+      journal_entry_id: 'je_payment_supplier',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const supplierAdvance: Advance = {
+      id: 'advance_supplier',
+      business_id: BID,
+      advance_number: 'ADV-SUPPLIER',
+      advance_date: '2026-08-20',
+      party_type: 'supplier',
+      party_id: purchase.supplier_id,
+      method: 'cash',
+      account_id: 'acc_cash',
+      amount_paise: 4000,
+      remaining_paise: 2000,
+      reference: '',
+      notes: '',
+      applications: [
+        {
+          bill_id: purchase.id,
+          amount_paise: 2000,
+          applied_at: NOW,
+          journal_entry_id: 'je_advance_supplier_apply',
+        },
+      ],
+      journal_entry_id: 'je_advance_supplier',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 2,
+    };
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    const event = (
+      row: Purchase | Payment | Advance,
+      entityType: SyncEvent['entity_type'],
+    ): SyncEvent => ({
+      event_id: `evt_${row.id}`,
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: entityType,
+      entity_id: row.id,
+      operation: 'create',
+      entity_version: row.entity_version,
+      timestamp: NOW,
+      payload: row as unknown as Readonly<Record<string, unknown>>,
+      payload_hash: `hash_${row.id}`,
+      previous_hash: null,
+      sync_status: 'LOCAL_ONLY',
+    });
+    await producer.writeJournalEvents([
+      event(purchase, 'purchase'),
+      event(supplierPayment, 'payment'),
+      event(supplierAdvance, 'advance'),
+    ]);
+
+    await rebuildFromDrive(provider, {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(await db.purchases.get(purchase.id)).toMatchObject({
+      paid_paise: 5000,
+      balance_paise: 6800,
+      status: 'partial',
+    });
+  });
+
+  it('rebuilds Sales Return balance reductions and moving-average inventory cost', async () => {
+    const salesReturn: SalesReturn = {
+      id: 'sr_balance',
+      business_id: BID,
+      return_number: 'SR-BALANCE',
+      return_date: '2026-08-20',
+      original_invoice_id: inv1.id,
+      customer_id: cust1.id,
+      subtotal_paise: 10000,
+      discount_paise: 0,
+      taxable_paise: 10000,
+      cgst_paise: 900,
+      sgst_paise: 900,
+      igst_paise: 0,
+      cess_paise: 0,
+      round_off_paise: 0,
+      round_off_mode: 'none',
+      pre_round_total_paise: 11800,
+      total_paise: 11800,
+      apply_to_balance_paise: 11800,
+      customer_credit_paise: 0,
+      status: 'posted',
+      reason: 'damaged',
+      notes: '',
+      journal_entry_id: 'je_sr_balance',
+      reversed_credit_note_invoice_id: null,
+      legacy_migration_classification: null,
+      device_id: 'device_test',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const laterPurchase: StockMovement = {
+      id: 'mv_later_purchase',
+      business_id: BID,
+      item_id: item.id,
+      warehouse_id: warehouse.id,
+      movement_type: 'purchase',
+      qty_micros: 100_000_000,
+      unit_cost_paise: 12000,
+      ref_type: 'purchase',
+      ref_id: 'purchase_later',
+      occurred_at: '2026-08-20T08:00:00.000Z',
+      notes: '',
+    };
+    const laterSale: StockMovement = {
+      id: 'mv_later_sale',
+      business_id: BID,
+      item_id: item.id,
+      warehouse_id: warehouse.id,
+      movement_type: 'sale',
+      qty_micros: -50_000_000,
+      unit_cost_paise: 10020,
+      ref_type: 'invoice',
+      ref_id: 'inv_later',
+      occurred_at: '2026-08-20T09:00:00.000Z',
+      notes: '',
+    };
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    const event = (
+      row: SalesReturn | StockMovement,
+      entityType: SyncEvent['entity_type'],
+    ): SyncEvent => ({
+      event_id: `evt_${row.id}`,
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: entityType,
+      entity_id: row.id,
+      operation: 'create',
+      entity_version: 1,
+      timestamp:
+        entityType === 'sales_return'
+          ? '2026-08-20T07:00:00.000Z'
+          : (row as StockMovement).occurred_at,
+      payload: row as unknown as Readonly<Record<string, unknown>>,
+      payload_hash: `hash_${row.id}`,
+      previous_hash: null,
+      sync_status: 'LOCAL_ONLY',
+    });
+    await producer.writeJournalEvents([
+      event(salesReturn, 'sales_return'),
+      event(laterPurchase, 'stock_movement'),
+      event(laterSale, 'stock_movement'),
+    ]);
+
+    await rebuildFromDrive(provider, {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(await db.invoices.get(inv1.id)).toMatchObject({
+      paid_paise: 10000,
+      balance_paise: 1800,
+      status: 'partial',
+    });
+    expect(
+      await db.item_stock
+        .where('[business_id+item_id+warehouse_id]')
+        .equals([BID, item.id, warehouse.id])
+        .first(),
+    ).toMatchObject({
+      qty_micros: 148_000_000,
+      avg_cost_paise: 9333,
+    });
+  });
+
+  it('removes stale stock cache rows when no movements remain', async () => {
+    const emptyRoot = await mktmp();
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: emptyRoot });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeJournalEvents([
+      {
+        event_id: 'evt_business_only',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'business',
+        entity_id: business.id,
+        operation: 'create',
+        entity_version: business.entity_version,
+        timestamp: NOW,
+        payload: business,
+        payload_hash: 'hash_business_only',
+        previous_hash: null,
+        sync_status: 'LOCAL_ONLY',
+      },
+    ]);
+    await db.item_stock.add({
+      id: `${BID}:stale:warehouse`,
+      business_id: BID,
+      item_id: 'stale',
+      warehouse_id: 'warehouse',
+      qty_micros: 99_000_000,
+      avg_cost_paise: 9999,
+      updated_at: NOW,
+    });
+
+    await rebuildFromDrive(new LocalFolderStorageProvider(), {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: emptyRoot },
+    });
+
+    expect(await db.item_stock.where('business_id').equals(BID).count()).toBe(0);
+    await fs.rm(emptyRoot, { recursive: true, force: true });
+  });
+
+  it('replaces only the selected business and preserves other local businesses', async () => {
+    const otherBusinessId = 'biz_other';
+    await db.businesses.add({
+      ...business,
+      id: otherBusinessId,
+      name: 'Other Traders',
+      legal_name: 'Other Traders Pvt Ltd',
+    });
+    await db.customers.add({
+      ...cust1,
+      id: 'cust_other',
+      business_id: otherBusinessId,
+      name: 'Other Customer',
+    });
+    await db.sync_events.add({
+      event_id: 'evt_other_unshipped',
+      business_id: otherBusinessId,
+      device_id: 'device_other',
+      entity_type: 'customer',
+      entity_id: 'cust_other',
+      operation: 'created',
+      entity_version: 1,
+      timestamp: '2026-08-21T09:00:00.000Z',
+      payload: { id: 'cust_other' },
+      payload_hash: 'otherhash',
+      previous_hash: 'genesis',
+      sync_status: 'LOCAL_ONLY',
+      sync_attempts: 0,
+      last_error: null,
+      synced_at: null,
+      journal_file: null,
+    });
+
+    const report = await rebuildFromDrive(provider, {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(await db.businesses.get(otherBusinessId)).toBeDefined();
+    expect(await db.customers.get('cust_other')).toMatchObject({
+      business_id: otherBusinessId,
+      name: 'Other Customer',
+    });
+    expect(await db.sync_events.get('evt_other_unshipped')).toBeDefined();
+    expect(await db.businesses.get(BID)).toMatchObject({ name: 'Acme Traders' });
+    expect(await db.customers.where('business_id').equals(BID).count()).toBe(2);
+    expect((await db.businesses.count())).toBe(2);
+    expect(report.counts.businesses).toBe(1);
   });
 
   it('refuses to run when the target DB has unshipped local events', async () => {
@@ -730,6 +1326,98 @@ describe('rebuildFromDrive', () => {
     expect(await db.sync_events.get('evt_unshipped_2')).toBeUndefined();
   });
 
+  it('replays permanent invoice deletion events idempotently', async () => {
+    const { applyEvent } = await import('./eventHandlers');
+    const now = new Date().toISOString();
+    await db.invoices.add({ ...inv1, deleted_at: now } as Invoice);
+    await db.invoice_lines.add(inv1_line);
+    await db.invoice_line_return_summary.add({
+      invoice_line_id: inv1_line.id,
+      invoice_id: inv1.id,
+      business_id: BID,
+      returned_qty_micros: 0,
+      updated_at: now,
+    });
+    await db.payments.add({
+      id: 'payment_invoice_purge',
+      business_id: BID,
+      payment_number: 'PAY-PURGE',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust_1',
+      method: 'cash',
+      account_id: 'acc_cash',
+      amount_paise: inv1.total_paise,
+      reference: '',
+      notes: '',
+      allocations: [{ invoice_id: inv1.id, amount_paise: inv1.total_paise }],
+      journal_entry_id: 'je_payment_purge',
+      deleted_at: now,
+      deleted_reason: `cascade:${inv1.id}`,
+      created_at: now,
+      updated_at: now,
+      entity_version: 2,
+    });
+    await db.payments.add({
+      id: 'payment_invoice_purge_active',
+      business_id: BID,
+      payment_number: 'PAY-PURGE-ACTIVE',
+      payment_date: '2026-08-19',
+      direction: 'in',
+      party_type: 'customer',
+      party_id: 'cust_1',
+      method: 'cash',
+      account_id: 'acc_cash',
+      amount_paise: 100,
+      reference: '',
+      notes: '',
+      allocations: [{ invoice_id: 'another_invoice', amount_paise: 100 }],
+      journal_entry_id: 'je_payment_purge_active',
+      deleted_at: null,
+      deleted_reason: null,
+      created_at: now,
+      updated_at: now,
+      entity_version: 3,
+    });
+    const event: SyncEvent = {
+      event_id: 'evt_invoice_purge',
+      business_id: BID,
+      device_id: 'dev_1',
+      entity_type: 'invoice',
+      entity_id: inv1.id,
+      operation: 'delete',
+      entity_version: 2,
+      timestamp: now,
+      payload: {
+        invoice_id: inv1.id,
+        permanently_deleted: true,
+        cascaded_payment_ids: [
+          'payment_invoice_purge',
+          'payment_invoice_purge_active',
+        ],
+        cascaded_advance_ids: [],
+      },
+      payload_hash: 'x',
+      previous_hash: null,
+      sync_status: 'SYNCED',
+    };
+
+    expect(await applyEvent(event, { db, businessId: BID, diagnostics: [] })).toBe(
+      'applied',
+    );
+    expect(await applyEvent(event, { db, businessId: BID, diagnostics: [] })).toBe(
+      'applied',
+    );
+    expect(await db.invoices.get(inv1.id)).toBeUndefined();
+    expect(await db.invoice_lines.where('invoice_id').equals(inv1.id).count()).toBe(0);
+    expect(await db.payments.get('payment_invoice_purge')).toBeUndefined();
+    expect(await db.payments.get('payment_invoice_purge_active')).toBeDefined();
+    expect(
+      await db.invoice_line_return_summary.where('invoice_id').equals(inv1.id).count(),
+    ).toBe(0);
+  });
+
   it('replays "business:created" events into the businesses table', async () => {
     // Onboarding emits events with operation:'created' (not 'create'). Without
     // an explicit handler mapping, restore's applyEvent returned 'unhandled'
@@ -791,6 +1479,248 @@ describe('rebuildFromDrive', () => {
     const row = await db.businesses.get('biz_replay');
     expect(row).toBeDefined();
     expect(row!.name).toBe('Replayed Biz');
+  });
+
+  it('merges partial updates without deleting unchanged fields', async () => {
+    const { applyEvent } = await import('./eventHandlers');
+    const diagnostics: string[] = [];
+    await db.customers.add(cust1);
+    await db.invoices.add(inv1 as Invoice);
+
+    const baseEvent: SyncEvent = {
+      event_id: 'evt_partial_customer',
+      business_id: BID,
+      device_id: 'dev_1',
+      entity_type: 'customer',
+      entity_id: cust1.id,
+      operation: 'update',
+      entity_version: 2,
+      timestamp: NOW,
+      payload: { id: cust1.id, name: 'Renamed Customer', entity_version: 2 },
+      payload_hash: 'x',
+      previous_hash: null,
+      sync_status: 'SYNCED',
+    };
+    await applyEvent(baseEvent, { db, businessId: BID, diagnostics });
+    await applyEvent(
+      {
+        ...baseEvent,
+        event_id: 'evt_partial_invoice',
+        entity_type: 'invoice',
+        entity_id: inv1.id,
+        payload: {
+          id: inv1.id,
+          balance_paise: 1000,
+          status: 'partial',
+          entity_version: 2,
+        },
+      },
+      { db, businessId: BID, diagnostics },
+    );
+
+    expect(await db.customers.get(cust1.id)).toMatchObject({
+      business_id: BID,
+      name: 'Renamed Customer',
+      email: cust1.email,
+    });
+    expect(await db.invoices.get(inv1.id)).toMatchObject({
+      business_id: BID,
+      invoice_number: inv1.invoice_number,
+      total_paise: inv1.total_paise,
+      balance_paise: 1000,
+      status: 'partial',
+    });
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('replays sales return records, cancellation updates, and purchase reversals', async () => {
+    const { applyEvent } = await import('./eventHandlers');
+    const diagnostics: string[] = [];
+    const salesReturn: SalesReturn = {
+      id: 'sr_replay',
+      business_id: BID,
+      return_number: 'SR-000001',
+      return_date: '2026-08-20',
+      original_invoice_id: inv1.id,
+      customer_id: cust1.id,
+      subtotal_paise: 10000,
+      discount_paise: 0,
+      taxable_paise: 10000,
+      cgst_paise: 900,
+      sgst_paise: 900,
+      igst_paise: 0,
+      cess_paise: 0,
+      round_off_paise: 0,
+      round_off_mode: 'none',
+      pre_round_total_paise: 11800,
+      total_paise: 11800,
+      apply_to_balance_paise: 11800,
+      customer_credit_paise: 0,
+      status: 'posted',
+      reason: 'damaged',
+      notes: '',
+      journal_entry_id: 'je_sr',
+      reversed_credit_note_invoice_id: null,
+      legacy_migration_classification: null,
+      device_id: 'dev_1',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const salesReturnItem: SalesReturnItem = {
+      id: 'sri_replay',
+      business_id: BID,
+      sales_return_id: salesReturn.id,
+      original_invoice_id: inv1.id,
+      original_invoice_line_id: inv1_line.id,
+      item_id: item.id,
+      description: item.name,
+      hsn: item.hsn,
+      warehouse_id: warehouse.id,
+      line_no: 1,
+      qty_micros: 1_000_000,
+      unit_price_paise: 10000,
+      discount_pct_bps: 0,
+      discount_paise: 0,
+      taxable_paise: 10000,
+      tax_rate_bps: 1800,
+      cgst_paise: 900,
+      sgst_paise: 900,
+      igst_paise: 0,
+      cess_paise: 0,
+      line_total_paise: 11800,
+    };
+    const purchase: Purchase = {
+      id: 'purchase_replay',
+      business_id: BID,
+      bill_number: 'BILL-001',
+      supplier_bill_number: 'SUP-001',
+      bill_date: '2026-08-20',
+      due_date: null,
+      supplier_id: 'supplier_1',
+      supplier_state_code: '27',
+      is_interstate: 0,
+      financial_year: '2026-27',
+      subtotal_paise: 10000,
+      discount_paise: 0,
+      taxable_paise: 10000,
+      cgst_paise: 900,
+      sgst_paise: 900,
+      igst_paise: 0,
+      cess_paise: 0,
+      round_off_paise: 0,
+      round_off_mode: 'none',
+      pre_round_total_paise: 11800,
+      total_paise: 11800,
+      paid_paise: 0,
+      balance_paise: 11800,
+      status: 'received',
+      reversed_by_purchase_id: null,
+      reverses_purchase_id: null,
+      notes: '',
+      attachment_id: null,
+      journal_entry_id: 'je_purchase',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    await db.purchases.add(purchase);
+
+    const event = (overrides: Partial<SyncEvent>): SyncEvent => ({
+      event_id: 'evt_replay',
+      business_id: BID,
+      device_id: 'dev_1',
+      entity_type: 'sales_return',
+      entity_id: salesReturn.id,
+      operation: 'create',
+      entity_version: 1,
+      timestamp: NOW,
+      payload: salesReturn as unknown as Readonly<Record<string, unknown>>,
+      payload_hash: 'x',
+      previous_hash: null,
+      sync_status: 'SYNCED',
+      ...overrides,
+    });
+    await applyEvent(event({}), { db, businessId: BID, diagnostics });
+    await applyEvent(
+      event({
+        event_id: 'evt_sri_replay',
+        entity_type: 'sales_return_item',
+        entity_id: salesReturnItem.id,
+        payload: salesReturnItem as unknown as Readonly<Record<string, unknown>>,
+      }),
+      { db, businessId: BID, diagnostics },
+    );
+    await applyEvent(
+      event({
+        event_id: 'evt_sr_cancel',
+        operation: 'update',
+        entity_version: 2,
+        payload: { id: salesReturn.id, status: 'cancelled', entity_version: 2 },
+      }),
+      { db, businessId: BID, diagnostics },
+    );
+    await applyEvent(
+      event({
+        event_id: 'evt_purchase_reverse',
+        entity_type: 'purchase',
+        entity_id: purchase.id,
+        operation: 'reverse',
+        entity_version: 2,
+        payload: {
+          purchase_id: purchase.id,
+          reason: 'edit',
+          reversal_journal_id: 'je_purchase_reverse',
+          renamed_bill_number: 'BILL-001-REV-ABC123',
+        },
+      }),
+      { db, businessId: BID, diagnostics },
+    );
+
+    expect(await db.sales_returns.get(salesReturn.id)).toMatchObject({
+      status: 'cancelled',
+      return_number: salesReturn.return_number,
+      total_paise: salesReturn.total_paise,
+    });
+    expect(await db.sales_return_items.get(salesReturnItem.id)).toEqual(salesReturnItem);
+    expect(await db.purchases.get(purchase.id)).toMatchObject({
+      status: 'cancelled',
+      bill_number: 'BILL-001-REV-ABC123',
+      total_paise: purchase.total_paise,
+    });
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('preserves the deletion reversal journal pointer during replay', async () => {
+    const { applyEvent } = await import('./eventHandlers');
+    await db.invoices.add(inv1 as Invoice);
+    await applyEvent(
+      {
+        event_id: 'evt_delete_pointer',
+        business_id: BID,
+        device_id: 'dev_1',
+        entity_type: 'invoice',
+        entity_id: inv1.id,
+        operation: 'delete',
+        entity_version: 2,
+        timestamp: NOW,
+        payload: {
+          invoice_id: inv1.id,
+          deleted_at: NOW,
+          reason: 'mistake',
+          deletion_reversal_journal_id: 'je_delete_reverse',
+        },
+        payload_hash: 'x',
+        previous_hash: null,
+        sync_status: 'SYNCED',
+      },
+      { db, businessId: BID, diagnostics: [] },
+    );
+
+    expect(await db.invoices.get(inv1.id)).toMatchObject({
+      deleted_at: NOW,
+      deletion_reversal_journal_id: 'je_delete_reverse',
+    });
   });
 
   it('sets current_business_id in meta-DB after successful restore', async () => {
@@ -902,11 +1832,37 @@ describe('rebuildFromDrive', () => {
     await fs.rm(emptyRoot, { recursive: true, force: true });
   });
 
+  it('refuses a journal-only restore when the manifest declares a missing snapshot', async () => {
+    const manifestPath = path.join(
+      root,
+      'BusinessVault - Acme Traders/metadata/manifest.json',
+    );
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+    manifest.currentSnapshot = {
+      kind: 'daily',
+      asOf: '2026-08-19',
+      path: 'snapshots/daily/2026-08-19',
+    };
+    await fs.writeFile(manifestPath, JSON.stringify(manifest));
+    await fs.rm(
+      path.join(root, 'BusinessVault - Acme Traders/snapshots/daily/2026-08-19'),
+      { recursive: true, force: true },
+    );
+
+    await expect(
+      rebuildFromDrive(provider, {
+        db,
+        providerConfig: { kind: 'local-folder', rootPath: root },
+      }),
+    ).rejects.toBeInstanceOf(BackupIntegrityError);
+    expect(await db.customers.count()).toBe(0);
+  });
+
   it('aborts with "Backup integrity verification failed" on checksum mismatch', async () => {
     // Corrupt one CSV in the snapshot.
     const csvPath = path.join(
       root,
-      'BusinessVault/Acme Traders/snapshots/daily/2026-08-19/customers.csv',
+      'BusinessVault - Acme Traders/snapshots/daily/2026-08-19/customers.csv',
     );
     const original = await fs.readFile(csvPath, 'utf8');
     await fs.writeFile(csvPath, original + '\nid,business_id\ntamper,tamper\n');

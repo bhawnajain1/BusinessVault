@@ -13,6 +13,8 @@ import type {
 import Money from '../components/Money';
 import Qty from '../components/Qty';
 import StatusBadge from '../components/StatusBadge';
+import SalesReturnPicker from '../returns/SalesReturnPicker';
+import { useActiveBusiness } from '../hooks/useActiveBusiness';
 
 interface Loaded {
   invoice: Invoice;
@@ -26,9 +28,12 @@ interface Loaded {
 export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { businessId, deviceId } = useActiveBusiness();
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [returnPickerOpen, setReturnPickerOpen] = useState(false);
+  const [eInvoiceNote, setEInvoiceNote] = useState('');
 
   async function load() {
     if (!id) return;
@@ -84,6 +89,20 @@ export default function InvoiceDetail() {
   const superseded = !!invoice.reversed_by_invoice_id;
   const isCreditNote = !!invoice.reverses_invoice_id;
 
+  async function saveLocalEInvoiceMetadata() {
+    if (!data || !deviceId) return;
+    try {
+      await new InvoiceService().updateLocalEInvoiceMetadata({
+        invoiceId: invoice.id,
+        deviceId,
+        note: eInvoiceNote,
+      });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   return (
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -108,10 +127,19 @@ export default function InvoiceDetail() {
           {!superseded && invoice.status !== 'cancelled' && (
             <Link
               to={`/invoices/${invoice.id}/edit`}
-              className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+              className="action-edit text-sm"
             >
               Edit
             </Link>
+          )}
+          {!superseded && !isCreditNote && invoice.status !== 'cancelled' && businessId && deviceId && (
+            <button
+              type="button"
+              onClick={() => setReturnPickerOpen(true)}
+              className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
+            >
+              Create sales return
+            </button>
           )}
           <Link
             to={`/invoices/${invoice.id}/print`}
@@ -123,7 +151,7 @@ export default function InvoiceDetail() {
             type="button"
             onClick={deleteInvoice}
             disabled={deleting}
-            className="text-sm border border-rose-300 text-rose-700 rounded px-3 py-1.5 hover:bg-rose-50 disabled:opacity-50"
+            className="action-delete text-sm disabled:opacity-50"
           >
             {deleting ? 'Deleting...' : 'Delete'}
           </button>
@@ -151,6 +179,33 @@ export default function InvoiceDetail() {
             {invoice.place_of_supply} ({invoice.customer_state_code}){' '}
             {invoice.is_interstate ? '— Interstate' : '— Intrastate'}
           </div>
+        </div>
+      </div>
+
+      <div className="border border-amber-200 bg-amber-50 rounded p-3 text-sm">
+        <div className="font-medium text-amber-900">E-invoice metadata</div>
+        <div className="text-amber-800 mt-1">
+          Local record only. This does not submit to or verify with the IRP.
+        </div>
+        <div className="mt-2 flex gap-2">
+          <input
+            value={eInvoiceNote}
+            onChange={(event) => setEInvoiceNote(event.target.value)}
+            placeholder={invoice.e_invoice_note ?? 'IRN / acknowledgement notes'}
+            className="flex-1 rounded border border-amber-300 bg-white px-2 py-1"
+            aria-label="Local e-invoice note"
+          />
+          <button
+            type="button"
+            onClick={saveLocalEInvoiceMetadata}
+            className="rounded bg-amber-700 px-3 py-1 text-white"
+          >
+            Save local note
+          </button>
+        </div>
+        <div className="mt-2 text-xs text-amber-900">
+          Status: {invoice.e_invoice_status ?? 'not_recorded'}
+          {invoice.e_invoice_irn ? ` · IRN: ${invoice.e_invoice_irn}` : ''}
         </div>
       </div>
 
@@ -229,6 +284,19 @@ export default function InvoiceDetail() {
           </div>
         </div>
       </div>
+
+      {returnPickerOpen && businessId && deviceId && (
+        <SalesReturnPicker
+          businessId={businessId}
+          deviceId={deviceId}
+          invoiceId={invoice.id}
+          onClose={() => setReturnPickerOpen(false)}
+          onPosted={() => {
+            setReturnPickerOpen(false);
+            void load();
+          }}
+        />
+      )}
 
       {journal && (
         <div className="border border-slate-200 rounded">

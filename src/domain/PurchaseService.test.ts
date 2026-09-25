@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { BusinessVaultDB } from '../db/database';
 import { PurchaseService } from './PurchaseService';
+import { computePayables } from './partyLedger';
 
 const BIZ = 'biz-purch';
 const DEV = 'dev-purch';
@@ -91,6 +92,33 @@ describe('PurchaseService', () => {
         'stock_movement.movement',
       ].sort(),
     );
+    expect(p.due_date).toBe('2026-09-03');
+  });
+
+  it('keeps an explicitly supplied due date instead of applying the default', async () => {
+    const db = freshDb();
+    const p = await new PurchaseService({ db }).create({
+      businessId: BIZ,
+      deviceId: DEV,
+      billNumber: 'BILL-DUE-DATE',
+      billDate: '2026-08-19',
+      dueDate: '2026-08-25',
+      supplierId: 'sup-1',
+      supplierStateCode: '29',
+      isInterstate: false,
+      financialYear: '2026-27',
+      accounts: ACCOUNTS,
+      lines: [
+        {
+          itemId: 'item-1',
+          warehouseId: 'wh-1',
+          qtyMicros: 1_000_000,
+          unitCostPaise: 10000,
+          taxRateBps: 0,
+        },
+      ],
+    });
+    expect(p.due_date).toBe('2026-08-25');
   });
 
   it('uses banker\'s rounding on the half-split of odd tax amounts (regression)', async () => {
@@ -239,5 +267,110 @@ describe('PurchaseService', () => {
     // stock should equal first purchase's qty only (1_000_000), not doubled
     const stock = await db.item_stock.get(`${BIZ}:item-1:wh-1`);
     expect(stock!.qty_micros).toBe(1_000_000);
+  });
+
+  it('reverses and reissues an edited bill without duplicating stock or payables', async () => {
+    const db = freshDb();
+    const svc = new PurchaseService({ db, now: () => '2026-08-19T10:00:00.000Z' });
+    const input = {
+      businessId: BIZ,
+      deviceId: DEV,
+      billNumber: 'BILL-EDIT',
+      billDate: '2026-08-19',
+      supplierId: 'sup-1',
+      supplierStateCode: '29',
+      isInterstate: false,
+      financialYear: '2026-27',
+      accounts: ACCOUNTS,
+      lines: [{
+        itemId: 'item-1',
+        warehouseId: 'wh-1',
+        qtyMicros: 10_000_000,
+        unitCostPaise: 5000,
+        taxRateBps: 0,
+      }],
+    };
+    const original = await svc.create(input);
+    const replacement = await svc.update(original.id, {
+      ...input,
+      lines: [{ ...input.lines[0], qtyMicros: 6_000_000 }],
+    });
+
+    const old = await db.purchases.get(original.id);
+    expect(old?.status).toBe('cancelled');
+    expect(old?.bill_number).toMatch(/^BILL-EDIT-REV-/);
+    expect(old?.replaced_by_purchase_id).toBe(replacement.id);
+    expect(old?.reversal_journal_entry_id).toBeTruthy();
+    expect(replacement.replaces_purchase_id).toBe(original.id);
+    expect(replacement.bill_number).toBe('BILL-EDIT');
+
+    const reversal = await db.journal_entries.get(old!.reversal_journal_entry_id!);
+    const originalJournal = await db.journal_entries.get(original.journal_entry_id);
+    expect(reversal?.reverses_id).toBe(original.journal_entry_id);
+    expect(originalJournal?.reversed_by_id).toBe(reversal?.id);
+
+    const stock = await db.item_stock.get(`${BIZ}:item-1:wh-1`);
+    expect(stock?.qty_micros).toBe(6_000_000);
+    expect((await db.purchases.where('business_id').equals(BIZ).toArray()).filter(
+      (p) => p.status !== 'cancelled' && !p.reverses_purchase_id,
+    )).toHaveLength(1);
+    const payables = computePayables(
+      await db.purchases.where('business_id').equals(BIZ).toArray(),
+      '2026-08-19',
+    );
+    expect(payables.totals.outstanding_paise).toBe(replacement.total_paise);
+  });
+
+  it('cancels an unpaid bill and removes it from payables while preserving journals', async () => {
+    const db = freshDb();
+    const svc = new PurchaseService({ db, now: () => '2026-08-19T10:00:00.000Z' });
+    const purchase = await svc.create({
+      businessId: BIZ,
+      deviceId: DEV,
+      billNumber: 'BILL-CANCEL',
+      billDate: '2026-08-19',
+      supplierId: 'sup-1',
+      supplierStateCode: '29',
+      isInterstate: false,
+      financialYear: '2026-27',
+      accounts: ACCOUNTS,
+      lines: [{ itemId: 'item-1', warehouseId: 'wh-1', qtyMicros: 1_000_000, unitCostPaise: 5000, taxRateBps: 0 }],
+    });
+    const cancelled = await svc.cancel(purchase.id, DEV, 'test cancellation');
+    expect(cancelled.status).toBe('cancelled');
+    expect(cancelled.cancel_reason).toBe('test cancellation');
+    expect(await db.journal_entries.get(purchase.journal_entry_id)).toBeDefined();
+    expect(await db.journal_entries.get(cancelled.reversal_journal_entry_id!)).toBeDefined();
+    expect(computePayables(await db.purchases.toArray(), '2026-08-19').totals.outstanding_paise).toBe(0);
+    expect((await db.item_stock.get(`${BIZ}:item-1:wh-1`))?.qty_micros).toBe(0);
+  });
+
+  it('rejects cancelling a purchase already marked as returned', async () => {
+    const db = freshDb();
+    const svc = new PurchaseService({ db });
+    const purchase = await svc.create({
+      businessId: BIZ,
+      deviceId: DEV,
+      billNumber: 'BILL-RETURNED',
+      billDate: '2026-08-19',
+      supplierId: 'sup-1',
+      supplierStateCode: '29',
+      isInterstate: false,
+      financialYear: '2026-27',
+      accounts: ACCOUNTS,
+      lines: [{
+        itemId: 'item-1',
+        warehouseId: 'wh-1',
+        qtyMicros: 1_000_000,
+        unitCostPaise: 5000,
+        taxRateBps: 0,
+      }],
+    });
+    await db.purchases.update(purchase.id, { reversed_by_purchase_id: 'debit-note-1' });
+
+    await expect(svc.cancel(purchase.id, DEV)).rejects.toThrow(
+      'already has a purchase return',
+    );
+    expect((await db.item_stock.get(`${BIZ}:item-1:wh-1`))?.qty_micros).toBe(1_000_000);
   });
 });

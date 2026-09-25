@@ -13,6 +13,14 @@ interface NavSection {
 
 const SECTIONS: NavSection[] = [
   {
+    title: 'Overview',
+    items: [{ to: '/', label: 'Dashboard', end: true }],
+  },
+  {
+    title: 'Customers',
+    items: [{ to: '/customers', label: 'Customers' }],
+  },
+  {
     title: 'Sell',
     items: [
       { to: '/pos', label: 'POS' },
@@ -41,10 +49,6 @@ const SECTIONS: NavSection[] = [
     ],
   },
   {
-    title: 'Customers',
-    items: [{ to: '/customers', label: 'Customers' }],
-  },
-  {
     title: 'Reports',
     items: [
       { to: '/reports/receivables-payables', label: 'Receivables & Payables' },
@@ -68,19 +72,19 @@ const SECTIONS: NavSection[] = [
 ];
 
 const linkBase =
-  'group relative flex items-center rounded-md px-2.5 py-1 text-[13px] text-fg-muted hover:bg-surface-hover hover:text-fg transition-colors';
-const linkActive = 'bg-surface-hover text-fg font-medium';
+  'group relative flex items-center rounded-xl px-3 py-2.5 text-[15px] font-semibold text-slate-700 transition-colors hover:bg-blue-50 hover:text-blue-700';
+const linkActive = 'bg-blue-50 text-blue-700 shadow-sm';
 
 export default function Sidebar() {
   return (
     <nav
-      className="w-56 shrink-0 border-r border-border bg-app px-3 py-4 overflow-y-auto"
+      className="app-sidebar h-full min-h-0 w-60 shrink-0 overflow-y-auto border-r border-slate-200/80 bg-white/70 px-4 py-5 backdrop-blur-xl"
       aria-label="Primary"
     >
-      <ul className="space-y-4">
+      <ul className="space-y-6">
         {SECTIONS.map((section) => (
           <li key={section.title}>
-            <div className="mb-1 px-2.5 text-[10px] font-medium uppercase tracking-wider text-fg-subtle">
+            <div className="mb-2 px-2.5 text-[12px] font-bold uppercase tracking-[0.14em] text-slate-600">
               {section.title}
             </div>
             <ul className="space-y-px">
@@ -98,7 +102,7 @@ export default function Sidebar() {
                         {isActive && (
                           <span
                             aria-hidden="true"
-                            className="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-0.5 rounded-r bg-fg"
+                            className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-blue-600"
                           />
                         )}
                         <span className="ml-1">{item.label}</span>

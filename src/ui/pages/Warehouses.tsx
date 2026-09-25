@@ -196,7 +196,7 @@ export default function Warehouses() {
                   <button
                     type="button"
                     onClick={() => startEdit(w)}
-                    className="text-xs text-blue-700 hover:underline"
+                    className="action-edit text-xs"
                   >
                     Edit
                   </button>

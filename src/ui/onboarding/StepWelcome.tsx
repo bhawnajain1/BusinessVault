@@ -34,7 +34,7 @@ export default function StepWelcome({ form, onChange, onNext }: Props) {
         />
         <p className="mt-1 text-xs text-slate-500">
           This becomes the name of your Google Drive folder:
-          BusinessVault/{form.name.trim() || 'Sharma Electronics'}/
+           BusinessVault - {form.name.trim() || 'Sharma Electronics'}/
         </p>
       </div>
 

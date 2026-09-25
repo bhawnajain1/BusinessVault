@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { db } from '../../db';
-import type { Invoice, InvoiceLine, Item } from '../../db/types';
+import type { Invoice, InvoiceLine, Item, Purchase, PurchaseLine } from '../../db/types';
 import { downloadCsv } from '../../csv/streamCsvExport';
-import { money, parseDateInput, toDateString, financialYearStart } from './reportUtils';
+import { downloadGstrCsv, downloadGstrJson, downloadGstrExcel, buildGstrReport, type GstrReportKind } from '../../domain/gstrExport';
+import { money, toDateString, financialYearStart } from './reportUtils';
 import { useBusinessId } from './useBusinessId';
+import { ReportTableToolbar, useReportTableControls } from './reportTableControls';
 
 interface SlabRow {
   rate_bps: number;
@@ -24,6 +26,14 @@ export default function GstSummaryPage() {
   const [rows, setRows] = useState<SlabRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [reportKind, setReportKind] = useState<GstrReportKind>('gstr1');
+  const [exporting, setExporting] = useState(false);
+  const controls = useReportTableControls(
+    rows,
+    (r) => `${r.rate_bps / 100}% ${r.invoice_count} ${r.line_count}`,
+    (r, key) => key === 'rate' ? r.rate_bps : key === 'tax' ? r.cgst_paise + r.sgst_paise + r.igst_paise + r.cess_paise : key === 'taxable' ? r.taxable_paise : r.line_count,
+    { key: 'rate', direction: 'asc' },
+  );
 
   useEffect(() => {
     if (!businessId) return;
@@ -32,20 +42,29 @@ export default function GstSummaryPage() {
     setErr(null);
     (async () => {
       try {
-        const invoices: Invoice[] = await db.invoices
-          .where('[business_id+invoice_date]')
-          .between([businessId, fromStr], [businessId, toStr], true, true)
-          .toArray();
-        const invIds = new Set(
-          invoices.filter((i) => i.status !== 'draft' && i.status !== 'cancelled').map((i) => i.id),
-        );
-        const invById = new Map(invoices.map((i) => [i.id, i]));
-
-        const allLines: InvoiceLine[] = await db.invoice_lines
-          .where('business_id')
-          .equals(businessId)
-          .toArray();
-        const lines = allLines.filter((l) => invIds.has(l.invoice_id));
+        const lines: Array<InvoiceLine | PurchaseLine> = [];
+        const documentIds = new Set<string>();
+        if (reportKind === 'gstr1') {
+          const invoices: Invoice[] = await db.invoices
+            .where('[business_id+invoice_date]')
+            .between([businessId, fromStr], [businessId, toStr], true, true)
+            .toArray();
+          for (const invoice of invoices) {
+            if (invoice.status !== 'draft' && invoice.status !== 'cancelled' && !invoice.deleted_at) documentIds.add(invoice.id);
+          }
+          const allLines: InvoiceLine[] = await db.invoice_lines.where('business_id').equals(businessId).toArray();
+          lines.push(...allLines.filter((line) => documentIds.has(line.invoice_id)));
+        } else {
+          const purchases: Purchase[] = await db.purchases
+            .where('[business_id+bill_date]')
+            .between([businessId, fromStr], [businessId, toStr], true, true)
+            .toArray();
+          for (const purchase of purchases) {
+            if (purchase.status !== 'draft' && purchase.status !== 'cancelled') documentIds.add(purchase.id);
+          }
+          const allLines: PurchaseLine[] = await db.purchase_lines.where('business_id').equals(businessId).toArray();
+          lines.push(...allLines.filter((line) => documentIds.has(line.purchase_id)));
+        }
 
         const items: Item[] = await db.items.where('business_id').equals(businessId).toArray();
         const itemById = new Map(items.map((i) => [i.id, i]));
@@ -70,7 +89,7 @@ export default function GstSummaryPage() {
           s.igst_paise += l.igst_paise;
           s.cess_paise += l.cess_paise;
           s.line_count += 1;
-          if (invById.get(l.invoice_id)) s._invIds.add(l.invoice_id);
+           s._invIds.add('invoice_id' in l ? l.invoice_id : l.purchase_id);
           bySlab.set(rate, s);
         }
         const out: SlabRow[] = Array.from(bySlab.values())
@@ -87,7 +106,7 @@ export default function GstSummaryPage() {
     return () => {
       alive = false;
     };
-  }, [businessId, fromStr, toStr]);
+  }, [businessId, fromStr, toStr, reportKind]);
 
   const totals = useMemo(() => {
     return rows.reduce(
@@ -106,11 +125,11 @@ export default function GstSummaryPage() {
 
   async function exportCsv(): Promise<void> {
     await downloadCsv({
-      columns: ['tax_rate_pct', 'invoice_count', 'line_count', 'taxable', 'cgst', 'sgst', 'igst', 'cess', 'total_tax'],
+       columns: ['tax_rate_pct', reportKind === 'gstr1' ? 'invoice_count' : 'bill_count', 'line_count', 'taxable', 'cgst', 'sgst', 'igst', 'cess', 'total_tax'],
       rows,
       toRow: (r) => ({
         tax_rate_pct: (r.rate_bps / 100).toFixed(2),
-        invoice_count: r.invoice_count,
+         [reportKind === 'gstr1' ? 'invoice_count' : 'bill_count']: r.invoice_count,
         line_count: r.line_count,
         taxable: (r.taxable_paise / 100).toFixed(2),
         cgst: (r.cgst_paise / 100).toFixed(2),
@@ -123,12 +142,40 @@ export default function GstSummaryPage() {
     });
   }
 
+  async function exportGstr(format: 'csv' | 'json'): Promise<void> {
+    if (!businessId) return;
+    setExporting(true);
+    try {
+      const report = await buildGstrReport(businessId, reportKind, fromStr, toStr);
+      if (format === 'csv') await downloadGstrCsv(report);
+      else await downloadGstrJson(report);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function exportGstrExcel(): Promise<void> {
+    if (!businessId) return;
+    setExporting(true);
+    try {
+      const result = await downloadGstrExcel(businessId, reportKind, fromStr, toStr);
+      const warnings = result.issues.filter((issue) => issue.severity === 'warning');
+      if (warnings.length > 0) setErr(`Excel exported with ${warnings.length} validation warning(s). Verify GSTIN and filing-specific fields before submission.`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold">GST Summary</h1>
-          <p className="text-sm text-slate-500">Per-slab breakdown of outward supplies (GSTR-1 style).</p>
+          <p className="text-sm text-slate-500">Per-slab breakdown of {reportKind === 'gstr1' ? 'outward supplies' : 'inward purchases and input tax credit'}.</p>
         </div>
         <div className="flex items-end gap-2">
           <label className="text-sm">
@@ -156,6 +203,22 @@ export default function GstSummaryPage() {
           >
             Export CSV
           </button>
+          <label className="text-sm">
+            <span className="block text-slate-500 mb-1">GST report</span>
+            <select value={reportKind} onChange={(e) => setReportKind(e.target.value as GstrReportKind)} className="border border-slate-300 rounded px-2 py-1 text-sm">
+              <option value="gstr1">GSTR1 outward</option>
+              <option value="gstr2">GSTR2 inward</option>
+            </select>
+          </label>
+          <button onClick={() => void exportGstr('csv')} disabled={!businessId || exporting} className="border border-slate-300 rounded px-3 py-1 text-sm hover:bg-slate-50 disabled:opacity-50">
+            {exporting ? 'Preparing...' : 'Download GSTR CSV'}
+          </button>
+          <button onClick={() => void exportGstr('json')} disabled={!businessId || exporting} className="border border-slate-300 rounded px-3 py-1 text-sm hover:bg-slate-50 disabled:opacity-50">
+            Download GSTR JSON
+          </button>
+          <button onClick={() => void exportGstrExcel()} disabled={!businessId || exporting} className="bg-slate-800 text-white rounded px-3 py-1 text-sm hover:bg-slate-700 disabled:opacity-50">
+            {exporting ? 'Preparing...' : 'Download GSTR Excel'}
+          </button>
         </div>
       </div>
 
@@ -164,11 +227,12 @@ export default function GstSummaryPage() {
       {loading && <div className="text-slate-500 text-sm">Loading...</div>}
 
       <div className="overflow-auto border border-slate-200 rounded">
+        <ReportTableToolbar query={controls.query} onQueryChange={controls.setQuery} sort={controls.sort} onSortChange={controls.setSort} options={[{ key: 'rate', label: 'Tax rate' }, { key: 'taxable', label: 'Taxable' }, { key: 'tax', label: 'Total tax' }, { key: 'lines', label: 'Lines' }]} />
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
               <th className="text-left px-3 py-2">Tax Rate</th>
-              <th className="text-right px-3 py-2">Invoices</th>
+              <th className="text-right px-3 py-2">{reportKind === 'gstr1' ? 'Invoices' : 'Bills'}</th>
               <th className="text-right px-3 py-2">Lines</th>
               <th className="text-right px-3 py-2">Taxable</th>
               <th className="text-right px-3 py-2">CGST</th>
@@ -179,7 +243,7 @@ export default function GstSummaryPage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {controls.filteredRows.map((r) => (
               <tr key={r.rate_bps} className="border-t border-slate-100">
                 <td className="px-3 py-1.5">{(r.rate_bps / 100).toFixed(2)}%</td>
                 <td className="px-3 py-1.5 text-right tabular-nums">{r.invoice_count}</td>
@@ -194,15 +258,15 @@ export default function GstSummaryPage() {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && !loading && (
+            {controls.filteredRows.length === 0 && !loading && (
               <tr>
                 <td colSpan={9} className="px-3 py-6 text-center text-slate-400">
-                  No taxable outward supplies in this period.
+                  No taxable {reportKind === 'gstr1' ? 'outward supplies' : 'inward purchases'} in this period.
                 </td>
               </tr>
             )}
           </tbody>
-          {rows.length > 0 && (
+          {controls.filteredRows.length > 0 && (
             <tfoot className="bg-slate-50 font-semibold">
               <tr>
                 <td className="px-3 py-2 text-right">Totals</td>

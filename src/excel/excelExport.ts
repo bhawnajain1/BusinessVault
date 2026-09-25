@@ -12,6 +12,8 @@ import type {
   ItemStock,
   Payment,
   Purchase,
+  Advance,
+  SalesReturn,
   Supplier,
 } from '../db/types';
 import { fromMoney, type Money } from '../domain/money';
@@ -20,6 +22,11 @@ import {
   profitAndLoss,
   trialBalance,
 } from '../domain/AccountingService';
+import {
+  computePayables,
+  computeReceivables,
+  isActivePurchase,
+} from '../domain/partyLedger';
 
 const FORMULA_PREFIXES = ['=', '+', '-', '@', '\t', '\r'];
 
@@ -94,6 +101,8 @@ export async function buildBusinessExcelExport(
   const invoiceLines = await db.invoice_lines.where('business_id').equals(businessId).toArray();
   const purchases = await db.purchases.where('business_id').equals(businessId).toArray();
   const payments = await db.payments.where('business_id').equals(businessId).toArray();
+  const advances = await db.advances.where('business_id').equals(businessId).toArray();
+  const salesReturns = await db.sales_returns.where('business_id').equals(businessId).toArray();
   const expenses = await db.expenses.where('business_id').equals(businessId).toArray();
   const accounts = await db.accounts.where('business_id').equals(businessId).toArray();
 
@@ -101,7 +110,7 @@ export async function buildBusinessExcelExport(
   wb.creator = 'BusinessVault';
   wb.created = new Date();
 
-  buildDashboardSheet(wb, business, invoices, purchases, payments, expenses, asOf);
+  buildDashboardSheet(wb, business, invoices, purchases, payments, advances, salesReturns, customers, suppliers, expenses, asOf);
   buildCustomersSheet(wb, customers);
   buildSuppliersSheet(wb, suppliers);
   buildItemsSheet(wb, items);
@@ -111,8 +120,8 @@ export async function buildBusinessExcelExport(
   buildPurchasesSheet(wb, purchases);
   buildPaymentsSheet(wb, payments);
   buildExpensesSheet(wb, expenses, accounts);
-  buildReceivablesSheet(wb, invoices, customers);
-  buildPayablesSheet(wb, purchases, suppliers);
+  buildReceivablesSheet(wb, invoices, customers, advances, salesReturns, asOf);
+  buildPayablesSheet(wb, purchases, suppliers, advances, asOf);
 
   const pl = await profitAndLoss(businessId, fromDate, toDate, { db });
   buildProfitLossSheet(wb, pl);
@@ -139,11 +148,19 @@ function buildDashboardSheet(
   invoices: Invoice[],
   purchases: Purchase[],
   payments: Payment[],
+  advances: Advance[],
+  salesReturns: SalesReturn[],
+  customers: Customer[],
+  suppliers: Supplier[],
   expenses: Expense[],
   asOf: Date,
 ): void {
-  const totalSales = invoices.reduce((s, i) => s + (i.total_paise || 0), 0);
-  const totalPurchases = purchases.reduce((s, p) => s + (p.total_paise || 0), 0);
+  const totalSales = invoices
+    .filter((i) => i.status !== 'cancelled' && i.status !== 'draft' && !i.deleted_at && !i.reverses_invoice_id && !i.reversed_by_invoice_id)
+    .reduce((s, i) => s + (i.total_paise || 0), 0);
+  const totalPurchases = purchases
+    .filter((p) => isActivePurchase(p))
+    .reduce((s, p) => s + (p.total_paise || 0), 0);
   const totalReceived = payments
     .filter((p) => p.direction === 'in')
     .reduce((s, p) => s + p.amount_paise, 0);
@@ -151,8 +168,8 @@ function buildDashboardSheet(
     .filter((p) => p.direction === 'out')
     .reduce((s, p) => s + p.amount_paise, 0);
   const totalExpenses = expenses.reduce((s, e) => s + (e.total_paise || 0), 0);
-  const outstandingReceivable = invoices.reduce((s, i) => s + (i.balance_paise || 0), 0);
-  const outstandingPayable = purchases.reduce((s, p) => s + (p.balance_paise || 0), 0);
+  const outstandingReceivable = computeReceivables(invoices, toDateString(asOf), advances, customers, salesReturns).totals.outstanding_paise;
+  const outstandingPayable = computePayables(purchases, toDateString(asOf), advances, suppliers).totals.outstanding_paise;
 
   const rows: Array<Record<string, unknown>> = [
     { Metric: 'Business', Value: business?.name ?? '' },
@@ -351,38 +368,40 @@ function buildExpensesSheet(wb: ExcelJS.Workbook, expenses: Expense[], accounts:
   addSheet(wb, 'Expenses', cols, rows);
 }
 
-function buildReceivablesSheet(wb: ExcelJS.Workbook, invoices: Invoice[], customers: Customer[]): void {
+function buildReceivablesSheet(wb: ExcelJS.Workbook, invoices: Invoice[], customers: Customer[], advances: Advance[], salesReturns: SalesReturn[], asOf: Date): void {
   const custById = new Map(customers.map((c) => [c.id, c]));
+  const derived = computeReceivables(invoices, toDateString(asOf), advances, customers, salesReturns);
   const cols = ['invoice_number', 'invoice_date', 'due_date', 'customer_name', 'total', 'paid', 'balance', 'status'];
-  const rows = invoices
-    .filter((i) => i.balance_paise > 0)
-    .map((i) => ({
-      invoice_number: i.invoice_number,
-      invoice_date: i.invoice_date,
-      due_date: i.due_date ?? '',
-      customer_name: custById.get(i.customer_id)?.name ?? i.customer_id,
-      total: rupees(i.total_paise),
-      paid: rupees(i.paid_paise),
-      balance: rupees(i.balance_paise),
-      status: i.status,
+  const rows = derived.perInvoice
+    .filter((r) => r.outstanding_paise > 0)
+    .map((r) => ({
+      invoice_number: r.invoice_number,
+      invoice_date: r.invoice_date,
+      due_date: r.due_date ?? '',
+      customer_name: custById.get(r.customer_id)?.name ?? r.customer_id,
+      total: rupees(r.grand_total_paise),
+      paid: rupees(r.paid_paise),
+      balance: rupees(r.outstanding_paise),
+      status: 'active',
     }));
   addSheet(wb, 'Receivables', cols, rows);
 }
 
-function buildPayablesSheet(wb: ExcelJS.Workbook, purchases: Purchase[], suppliers: Supplier[]): void {
+function buildPayablesSheet(wb: ExcelJS.Workbook, purchases: Purchase[], suppliers: Supplier[], advances: Advance[], asOf: Date): void {
   const suppById = new Map(suppliers.map((s) => [s.id, s]));
+  const derived = computePayables(purchases, toDateString(asOf), advances, suppliers);
   const cols = ['bill_number', 'bill_date', 'due_date', 'supplier_name', 'total', 'paid', 'balance', 'status'];
-  const rows = purchases
-    .filter((p) => p.balance_paise > 0)
-    .map((p) => ({
-      bill_number: p.bill_number,
-      bill_date: p.bill_date,
-      due_date: p.due_date ?? '',
-      supplier_name: suppById.get(p.supplier_id)?.name ?? p.supplier_id,
-      total: rupees(p.total_paise),
-      paid: rupees(p.paid_paise),
-      balance: rupees(p.balance_paise),
-      status: p.status,
+  const rows = derived.perPurchase
+    .filter((r) => r.outstanding_paise > 0)
+    .map((r) => ({
+      bill_number: r.bill_number,
+      bill_date: r.bill_date,
+      due_date: r.due_date ?? '',
+      supplier_name: suppById.get(r.supplier_id)?.name ?? r.supplier_id,
+      total: rupees(r.grand_total_paise),
+      paid: rupees(r.paid_paise),
+      balance: rupees(r.outstanding_paise),
+      status: 'active',
     }));
   addSheet(wb, 'Payables', cols, rows);
 }
@@ -448,7 +467,12 @@ function buildGstSummarySheet(
 
   for (const line of lines) {
     const inv = invById.get(line.invoice_id);
-    if (!inv || inv.status === 'cancelled') continue;
+    if (
+      !inv ||
+      inv.status === 'cancelled' ||
+      inv.status === 'draft' ||
+      inv.deleted_at
+    ) continue;
     const rate = line.tax_rate_bps > 0 ? line.tax_rate_bps : (itemById.get(line.item_id)?.tax_rate_bps ?? 0);
     const s = bySlab.get(rate) ?? { rate, taxable: 0, cgst: 0, sgst: 0, igst: 0, cess: 0, count: 0 };
     s.taxable += line.taxable_paise;

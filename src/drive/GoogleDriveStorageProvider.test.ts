@@ -360,24 +360,24 @@ describe('GoogleDriveStorageProvider — initializeBusiness', () => {
     const { drive, provider } = await connected();
 
     const status = await provider.connectionStatus();
-    expect(status.folderPath).toBe('BusinessVault/Acme Traders');
+    expect(status.folderPath).toBe('BusinessVault - Acme Traders');
 
     const names = [...drive.nodes.values()].map((n) => drive.pathTo(n.id)).sort();
     for (const required of [
-      'BusinessVault/Acme Traders/README.txt',
-      'BusinessVault/Acme Traders/metadata/manifest.json',
-      'BusinessVault/Acme Traders/metadata/schema.json',
-      'BusinessVault/Acme Traders/metadata/sync-state.json',
-      'BusinessVault/Acme Traders/metadata/checksums.json',
-      'BusinessVault/Acme Traders/current',
-      'BusinessVault/Acme Traders/invoices',
-      'BusinessVault/Acme Traders/attachments/purchases',
-      'BusinessVault/Acme Traders/attachments/expenses',
-      'BusinessVault/Acme Traders/attachments/products',
-      'BusinessVault/Acme Traders/reports',
-      'BusinessVault/Acme Traders/snapshots/daily',
-      'BusinessVault/Acme Traders/snapshots/monthly',
-      'BusinessVault/Acme Traders/snapshots/annual',
+      'BusinessVault - Acme Traders/README.txt',
+      'BusinessVault - Acme Traders/metadata/manifest.json',
+      'BusinessVault - Acme Traders/metadata/schema.json',
+      'BusinessVault - Acme Traders/metadata/sync-state.json',
+      'BusinessVault - Acme Traders/metadata/checksums.json',
+      'BusinessVault - Acme Traders/current',
+      'BusinessVault - Acme Traders/invoices',
+      'BusinessVault - Acme Traders/attachments/purchases',
+      'BusinessVault - Acme Traders/attachments/expenses',
+      'BusinessVault - Acme Traders/attachments/products',
+      'BusinessVault - Acme Traders/reports',
+      'BusinessVault - Acme Traders/snapshots/daily',
+      'BusinessVault - Acme Traders/snapshots/monthly',
+      'BusinessVault - Acme Traders/snapshots/annual',
     ]) {
       expect(names).toContain(required);
     }
@@ -394,7 +394,7 @@ describe('GoogleDriveStorageProvider — initializeBusiness', () => {
 
     // Manually mutate README so we can detect a clobber.
     const readmeNode = [...drive.nodes.values()].find(
-      (n) => n.name === 'README.txt' && drive.pathTo(n.id) === 'BusinessVault/Acme/README.txt',
+      (n) => n.name === 'README.txt' && drive.pathTo(n.id) === 'BusinessVault - Acme/README.txt',
     )!;
     readmeNode.content = new TextEncoder().encode('user-customized');
     const readmeIdBefore = readmeNode.id;
@@ -408,6 +408,30 @@ describe('GoogleDriveStorageProvider — initializeBusiness', () => {
     expect(new TextDecoder().decode(readmeAfter.content!)).toBe('user-customized');
     expect(readmeAfter.version).toBe(versionBefore);
   });
+
+  it('rebinds to an existing legacy BusinessVault/<name> folder during restore', async () => {
+    const drive = new FakeDrive();
+    drive.seedTokens();
+    const provider = new GoogleDriveStorageProvider({ driveApi: drive });
+    await provider.connect(config);
+
+    const root = await drive.rootFolderId();
+    const legacyVault = await drive.ensureFolder(root, 'BusinessVault');
+    const legacyBusiness = await drive.ensureFolder(legacyVault.id, 'Acme');
+    const metadata = await drive.ensureFolder(legacyBusiness.id, 'metadata');
+    await drive.createFile({
+      parentId: metadata.id,
+      name: 'manifest.json',
+      mimeType: 'application/json',
+      body: new Blob([JSON.stringify({ businessId: 'BIZ1', businessName: 'Acme', schemaVersion: 1 })]),
+    });
+
+    const result = await provider.initializeBusiness({ businessId: 'BIZ1', businessName: 'Acme' });
+
+    expect(result.reused).toBe(true);
+    expect(result.folderPath).toBe('BusinessVault/Acme');
+    expect((await provider.connectionStatus()).folderPath).toBe('BusinessVault/Acme');
+  });
 });
 
 describe('GoogleDriveStorageProvider — listBusinesses', () => {
@@ -420,7 +444,7 @@ describe('GoogleDriveStorageProvider — listBusinesses', () => {
     expect(rows).toEqual([]);
   });
 
-  it('enumerates every business under BusinessVault/ with parsed manifest', async () => {
+  it('enumerates every prefixed business folder with parsed manifest', async () => {
     // Seed two businesses so we exercise the multi-result path — this is the
     // Restore-picker case, which was silently broken before because the old
     // discoverBusinesses fallback only ever returned the currently-bound one.
@@ -430,7 +454,7 @@ describe('GoogleDriveStorageProvider — listBusinesses', () => {
     await provider.connect(config);
     await provider.initializeBusiness({ businessId: 'BIZ1', businessName: 'Acme' });
     // Re-initialize with a different business to get a second folder under
-    // BusinessVault/. Real users get here by onboarding a second business on
+    // the Drive root. Real users get here by onboarding a second business on
     // the same Drive account.
     await provider.initializeBusiness({ businessId: 'BIZ2', businessName: 'Beta' });
 
@@ -438,7 +462,7 @@ describe('GoogleDriveStorageProvider — listBusinesses', () => {
     const names = rows.map((r) => r.businessName).sort();
     expect(names).toEqual(['Acme', 'Beta']);
     const acme = rows.find((r) => r.businessName === 'Acme')!;
-    expect(acme.folderPath).toBe('BusinessVault/Acme');
+    expect(acme.folderPath).toBe('BusinessVault - Acme');
     expect(acme.manifest.businessId).toBe('BIZ1');
     expect(acme.manifest.schemaVersion).toBeGreaterThanOrEqual(1);
   });
@@ -452,7 +476,7 @@ describe('GoogleDriveStorageProvider — listBusinesses', () => {
 
     // Corrupt Acme's manifest — a partial write / external edit.
     const manifest = [...drive.nodes.values()].find(
-      (n) => n.name === 'manifest.json' && drive.pathTo(n.id) === 'BusinessVault/Acme/metadata/manifest.json',
+      (n) => n.name === 'manifest.json' && drive.pathTo(n.id) === 'BusinessVault - Acme/metadata/manifest.json',
     )!;
     manifest.content = new TextEncoder().encode('{not json');
 
@@ -574,7 +598,7 @@ describe('GoogleDriveStorageProvider — writeSnapshot (spec §19 atomic)', () =
 
     // No final snapshot folder should exist.
     const dailyId = [...drive.nodes.values()].find(
-      (n) => drive.pathTo(n.id) === 'BusinessVault/Acme Traders/snapshots/daily',
+      (n) => drive.pathTo(n.id) === 'BusinessVault - Acme Traders/snapshots/daily',
     )!.id;
     const finalChild = await drive.findChildByName(dailyId, '2026-08-19');
     expect(finalChild).toBeNull();
@@ -596,7 +620,7 @@ describe('GoogleDriveStorageProvider — writeSnapshot (spec §19 atomic)', () =
     expect(handle.path).toBe('snapshots/daily/2026-08-19');
 
     // manifest now points at this snapshot.
-    const manifestBlob = await getContent(drive, 'BusinessVault/Acme Traders/metadata/manifest.json');
+    const manifestBlob = await getContent(drive, 'BusinessVault - Acme Traders/metadata/manifest.json');
     const parsed = JSON.parse(new TextDecoder().decode(manifestBlob)) as {
       currentSnapshot: { path: string };
     };
@@ -659,7 +683,7 @@ describe('GoogleDriveStorageProvider — external-edit classification (spec §21
     // writing a CSV directly via the drive mock and updating the provider
     // cache path manually.
     const currentId = [...drive.nodes.values()].find(
-      (n) => drive.pathTo(n.id) === 'BusinessVault/Acme Traders/current',
+      (n) => drive.pathTo(n.id) === 'BusinessVault - Acme Traders/current',
     )!.id;
     const csvRef = await drive.createFile({
       parentId: currentId,

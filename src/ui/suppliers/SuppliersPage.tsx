@@ -1,14 +1,29 @@
 import { useCallback, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { db } from '../../db';
-import type { Supplier } from '../../db/types';
+import type { Advance, Purchase, Supplier } from '../../db/types';
 import { createSupplierService } from '../../domain/SupplierService';
+import { computePayables } from '../../domain/partyLedger';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Drawer from '../components/Drawer';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
-import { INDIAN_STATES, findStateByCode, stateFromGstin } from '../../lib/indianStates';
+import { INDIAN_STATES } from '../../lib/indianStates';
+import {
+  applyGstinChange,
+  applyStateChange,
+  inferManuallySet,
+  type GstinStatePair,
+} from '../../lib/gstinStateSync';
+import GstinStateBadge from '../components/GstinStateBadge';
+import { useLiveQuery } from '../hooks/useLiveQuery';
+import { log } from '../../lib/log';
+
+interface SupplierRollup {
+  payable_paise: number;
+  advance_paise: number;
+}
 
 interface SupplierForm {
   name: string;
@@ -47,13 +62,69 @@ function paiseToRupees(p: number): string {
 }
 
 export default function SuppliersPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isNewRoute = location.pathname === '/suppliers/new';
   const { businessId, deviceId, loading } = useActiveBusiness();
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(isNewRoute);
   const [editing, setEditing] = useState<Supplier | null>(null);
   const [form, setForm] = useState<SupplierForm>(EMPTY_FORM);
+  const [manuallySetState, setManuallySetState] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const rollups = useLiveQuery<Map<string, SupplierRollup>>(async () => {
+    if (!businessId) return new Map();
+      const [bills, advances] = await Promise.all([
+        db.purchases.where('business_id').equals(businessId).toArray() as Promise<Purchase[]>,
+        db.advances.where('business_id').equals(businessId).toArray() as Promise<Advance[]>,
+      ]);
+      const supplierRows = await db.suppliers.where('business_id').equals(businessId).toArray();
+      const payable = computePayables(bills, new Date().toISOString().slice(0, 10), advances, supplierRows);
+      const next = new Map<string, SupplierRollup>();
+      for (const row of payable.perSupplier) {
+        next.set(row.supplier_id, {
+          payable_paise: row.outstanding_paise,
+          advance_paise: row.advance_paise,
+        });
+      }
+      log.info('ui.suppliers.live', 'supplier rollups recomputed from live rows', {
+        businessId,
+        purchaseCount: bills.length,
+        advanceCount: advances.length,
+        supplierCount: supplierRows.length,
+      });
+      return next;
+  }, [businessId], new Map<string, SupplierRollup>());
+  const currentRollups = rollups ?? new Map<string, SupplierRollup>();
+
+  function pairFromForm(): GstinStatePair {
+    return {
+      gstin: form.gstin,
+      stateCode: form.stateCode,
+      stateName: form.state,
+      stateManuallySet: manuallySetState,
+    };
+  }
+  function onGstinChange(raw: string) {
+    const next = applyGstinChange(pairFromForm(), raw);
+    setManuallySetState(next.stateManuallySet);
+    setForm({
+      ...form,
+      gstin: next.gstin,
+      state: next.stateName,
+      stateCode: next.stateCode,
+    });
+  }
+  function onStateChange(code: string) {
+    const next = applyStateChange(pairFromForm(), code);
+    setManuallySetState(next.stateManuallySet);
+    setForm({
+      ...form,
+      state: next.stateName,
+      stateCode: next.stateCode,
+    });
+  }
 
   const fetchPage = useCallback(
     async ({
@@ -103,6 +174,18 @@ export default function SuppliersPage() {
     { key: 'gstin', header: 'GSTIN', filterable: true, render: (r) => r.gstin || '—' },
     { key: 'state', header: 'State', render: (r) => r.state || '—' },
     {
+      key: 'payable',
+      header: 'Payable',
+      className: 'text-right',
+      render: (r) => <Money paise={currentRollups.get(r.id)?.payable_paise ?? r.opening_balance_paise} />,
+    },
+    {
+      key: 'advance',
+      header: 'Advance',
+      className: 'text-right',
+      render: (r) => <Money paise={currentRollups.get(r.id)?.advance_paise ?? 0} />,
+    },
+    {
       key: 'opening_balance',
       header: 'Opening Balance',
       className: 'text-right',
@@ -127,8 +210,9 @@ export default function SuppliersPage() {
   function openNew() {
     setEditing(null);
     setForm(EMPTY_FORM);
+    setManuallySetState(false);
     setSaveError(null);
-    setDrawerOpen(true);
+    navigate('/suppliers/new');
   }
 
   function openEdit(row: Supplier) {
@@ -145,6 +229,7 @@ export default function SuppliersPage() {
       notes: row.notes,
       active: row.active === 1,
     });
+    setManuallySetState(inferManuallySet(row.gstin ?? '', row.state_code));
     setSaveError(null);
     setDrawerOpen(true);
   }
@@ -188,7 +273,8 @@ export default function SuppliersPage() {
           notes: form.notes,
         });
       }
-      setDrawerOpen(false);
+      if (isNewRoute) navigate('/suppliers');
+      else setDrawerOpen(false);
       setReloadKey((k) => k + 1);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -267,15 +353,17 @@ export default function SuppliersPage() {
       />
 
       <Drawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        open={drawerOpen || isNewRoute}
+        onClose={() => (isNewRoute ? navigate('/suppliers') : setDrawerOpen(false))}
+        fullPage={isNewRoute}
+        showFullPageBack={false}
         title={editing ? 'Edit Supplier' : 'New Supplier'}
         footer={
           <div className="flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => setDrawerOpen(false)}
-              className="h-8 rounded-md border border-border bg-surface px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-surface-hover"
+              onClick={() => (isNewRoute ? navigate('/suppliers') : setDrawerOpen(false))}
+              className="action-cancel h-8 text-[13px]"
             >
               Cancel
             </button>
@@ -283,9 +371,9 @@ export default function SuppliersPage() {
               type="button"
               disabled={saving || form.name.trim().length === 0}
               onClick={save}
-              className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
+              className="h-8 rounded-md bg-green-600 px-3 text-[13px] font-medium text-white hover:bg-green-700 disabled:opacity-50"
             >
-              {saving ? 'Saving...' : 'Save'}
+              {saving ? 'Saving...' : 'Save Supplier'}
             </button>
           </div>
         }
@@ -319,27 +407,17 @@ export default function SuppliersPage() {
             <span className="block text-[12px] text-fg-muted mb-1">GSTIN</span>
             <input
               value={form.gstin}
-              onChange={(e) => {
-                const g = e.target.value.toUpperCase();
-                const derived = stateFromGstin(g);
-                if (derived) {
-                  setForm({ ...form, gstin: g, state: derived.name, stateCode: derived.code });
-                } else {
-                  setForm({ ...form, gstin: g });
-                }
-              }}
+              onChange={(e) => onGstinChange(e.target.value)}
               placeholder="15-char GSTIN (state auto-fills from first 2 digits)"
               className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg placeholder:text-fg-subtle uppercase focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             />
+            <GstinStateBadge gstin={form.gstin} stateCode={form.stateCode} />
           </label>
           <label>
             <span className="block text-[12px] text-fg-muted mb-1">State</span>
             <select
               value={form.stateCode}
-              onChange={(e) => {
-                const s = findStateByCode(e.target.value);
-                setForm({ ...form, state: s?.name ?? '', stateCode: e.target.value });
-              }}
+              onChange={(e) => onStateChange(e.target.value)}
               className="w-full h-8 rounded-md border border-border bg-surface px-2.5 text-[13px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
             >
               <option value="">— Select state —</option>

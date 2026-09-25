@@ -23,8 +23,13 @@ import {
 } from '../../sync/bootProvider';
 import { connectDrive, disconnectDrive } from '../../drive/connectDrive';
 import { buildDriveProvider } from '../onboarding/driveGlue';
+import {
+  LocalFolderStorageProvider,
+  peekSavedHandle,
+} from '../../storage/LocalFolderStorageProvider';
 import { hasGoogleClientId } from '../../auth/gis';
 import { log } from '../../lib/log';
+import { beginAppOperation, updateAppOperation } from '../../lib/operationLock';
 import type {
   ConnectionStatus,
   IntegrityReport,
@@ -36,7 +41,7 @@ import DataExport from './DataExport';
 //
 //   Google Drive
 //   Connected as: <email>
-//   Business folder: BusinessVault/<name>  [Open My Google Drive Folder]
+//   Business folder: BusinessVault - <name>  [Open My Google Drive Folder]
 //   Last event sync:  <relative time>
 //   Last full backup: <relative time>
 //   Pending:          <count>
@@ -237,7 +242,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
 
   const email = conn?.account ?? business?.drive_connected_email ?? '(not connected)';
   const folderName = business?.name ?? '';
-  const folderPath = conn?.folderPath ?? `BusinessVault/${folderName}`;
+  const folderPath = conn?.folderPath ?? `BusinessVault - ${folderName}`;
   const driveFolderId = business?.drive_folder_id ?? null;
 
   const integrityLabel = integrity == null
@@ -264,6 +269,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
     }
     setBusy('backup');
     setMessage('Preparing backup…');
+    let releaseOperation: (() => void) | null = null;
     try {
       if (!business) {
         throw new Error('Business is still loading.');
@@ -287,21 +293,22 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
        // second manual backup on the same day look like an idempotent retry.
        const asOf = new Date().toISOString().replace(/:/g, '-');
       const input = await buildSnapshotInput(db, businessId, business.name, 'ondemand', asOf);
-      const job = await enqueue({
+       const job = await enqueue({
         businessId,
         kind: 'snapshot',
         payload: { input },
       });
-      pokeSyncWorker();
-      setMessage('Backup uploading to Google Drive…');
+       pokeSyncWorker();
+       const destination = business.drive_folder_id == null ? 'local backup folder' : 'Google Drive';
+       setMessage(`Backup writing to ${destination}…`);
+       updateAppOperation({ progress: 35, message: `Backup queued for ${destination}…` });
       // Poll the queued job until it lands. Backup jobs typically take
       // 60-120s wall-clock; a fire-and-forget toast used to leave the user
       // wondering whether it had failed. Poll every 750ms — cheap indexeddb
       // read — and terminate on done/failed/timeout.
-      const startedAt = Date.now();
-      const TIMEOUT_MS = 10 * 60 * 1000; // 10 min hard ceiling
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
+       const startedAt = Date.now();
+       const TIMEOUT_MS = 10 * 60 * 1000; // 10 min hard ceiling
+       while (true) {
         const row = await db.sync_queue.get(job.id);
         if (!row) {
           throw new Error('Backup job disappeared before successful completion. Nothing was cleared.');
@@ -321,12 +328,30 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
         if (row.status === 'running') {
           setMessage(`Backup uploading… (attempt ${row.attempts + 1})`);
         }
+         if (Date.now() - startedAt > TIMEOUT_MS) {
+            setError(`Backup is still running after 10 minutes. Check the ${destination} and try again later.`);
+           return false;
+         }
+         if (row.status === 'running') {
+           const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+           const phase = destination === 'local backup folder' ? 'writing files' : 'uploading';
+            const progress = destination === 'local backup folder' ? 65 : 70;
+            const statusMessage = `Backup ${phase}… ${elapsedSeconds}s (attempt ${row.attempts + 1})`;
+            setMessage(statusMessage);
+            updateAppOperation({ progress, message: statusMessage });
+         } else if (row.status === 'pending') {
+            const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+            const statusMessage = `Backup is queued… ${elapsedSeconds}s`;
+            setMessage(statusMessage);
+            updateAppOperation({ progress: 35, message: statusMessage });
+         }
         await new Promise((r) => setTimeout(r, 750));
       }
     } catch (e) {
       setError((e as Error).message);
       return false;
     } finally {
+      releaseOperation?.();
       setBusy(null);
     }
   }, [businessId, business, onReconnect]);
@@ -371,7 +396,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
     const ok = window.confirm(
       `Switch this business's backups to Google Drive?\n\n` +
         `Your entire history for this business will be re-uploaded to Drive ` +
-        `under BusinessVault/${business.name} in the background. Files already ` +
+        `under BusinessVault - ${business.name} in the background. Files already ` +
         `in the local backup folder are not touched.`,
     );
     if (!ok) return;
@@ -747,7 +772,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
           </div>
           <button
             type="button"
-            onClick={onDisconnect}
+            onClick={() => void handleReconnect()}
             disabled={!!busy}
             className="backup-settings-button backup-settings-button-danger"
           >

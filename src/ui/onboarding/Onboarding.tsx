@@ -11,6 +11,7 @@ import type { CustomerStorageProvider } from '../../storage/CustomerStorageProvi
 import { GoogleDriveStorageProvider } from '../../drive/GoogleDriveStorageProvider';
 import { LocalFolderStorageProvider } from '../../storage/LocalFolderStorageProvider';
 import { adoptConnectedProvider } from '../../sync/bootProvider';
+import { log } from '../../lib/log';
 import StepBusinessDetails from './StepBusinessDetails';
 import StepConnecting from './StepConnecting';
 import StepConnectStorage from './StepConnectStorage';
@@ -27,6 +28,7 @@ import {
 
 const FORM_STASH_KEY = 'bv.onboarding.form';
 const STEP_STASH_KEY = 'bv.onboarding.step';
+export const ONBOARDING_COMPLETE_PATH = '/';
 
 function loadFormFromStash(): { form: OnboardingForm; step: OnboardingStep } | null {
   try {
@@ -102,8 +104,8 @@ export default function Onboarding() {
         storage: choice,
         status:
           choice === 'google-drive'
-            ? `Creating BusinessVault/${folderName}/ in your Google Drive...`
-            : `Creating BusinessVault/${folderName}/ in your local folder...`,
+             ? `Creating BusinessVault - ${folderName}/ in your Google Drive...`
+             : `Creating BusinessVault - ${folderName}/ in your local folder...`,
         error: null,
         folderPath: null,
         providerFolderId: null,
@@ -267,7 +269,10 @@ export default function Onboarding() {
 
   const handleFinish = useCallback(() => {
     clearFormStash();
-    navigate('/pos');
+    log.info('onboarding.complete', 'onboarding completed; navigating to dashboard', {
+      path: ONBOARDING_COMPLETE_PATH,
+    });
+    navigate(ONBOARDING_COMPLETE_PATH);
   }, [navigate]);
 
   return (
@@ -307,7 +312,7 @@ export default function Onboarding() {
       {step === 'done' && connecting && (
         <StepDone
           businessName={form.name || 'your business'}
-          folderPath={connecting.folderPath ?? `BusinessVault/${form.name}`}
+          folderPath={connecting.folderPath ?? `BusinessVault - ${form.name}`}
           driveFolderId={connecting.providerFolderId}
           storage={connecting.storage}
           onFinish={handleFinish}

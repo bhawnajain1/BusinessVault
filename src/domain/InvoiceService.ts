@@ -3,6 +3,7 @@ import { ulid } from 'ulid';
 import { db as defaultDb, type BusinessVaultDB } from '../db';
 import type {
   Account,
+  AuditLogEntry,
   Invoice,
   InvoiceLine,
   InvoiceStatus,
@@ -13,8 +14,33 @@ import type {
   SyncEvent,
 } from '../db/types';
 import { canonicalJson, sha256Hex, GENESIS_HASH } from '../journal/event';
-import { bankersRound } from './gst';
+import { bankersRound, roundOffToNearestRupee } from './gst';
+import {
+  isInvoiceNumberAvailable,
+  parseInvoiceNumber,
+  validateInvoiceNumber,
+} from './invoiceNumbering';
 import { log } from '../lib/log';
+import { validateHsnSac } from './compliance';
+import type { EInvoiceStatus } from '../db/types';
+import { reconcileAfter } from './reconciliation';
+import { appendSyncEvent } from './syncEventLog';
+
+// Thrown when restoreInvoice finds that the recycled invoice's number has
+// already been reused by a live invoice (§4). UI catches this and prompts the
+// user to pick a fresh number before retrying restore.
+export class InvoiceNumberConflictError extends Error {
+  readonly invoiceId: string;
+  readonly conflictingNumber: string;
+  constructor(invoiceId: string, conflictingNumber: string) {
+    super(
+      `Invoice number "${conflictingNumber}" has already been reused. Assign a new number to restore this invoice.`,
+    );
+    this.name = 'InvoiceNumberConflictError';
+    this.invoiceId = invoiceId;
+    this.conflictingNumber = conflictingNumber;
+  }
+}
 
 // ---------- Account codes (system chart of accounts) ----------
 // These must exist in the accounts table before an invoice can be created.
@@ -63,6 +89,11 @@ export interface CreateInvoiceInput {
   financial_year: string;
   lines: CreateInvoiceLineInput[];
   discount_paise?: number;
+  // Round-off treatment. Default: 'auto' (fractional totals round upward).
+  // When mode is 'manual', caller must also supply round_off_paise.
+  // When mode is 'none' or omitted-but-round_off_paise-supplied, that raw
+  // value wins for back-compat (POS still passes round_off_paise directly).
+  round_off_mode?: 'auto' | 'none' | 'manual';
   round_off_paise?: number;
   notes?: string;
   terms?: string;
@@ -91,6 +122,59 @@ export interface Pagination {
 
 export class InvoiceService {
   constructor(private readonly db: BusinessVaultDB = defaultDb) {}
+
+  async updateLocalEInvoiceMetadata(input: {
+    invoiceId: string;
+    deviceId: string;
+    irn?: string | null;
+    ackNumber?: string | null;
+    ackDate?: string | null;
+    qrReference?: string | null;
+    note?: string | null;
+  }): Promise<Invoice> {
+    const invoice = await this.db.invoices.get(input.invoiceId);
+    if (!invoice) throw new Error(`Invoice not found: ${input.invoiceId}`);
+    const now = new Date().toISOString();
+    const next: Invoice = {
+      ...invoice,
+      e_invoice_status: 'local_unverified' satisfies EInvoiceStatus,
+      e_invoice_irn: input.irn?.trim() || null,
+      e_invoice_ack_number: input.ackNumber?.trim() || null,
+      e_invoice_ack_date: input.ackDate?.trim() || null,
+      e_invoice_qr_reference: input.qrReference?.trim() || null,
+      e_invoice_note: input.note?.trim() || null,
+      updated_at: now,
+      entity_version: invoice.entity_version + 1,
+    };
+    await this.db.transaction('rw', [this.db.invoices, this.db.sync_events], async () => {
+      await this.db.invoices.put(next);
+      await appendSyncEvent(this.db, {
+        businessId: invoice.business_id,
+        deviceId: input.deviceId,
+        entityType: 'invoice',
+        entityId: invoice.id,
+        operation: 'updated',
+        payload: {
+          id: invoice.id,
+          e_invoice_status: next.e_invoice_status,
+          e_invoice_irn: next.e_invoice_irn,
+          e_invoice_ack_number: next.e_invoice_ack_number,
+          e_invoice_ack_date: next.e_invoice_ack_date,
+          e_invoice_qr_reference: next.e_invoice_qr_reference,
+          e_invoice_note: next.e_invoice_note,
+          entity_version: next.entity_version,
+        },
+        timestamp: now,
+      });
+    });
+    log.info('compliance', 'local e-invoice metadata updated', {
+      businessId: invoice.business_id,
+      invoiceId: invoice.id,
+      status: next.e_invoice_status,
+      hasIrn: Boolean(next.e_invoice_irn),
+    });
+    return next;
+  }
 
   async createInvoice(input: CreateInvoiceInput): Promise<Invoice> {
     if (input.lines.length === 0) {
@@ -126,8 +210,31 @@ export class InvoiceService {
     const lineIgst = sum(input.lines.map((l) => l.igst_paise));
     const lineCess = sum(input.lines.map((l) => l.cess_paise ?? 0));
     const discountPaise = input.discount_paise ?? 0;
-    const roundOff = input.round_off_paise ?? 0;
-    const totalPaise = lineTaxable + lineCgst + lineSgst + lineIgst + lineCess + roundOff;
+    const preRoundTotalPaise = lineTaxable + lineCgst + lineSgst + lineIgst + lineCess;
+    // Round-off resolution.
+    //   'auto'   → derive round_off by rounding fractional totals upward to the next ₹1.
+    //   'none'   → force round_off = 0 regardless of caller's round_off_paise.
+    //   'manual' → require round_off_paise, use as-is.
+    //   undefined (legacy callers) → use round_off_paise as supplied
+    //                                 (mode persists as 'manual' if non-zero,
+    //                                  else 'none') so behaviour matches pre-v6.
+    let roundOff: number;
+    let roundOffMode: 'auto' | 'none' | 'manual';
+    if (input.round_off_mode === 'auto') {
+      const auto = roundOffToNearestRupee(preRoundTotalPaise);
+      roundOff = auto.round_off_paise;
+      roundOffMode = 'auto';
+    } else if (input.round_off_mode === 'none') {
+      roundOff = 0;
+      roundOffMode = 'none';
+    } else if (input.round_off_mode === 'manual') {
+      roundOff = input.round_off_paise ?? 0;
+      roundOffMode = 'manual';
+    } else {
+      roundOff = input.round_off_paise ?? 0;
+      roundOffMode = roundOff === 0 ? 'none' : 'manual';
+    }
+    const totalPaise = preRoundTotalPaise + roundOff;
 
     // Sanity: interstate ⇒ no CGST/SGST; intrastate ⇒ no IGST
     if (input.is_interstate && (lineCgst > 0 || lineSgst > 0)) {
@@ -136,6 +243,22 @@ export class InvoiceService {
     if (!input.is_interstate && lineIgst > 0) {
       throw new Error('Intrastate invoice must not carry IGST');
     }
+
+    // §2: snapshot the CURRENT business signature onto the invoice so a later
+    // Replace/Remove of the signature never re-writes history. Read once
+    // here, before the tx, and store the id on the invoice row. Explicit
+    // OFF-toggle or no-signature-uploaded both resolve to null.
+    const bizForSignature = await this.db.businesses.get(input.business_id);
+    const signatureAttachmentId =
+      bizForSignature?.show_signature_on_invoice === 1
+        ? bizForSignature.signature_ref ?? null
+        : null;
+    log.info('invoice', 'signature snapshot decision', {
+      invoiceId,
+      showFlag: bizForSignature?.show_signature_on_invoice ?? 0,
+      currentBusinessSignatureRef: bizForSignature?.signature_ref ?? null,
+      snapshotResolvedTo: signatureAttachmentId,
+    });
 
     const invoice: Invoice = {
       id: invoiceId,
@@ -156,6 +279,8 @@ export class InvoiceService {
       igst_paise: lineIgst,
       cess_paise: lineCess,
       round_off_paise: roundOff,
+      round_off_mode: roundOffMode,
+      pre_round_total_paise: preRoundTotalPaise,
       total_paise: totalPaise,
       paid_paise: 0,
       balance_paise: totalPaise,
@@ -166,6 +291,13 @@ export class InvoiceService {
       terms: input.terms ?? '',
       pdf_attachment_id: null,
       journal_entry_id: journalEntryId,
+      signature_attachment_id: signatureAttachmentId,
+      e_invoice_status: 'not_recorded',
+      e_invoice_irn: null,
+      e_invoice_ack_number: null,
+      e_invoice_ack_date: null,
+      e_invoice_qr_reference: null,
+      e_invoice_note: null,
       created_at: now,
       updated_at: now,
       entity_version: 1,
@@ -236,6 +368,7 @@ export class InvoiceService {
       'rw',
       [
         this.db.invoices,
+        this.db.businesses,
         this.db.invoice_lines,
         this.db.items,
         this.db.item_stock,
@@ -272,18 +405,40 @@ export class InvoiceService {
         // The Dexie index [business_id+invoice_number] isn't marked unique (`&`),
         // so enforce uniqueness in code inside the tx. Superseded originals
         // (reversed_by_invoice_id set) don't count — updateInvoice re-uses their
-        // number for the reissue by design.
+        // number for the reissue by design. Recycled rows (deleted_at != null)
+        // also don't count — §4 releases their number back into the pool.
         const dupe = await this.db.invoices
           .where('[business_id+invoice_number]')
           .equals([input.business_id, input.invoice_number])
-          .filter((row) => !row.reversed_by_invoice_id)
+          .filter((row) => !row.reversed_by_invoice_id && !row.deleted_at)
           .first();
         if (dupe) {
           throw new Error(
-            `Invoice number ${input.invoice_number} already exists. Save cancelled to prevent a duplicate.`,
+            `Invoice number "${input.invoice_number}" already exists and is already in use by this business. Choose a different invoice number.`,
           );
         }
         await this.db.invoices.add(invoice);
+
+        const parsedNumber = parseInvoiceNumber(input.invoice_number);
+        if (parsedNumber) {
+          const business = await this.db.businesses.get(input.business_id);
+          if (business) {
+            const enteredNumber = input.invoice_number.trim();
+            const digitMatch = enteredNumber.match(/(\d+)$/);
+            const seriesPrefix =
+              parsedNumber.prefix === ''
+                ? ''
+                : enteredNumber.includes('-') && (digitMatch?.[1].length ?? 0) < 6
+                  ? `${parsedNumber.prefix}-`
+                  : parsedNumber.prefix;
+            const nextSeq = Math.max(business.invoice_next_seq, parsedNumber.sequence + 1);
+            await this.db.businesses.update(input.business_id, {
+              invoice_prefix: seriesPrefix,
+              invoice_next_seq: nextSeq,
+              updated_at: now,
+            });
+          }
+        }
 
         // 2. invoice_lines rows + one sync event per line so restore can
         //    rehydrate the ledger. Handlers live at eventHandlers.ts.
@@ -307,6 +462,7 @@ export class InvoiceService {
         let totalCogsPaise = 0;
         for (const line of invoiceLines) {
           const item = await this.db.items.get(line.item_id);
+          validateHsnSac(line.hsn, item?.is_service === 1, `Invoice line ${line.line_no}`);
           if (!item) {
             throw new Error(`Item not found: ${line.item_id}`);
           }
@@ -375,6 +531,20 @@ export class InvoiceService {
           journalEntry.total_debit_paise += totalCogsPaise;
           journalEntry.total_credit_paise += totalCogsPaise;
         }
+        // Recompute the header's dr/cr sums from the ACTUAL lines about to
+        // land, not from `totalPaise` — buildInvoiceJournalLines may have
+        // appended a round-off Dr line (when the pre-round sum exceeded the
+        // rounded total) that isn't reflected in `totalPaise`. If we don't
+        // do this, the header disagrees with the line-sum on rounded
+        // invoices, and §17 reconciliation / §24 regression assertions trip.
+        journalEntry.total_debit_paise = linesToPost.reduce(
+          (a, l) => a + l.debit_paise,
+          0,
+        );
+        journalEntry.total_credit_paise = linesToPost.reduce(
+          (a, l) => a + l.credit_paise,
+          0,
+        );
         await this.db.journal_entries.add(journalEntry);
         await this.db.journal_lines.bulkAdd(linesToPost);
         assertBalanced(linesToPost);
@@ -511,6 +681,8 @@ export class InvoiceService {
       igst_paise: -original.igst_paise,
       cess_paise: -original.cess_paise,
       round_off_paise: -original.round_off_paise,
+      round_off_mode: original.round_off_mode,
+      pre_round_total_paise: -original.pre_round_total_paise,
       total_paise: -original.total_paise,
       paid_paise: 0,
       balance_paise: -original.total_paise,
@@ -665,15 +837,26 @@ export class InvoiceService {
   }
 
   /**
-   * Soft-delete an invoice into the Recycle Bin. Journal entries and hash chain
-   * stay intact (audit-preserving); only `deleted_at` + `deleted_reason` are set
-   * on the invoice, its linked payments, and any advances applied to it. Restore
-   * clears the same fields. Idempotent — deleting an already-deleted invoice is
-   * a no-op.
+   * Soft-delete an invoice into the Recycle Bin (feedback §9).
    *
-   * Notes on cascade: payments/advances with allocations spanning multiple
-   * invoices are only soft-deleted when the deleted invoice is their SOLE
-   * remaining allocation target — otherwise they'd disappear from party ledgers
+   * The invoice, its lines, and its journal entry stay in the database
+   * forever (audit chain intact). What changes:
+   *
+   *   1. `deleted_at` / `deleted_reason` set on the invoice + on any payment/
+   *      advance whose SOLE allocation targets this invoice — reports and
+   *      list views filter these out.
+   *   2. A MIRROR journal entry is posted against the invoice's original
+   *      journal (same shape edit-reversal uses: ref_type='reversal',
+   *      reverses_id=<original journal>, mirror-swapped debit/credit).
+   *      Trial Balance, P&L, Balance Sheet, and any journal-derived report
+   *      see the net effect drop to zero WITHOUT deleting history.
+   *   3. `deletion_reversal_journal_id` stores the new mirror journal's id
+   *      so restoreInvoice can post the un-mirror later.
+   *
+   * Idempotent — deleting an already-deleted invoice is a no-op (no second
+   * mirror journal). Payments/advances with allocations spanning multiple
+   * invoices are only cascade-hidden when the deleted invoice is their sole
+   * remaining allocation target — otherwise they'd vanish from party ledgers
    * where they still legitimately apply.
    */
   async deleteInvoice(invoiceId: string, reason: string): Promise<void> {
@@ -710,22 +893,79 @@ export class InvoiceService {
       return apps.every((app) => app.invoice_id === invoiceId);
     });
 
+    // Fetch original journal so we can mirror it. If the invoice has no
+    // journal (edge case: draft that never posted), skip the reversal —
+    // there's nothing to undo. Same-tx read below re-fetches for atomicity.
+    const originalJournal = invoice.journal_entry_id
+      ? await this.db.journal_entries.get(invoice.journal_entry_id)
+      : null;
+    const originalLines = originalJournal
+      ? await this.db.journal_lines
+          .where('entry_id')
+          .equals(originalJournal.id)
+          .toArray()
+      : [];
+    const willPostReversal = !!originalJournal && originalLines.length > 0;
+    const reversalJournalId = willPostReversal ? ulid() : null;
+    const reversalJournal: JournalEntry | null = willPostReversal && originalJournal
+      ? {
+          id: reversalJournalId!,
+          business_id: invoice.business_id,
+          entry_number: `JE-DEL-${invoiceId}`,
+          entry_date: invoice.invoice_date,
+          narration: `Recycle bin reversal of ${invoice.invoice_number}: ${trimmedReason}`,
+          ref_type: 'reversal',
+          ref_id: invoiceId,
+          reversed_by_id: null,
+          reverses_id: originalJournal.id,
+          total_debit_paise: originalJournal.total_credit_paise,
+          total_credit_paise: originalJournal.total_debit_paise,
+          posted: 1,
+          created_at: now,
+          updated_at: now,
+          entity_version: 1,
+        }
+      : null;
+    const reversalLines: JournalLine[] = willPostReversal
+      ? originalLines.map((l, idx) => ({
+          id: ulid(),
+          business_id: l.business_id,
+          entry_id: reversalJournalId!,
+          line_no: idx + 1,
+          account_id: l.account_id,
+          debit_paise: l.credit_paise,
+          credit_paise: l.debit_paise,
+          party_type: l.party_type,
+          party_id: l.party_id,
+          description: `Recycle bin reversal: ${l.description}`,
+        }))
+      : [];
+
     const payload = {
       invoice_id: invoiceId,
       deleted_at: now,
       reason: trimmedReason,
       cascaded_payment_ids: paymentsToHide.map((p) => p.id),
       cascaded_advance_ids: advancesToHide.map((a) => a.id),
+      deletion_reversal_journal_id: reversalJournalId,
     };
     const payloadHash = await sha256Hex(canonicalJson(payload));
 
     await this.db.transaction(
       'rw',
-      [this.db.invoices, this.db.payments, this.db.advances, this.db.sync_events],
+      [
+        this.db.invoices,
+        this.db.payments,
+        this.db.advances,
+        this.db.journal_entries,
+        this.db.journal_lines,
+        this.db.sync_events,
+      ],
       async () => {
         await this.db.invoices.update(invoiceId, {
           deleted_at: now,
           deleted_reason: trimmedReason,
+          deletion_reversal_journal_id: reversalJournalId,
           updated_at: now,
           entity_version: invoice.entity_version + 1,
         });
@@ -745,6 +985,34 @@ export class InvoiceService {
             entity_version: a.entity_version + 1,
           });
         }
+        if (reversalJournal) {
+          await this.db.journal_entries.add(reversalJournal);
+          await this.db.journal_lines.bulkAdd(reversalLines);
+          // Emit sync events so the mirror journal replicates through
+          // sync/restore. Missing these breaks bit-exact round-trip.
+          await writeEventInTx(this.db, {
+            business_id: invoice.business_id,
+            device_id: 'system',
+            entity_type: 'journal_entry',
+            entity_id: reversalJournal.id,
+            operation: 'posted' as SyncEvent['operation'],
+            entity_version: 1,
+            timestamp: now,
+            payload: reversalJournal,
+          });
+          for (const rl of reversalLines) {
+            await writeEventInTx(this.db, {
+              business_id: invoice.business_id,
+              device_id: 'system',
+              entity_type: 'journal_line',
+              entity_id: rl.id,
+              operation: 'create' as SyncEvent['operation'],
+              entity_version: 1,
+              timestamp: now,
+              payload: rl,
+            });
+          }
+        }
         await writeEventInTx(this.db, {
           business_id: invoice.business_id,
           device_id: 'system',
@@ -758,17 +1026,46 @@ export class InvoiceService {
         });
       },
     );
+    // §17 post-op reconciliation. Never throws — result lands in audit_log
+    // if the mirror journal we just posted didn't balance.
+    await reconcileAfter(invoice.business_id, 'invoice.recycle', {
+      db: this.db,
+    });
   }
 
   /**
-   * Restore a soft-deleted invoice from the Recycle Bin. Also clears the
+   * Restore a soft-deleted invoice from the Recycle Bin (feedback §9).
+   *
+   * Also un-mirrors the deletion reversal journal by posting a fresh
+   * mirror-of-mirror (net back to +X on Trial Balance) and clears the
    * cascade flag on any payment/advance we marked with `cascade:${invoiceId}`.
-   * Idempotent — restoring a non-deleted invoice is a no-op.
+   * Idempotent — restoring a non-deleted invoice is a no-op. Repeated
+   * delete → restore cycles work because each cycle posts a fresh reversal
+   * pair; nothing tries to reuse the old mirror journal.
    */
   async restoreInvoice(invoiceId: string): Promise<void> {
     const invoice = await this.db.invoices.get(invoiceId);
     if (!invoice) throw new Error(`Invoice not found: ${invoiceId}`);
     if (!invoice.deleted_at) return; // idempotent
+
+    // §4 restore-conflict guard: while this invoice was recycled, its number
+    // was released back into the pool and a subsequent auto-allocation or
+    // manual entry may have reused it. If any LIVE invoice now bears the
+    // same number, throwing here forces the caller to pick a fresh number
+    // (via updateInvoice-then-restore, or a bespoke rename+restore flow).
+    const numberFree = await isInvoiceNumberAvailable(
+      this.db,
+      invoice.business_id,
+      invoice.invoice_number,
+      invoice.id,
+    );
+    if (!numberFree) {
+      log.warn('invoice', 'restore blocked by number conflict', {
+        invoiceId,
+        conflictingNumber: invoice.invoice_number,
+      });
+      throw new InvoiceNumberConflictError(invoiceId, invoice.invoice_number);
+    }
 
     const now = new Date().toISOString();
     const cascadeTag = `cascade:${invoiceId}`;
@@ -785,21 +1082,82 @@ export class InvoiceService {
       .toArray();
     const advancesToRestore = allAdvances.filter((a) => a.deleted_reason === cascadeTag);
 
+    // Un-mirror the deletion reversal, if there was one. Load the deletion
+    // reversal journal + its lines and post a fresh mirror (mirror-of-mirror
+    // == original sign, so the net across delete + restore is zero
+    // subtractions — we're back to the original invoice's effect on TB).
+    const deletionRevId = invoice.deletion_reversal_journal_id;
+    const deletionReversal = deletionRevId
+      ? await this.db.journal_entries.get(deletionRevId)
+      : null;
+    const deletionReversalLines = deletionReversal
+      ? await this.db.journal_lines
+          .where('entry_id')
+          .equals(deletionReversal.id)
+          .toArray()
+      : [];
+    const willPostUnReversal =
+      !!deletionReversal && deletionReversalLines.length > 0;
+    const unReversalId = willPostUnReversal ? ulid() : null;
+    const unReversal: JournalEntry | null =
+      willPostUnReversal && deletionReversal
+        ? {
+            id: unReversalId!,
+            business_id: invoice.business_id,
+            entry_number: `JE-RES-${invoiceId}`,
+            entry_date: invoice.invoice_date,
+            narration: `Recycle bin restore of ${invoice.invoice_number}`,
+            ref_type: 'reversal',
+            ref_id: invoiceId,
+            reversed_by_id: null,
+            reverses_id: deletionReversal.id,
+            total_debit_paise: deletionReversal.total_credit_paise,
+            total_credit_paise: deletionReversal.total_debit_paise,
+            posted: 1,
+            created_at: now,
+            updated_at: now,
+            entity_version: 1,
+          }
+        : null;
+    const unReversalLines: JournalLine[] = willPostUnReversal
+      ? deletionReversalLines.map((l, idx) => ({
+          id: ulid(),
+          business_id: l.business_id,
+          entry_id: unReversalId!,
+          line_no: idx + 1,
+          account_id: l.account_id,
+          debit_paise: l.credit_paise,
+          credit_paise: l.debit_paise,
+          party_type: l.party_type,
+          party_id: l.party_id,
+          description: `Recycle bin restore: ${l.description.replace(/^Recycle bin reversal: /, '')}`,
+        }))
+      : [];
+
     const payload = {
       invoice_id: invoiceId,
       restored_at: now,
       restored_payment_ids: paymentsToRestore.map((p) => p.id),
       restored_advance_ids: advancesToRestore.map((a) => a.id),
+      un_reversal_journal_id: unReversalId,
     };
     const payloadHash = await sha256Hex(canonicalJson(payload));
 
     await this.db.transaction(
       'rw',
-      [this.db.invoices, this.db.payments, this.db.advances, this.db.sync_events],
+      [
+        this.db.invoices,
+        this.db.payments,
+        this.db.advances,
+        this.db.journal_entries,
+        this.db.journal_lines,
+        this.db.sync_events,
+      ],
       async () => {
         await this.db.invoices.update(invoiceId, {
           deleted_at: null,
           deleted_reason: null,
+          deletion_reversal_journal_id: null,
           updated_at: now,
           entity_version: invoice.entity_version + 1,
         });
@@ -819,6 +1177,34 @@ export class InvoiceService {
             entity_version: a.entity_version + 1,
           });
         }
+        if (unReversal) {
+          await this.db.journal_entries.add(unReversal);
+          await this.db.journal_lines.bulkAdd(unReversalLines);
+          // Emit sync events so the un-mirror journal replicates through
+          // sync/restore. Missing these breaks bit-exact round-trip.
+          await writeEventInTx(this.db, {
+            business_id: invoice.business_id,
+            device_id: 'system',
+            entity_type: 'journal_entry',
+            entity_id: unReversal.id,
+            operation: 'posted' as SyncEvent['operation'],
+            entity_version: 1,
+            timestamp: now,
+            payload: unReversal,
+          });
+          for (const url of unReversalLines) {
+            await writeEventInTx(this.db, {
+              business_id: invoice.business_id,
+              device_id: 'system',
+              entity_type: 'journal_line',
+              entity_id: url.id,
+              operation: 'create' as SyncEvent['operation'],
+              entity_version: 1,
+              timestamp: now,
+              payload: url,
+            });
+          }
+        }
         await writeEventInTx(this.db, {
           business_id: invoice.business_id,
           device_id: 'system',
@@ -829,6 +1215,131 @@ export class InvoiceService {
           timestamp: now,
           payload,
           payload_hash: payloadHash,
+        });
+      },
+    );
+    // §17: mirror-of-mirror we just posted must balance the delete's mirror.
+    await reconcileAfter(invoice.business_id, 'invoice.restore', {
+      db: this.db,
+    });
+  }
+
+  /**
+   * Permanently remove an invoice header and its detail/cache rows from the
+   * Recycle Bin. Accounting journals and sync events remain append-only so a
+   * purge cannot change financial reports or erase the audit trail.
+   */
+  async permanentlyDeleteInvoice(invoiceId: string): Promise<void> {
+    await this.db.transaction(
+      'rw',
+      [
+        this.db.invoices,
+        this.db.invoice_lines,
+        this.db.invoice_line_return_summary,
+        this.db.sales_returns,
+        this.db.payments,
+        this.db.advances,
+        this.db.sync_events,
+      ],
+      async () => {
+        const invoice = await this.db.invoices.get(invoiceId);
+        if (!invoice) throw new Error(`Invoice not found: ${invoiceId}`);
+        if (!invoice.deleted_at) {
+          throw new Error('Invoice must be in the Recycle Bin before permanent deletion');
+        }
+
+        const referencingInvoice = await this.db.invoices
+          .where('business_id')
+          .equals(invoice.business_id)
+          .filter(
+            (row) =>
+              row.id !== invoiceId &&
+              (row.reverses_invoice_id === invoiceId ||
+                row.reversed_by_invoice_id === invoiceId),
+          )
+          .first();
+        if (referencingInvoice) {
+          throw new Error(
+            'Cannot permanently delete an invoice referenced by another invoice',
+          );
+        }
+
+        const salesReturn = await this.db.sales_returns
+          .where('[business_id+original_invoice_id]')
+          .equals([invoice.business_id, invoiceId])
+          .first();
+        if (salesReturn) {
+          throw new Error('Cannot permanently delete an invoice referenced by a sales return');
+        }
+
+        const payments = await this.db.payments
+          .where('business_id')
+          .equals(invoice.business_id)
+          .filter((row) =>
+            (row.allocations ?? []).some((allocation) => allocation.invoice_id === invoiceId),
+          )
+          .toArray();
+        const cascadeTag = `cascade:${invoiceId}`;
+        const paymentsToDelete = payments.filter(
+          (row) =>
+            !!row.deleted_at &&
+            row.deleted_reason === cascadeTag &&
+            row.allocations.length > 0 &&
+            row.allocations.every((allocation) => allocation.invoice_id === invoiceId),
+        );
+        if (paymentsToDelete.length !== payments.length) {
+          throw new Error(
+            'Cannot permanently delete an invoice referenced by a shared or active payment',
+          );
+        }
+
+        const advances = await this.db.advances
+          .where('business_id')
+          .equals(invoice.business_id)
+          .filter((row) =>
+            (row.applications ?? []).some(
+              (application) => application.invoice_id === invoiceId,
+            ),
+          )
+          .toArray();
+        const advancesToDelete = advances.filter(
+          (row) =>
+            !!row.deleted_at &&
+            row.deleted_reason === cascadeTag &&
+            row.remaining_paise === 0 &&
+            row.applications.length > 0 &&
+            row.applications.every((application) => application.invoice_id === invoiceId),
+        );
+        if (advancesToDelete.length !== advances.length) {
+          throw new Error(
+            'Cannot permanently delete an invoice referenced by a shared or active advance',
+          );
+        }
+
+        const paymentIds = paymentsToDelete.map((row) => row.id);
+        const advanceIds = advancesToDelete.map((row) => row.id);
+        await this.db.invoice_line_return_summary
+          .where('invoice_id')
+          .equals(invoiceId)
+          .delete();
+        await this.db.invoice_lines.where('invoice_id').equals(invoiceId).delete();
+        await this.db.payments.bulkDelete(paymentIds);
+        await this.db.advances.bulkDelete(advanceIds);
+        await this.db.invoices.delete(invoiceId);
+        await writeEventInTx(this.db, {
+          business_id: invoice.business_id,
+          device_id: 'system',
+          entity_type: 'invoice',
+          entity_id: invoiceId,
+          operation: 'deleted',
+          entity_version: invoice.entity_version + 1,
+          timestamp: new Date().toISOString(),
+          payload: {
+            invoice_id: invoiceId,
+            permanently_deleted: true,
+            cascaded_payment_ids: paymentIds,
+            cascaded_advance_ids: advanceIds,
+          },
         });
       },
     );
@@ -844,18 +1355,242 @@ export class InvoiceService {
    */
   async updateInvoice(
     invoiceId: string,
-    input: Omit<CreateInvoiceInput, 'invoice_number' | 'idempotencyKey'>,
+    input: Omit<CreateInvoiceInput, 'invoice_number' | 'idempotencyKey'> & {
+      // §3: the edit screen may rename the invoice. When absent (or equal
+      // to the original), the reissue keeps the original number — legacy
+      // behaviour. When set to a different string, we validate uniqueness
+      // via isInvoiceNumberAvailable and write an audit_log row.
+      invoice_number?: string;
+    },
   ): Promise<Invoice> {
     const original = await this.db.invoices.get(invoiceId);
     if (!original) throw new Error(`Invoice not found: ${invoiceId}`);
     if (original.reversed_by_invoice_id) {
       throw new Error('Cannot edit an already-superseded invoice');
     }
-    await this.reverseInvoicePosting(invoiceId, 'edit');
-    return this.createInvoice({
-      ...input,
-      invoice_number: original.invoice_number,
+    if (original.paid_paise > 0) {
+      throw new Error(
+        'Cannot edit an invoice with payments applied; reverse or migrate the payments first.',
+      );
+    }
+    const payments = await this.db.payments.where('business_id').equals(original.business_id).toArray();
+    if (
+      payments.some((payment) =>
+        !payment.deleted_at &&
+        payment.allocations.some((allocation) => allocation.invoice_id === invoiceId),
+      )
+    ) {
+      throw new Error(
+        'Cannot edit an invoice referenced by a payment; reverse or migrate the payment first.',
+      );
+    }
+    const advances = await this.db.advances.where('business_id').equals(original.business_id).toArray();
+    if (
+      advances.some((advance) =>
+        !advance.deleted_at &&
+        advance.applications.some((application) => application.invoice_id === invoiceId),
+      )
+    ) {
+      throw new Error(
+        'Cannot edit an invoice referenced by an advance; reverse or migrate the advance first.',
+      );
+    }
+
+    const activeReturns = await this.db.sales_returns
+      .where('[business_id+original_invoice_id]')
+      .equals([original.business_id, invoiceId])
+      .filter((salesReturn) => salesReturn.status === 'posted' && !salesReturn.deleted_at)
+      .toArray();
+    if (activeReturns.length > 0) {
+      log.warn('invoice', 'updateInvoice rejected because active sales returns exist', {
+        invoiceId,
+        invoiceNumber: original.invoice_number,
+        activeReturnCount: activeReturns.length,
+        activeReturnIds: activeReturns.map((salesReturn) => salesReturn.id),
+      });
+      throw new Error(
+        'Cannot edit an invoice with active sales returns; cancel the sales returns first, then edit the invoice.',
+      );
+    }
+
+    // §3 invoice-number rename. Determine the target number for the reissue.
+    // If the caller passed a new one, validate it and record the audit trail.
+    const proposedNumber = (input.invoice_number ?? '').trim();
+    const isRename =
+      proposedNumber.length > 0 && proposedNumber !== original.invoice_number;
+    if (isRename) {
+      const biz = await this.db.businesses.get(original.business_id);
+      const format = validateInvoiceNumber(proposedNumber);
+      if (!format.ok) throw new Error(format.error);
+      // Exclude the row being edited from the uniqueness check — createInvoice
+      // will supersede it in the same call, so its existing number would
+      // otherwise appear as a collision against its own new number.
+      const free = await isInvoiceNumberAvailable(
+        this.db,
+        original.business_id,
+        proposedNumber,
+        original.id,
+      );
+      if (!free) {
+        throw new Error(
+          `Invoice number "${proposedNumber}" already exists and is already in use by this business. Choose a different invoice number.`,
+        );
+      }
+    }
+
+    // Edit guard (SellReturnRequirement.md §7 + §10): if any invoice line
+    // has historically returned quantity, the edit's new per-line quantity
+    // cannot go below that historical quantity. Rejecting here — rather
+    // than silently clamping — surfaces the conflict to the user (the UI
+    // shows "line X: cannot reduce below Y returned").
+    //
+    // Matching original line ↔ input line: by item_id + warehouse_id
+    // (line_no is caller-controlled and unstable across edits). Multiple
+    // original lines with the same (item, warehouse) collapse to their
+    // summed historical-return, and multiple input lines with the same
+    // pair sum on the new side — parity ensures the invariant holds for
+    // that item's total quantity in that warehouse.
+    const originalLines = await this.db.invoice_lines
+      .where('invoice_id')
+      .equals(invoiceId)
+      .toArray();
+    // Historical returns are stored on original_invoice_line_id. Sum active
+    // return qty per (item_id, warehouse_id) so we can validate against the
+    // edited line's key, not the specific line_id (which is being replaced).
+    const activeReturnItems = await this.db.sales_return_items
+      .where('original_invoice_id')
+      .equals(invoiceId)
+      .toArray();
+    log.info('invoice', 'updateInvoice edit-guard scan', {
+      invoiceId,
+      invoiceNumber: original.invoice_number,
+      originalLineCount: originalLines.length,
+      newLineCount: input.lines.length,
+      returnItemsFound: activeReturnItems.length,
     });
+    if (activeReturnItems.length > 0) {
+      const activeReturns = await this.db.sales_returns
+        .where('[business_id+original_invoice_id]')
+        .equals([original.business_id, invoiceId])
+        .toArray();
+      const activeIds = new Set(
+        activeReturns
+          .filter((r) => r.status === 'posted' && !r.deleted_at)
+          .map((r) => r.id),
+      );
+      const returnedByKey = new Map<string, number>();
+      for (const it of activeReturnItems) {
+        if (!activeIds.has(it.sales_return_id)) continue;
+        const key = `${it.item_id}|${it.warehouse_id}`;
+        returnedByKey.set(key, (returnedByKey.get(key) ?? 0) + it.qty_micros);
+      }
+      const newByKey = new Map<string, number>();
+      for (const l of input.lines) {
+        const key = `${l.item_id}|${l.warehouse_id}`;
+        newByKey.set(key, (newByKey.get(key) ?? 0) + l.qty_micros);
+      }
+      log.debug('invoice', 'updateInvoice edit-guard aggregated', {
+        invoiceId,
+        activePostedReturns: activeIds.size,
+        totalActiveReturns: activeReturns.length,
+        keysReturned: returnedByKey.size,
+        keysNew: newByKey.size,
+      });
+      for (const [key, returned] of returnedByKey) {
+        const nowQty = newByKey.get(key) ?? 0;
+        if (nowQty < returned) {
+          const [itemId, warehouseId] = key.split('|');
+          log.warn('invoice', 'updateInvoice rejected by edit-guard', {
+            invoiceId,
+            invoiceNumber: original.invoice_number,
+            itemId,
+            warehouseId,
+            historicallyReturned: returned,
+            attemptedNewQty: nowQty,
+          });
+          throw new Error(
+            `Cannot reduce quantity for item ${itemId} (warehouse ${warehouseId}) to ${nowQty} — ${returned} has already been returned against this invoice. Cancel the Sales Return first, or keep the quantity at or above ${returned}.`,
+          );
+        }
+      }
+      log.info('invoice', 'updateInvoice edit-guard passed', {
+        invoiceId,
+        invoiceNumber: original.invoice_number,
+        keysChecked: returnedByKey.size,
+      });
+      // Silence unused-var lint on originalLines — the read is intentional
+      // (defensive: it forces the tx to observe the current lines before
+      // we compare against them via active return items).
+      void originalLines;
+    }
+
+    log.info('invoice', 'updateInvoice starting reversal and reissue', {
+      invoiceId,
+      invoiceNumber: original.invoice_number,
+      proposedNumber: isRename ? proposedNumber : original.invoice_number,
+      lineCount: input.lines.length,
+    });
+    await this.reverseInvoicePosting(invoiceId, 'edit');
+    const nextNumber = isRename ? proposedNumber : original.invoice_number;
+
+    // Emit the rename audit row BEFORE reissuing, so an interrupted reissue
+    // still leaves a record of the user's intent. Payload contains both
+    // numbers so downstream consumers don't need to re-load the original.
+    if (isRename) {
+      const now = new Date().toISOString();
+      const auditEntry: AuditLogEntry = {
+        id: ulid(),
+        business_id: original.business_id,
+        device_id: input.device_id,
+        actor: input.device_id,
+        action: 'invoice.number_changed',
+        entity_type: 'invoice',
+        entity_id: invoiceId,
+        before: { invoice_number: original.invoice_number },
+        after: { invoice_number: nextNumber },
+        at: now,
+      };
+      await this.db.audit_log.add(auditEntry);
+      log.info('invoice', 'invoice number renamed', {
+        invoiceId,
+        from: original.invoice_number,
+        to: nextNumber,
+      });
+    }
+
+    // Strip our extra invoice_number key so we don't pass it through as the
+    // "id" for the reissue — createInvoice takes it via its own invoice_number
+    // field which we set explicitly here.
+    const { invoice_number: _ignored, ...rest } = input;
+    void _ignored;
+    let reissued: Invoice;
+    try {
+      reissued = await this.createInvoice({
+        ...rest,
+        invoice_number: nextNumber,
+      });
+    } catch (error) {
+      log.error('invoice', 'updateInvoice reissue failed after reversal', {
+        invoiceId,
+        invoiceNumber: original.invoice_number,
+        proposedNumber: nextNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    log.info('invoice', 'updateInvoice reissue completed', {
+      originalInvoiceId: invoiceId,
+      reissuedInvoiceId: reissued.id,
+      invoiceNumber: reissued.invoice_number,
+      totalPaise: reissued.total_paise,
+    });
+    // §17 post-op reconciliation. The edit path is a reverse + reissue —
+    // net effect on TB should be the new invoice's total. If the mirror
+    // and new posting drift, this surfaces it.
+    await reconcileAfter(original.business_id, 'invoice.edit', {
+      db: this.db,
+    });
+    return reissued;
   }
 
   async listInvoices(filter: ListFilter, pagination: Pagination = {}): Promise<Invoice[]> {

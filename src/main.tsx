@@ -5,9 +5,11 @@ import App from './App';
 import { ThemeProvider } from './ui/theme/ThemeContext';
 import { installDebugLogSink } from './lib/debugLogSink';
 import { installGlobalErrorCapture, log } from './lib/log';
+import { installVersionPreflight } from './lib/versionPreflight';
 import './index.css';
 
 installGlobalErrorCapture();
+installVersionPreflight();
 log.info('app', 'app boot', { dev: !!import.meta.env.DEV });
 
 if (import.meta.env.DEV) {

@@ -5,6 +5,7 @@ import { buildBusinessExcelExport } from '../../excel/excelExport';
 import { triggerDownload } from '../../csv/streamCsvExport';
 import { money, parseDateInput, toDateString } from './reportUtils';
 import { useBusinessId } from './useBusinessId';
+import { ReportTableToolbar, useReportTableControls } from './reportTableControls';
 
 export default function TrialBalancePage() {
   const { businessId, error: bizError } = useBusinessId();
@@ -12,6 +13,12 @@ export default function TrialBalancePage() {
   const [rows, setRows] = useState<TrialBalanceRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const controls = useReportTableControls(
+    rows,
+    (r) => `${r.code} ${r.name} ${r.type}`,
+    (r, key) => key === 'debits' ? r.debits_paise : key === 'credits' ? r.credits_paise : key === 'balance' ? r.balance_paise : key === 'name' ? r.name : r.code,
+    { key: 'code', direction: 'asc' },
+  );
   const [exporting, setExporting] = useState<'' | 'csv' | 'xlsx'>('');
 
   useEffect(() => {
@@ -117,6 +124,7 @@ export default function TrialBalancePage() {
       {loading && <div className="text-slate-500 text-sm">Loading...</div>}
 
       <div className="overflow-auto border border-slate-200 rounded">
+        <ReportTableToolbar query={controls.query} onQueryChange={controls.setQuery} sort={controls.sort} onSortChange={controls.setSort} options={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'debits', label: 'Debits' }, { key: 'credits', label: 'Credits' }, { key: 'balance', label: 'Balance' }]} />
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
@@ -129,7 +137,7 @@ export default function TrialBalancePage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+             {controls.filteredRows.map((r) => (
               <tr key={r.account_id} className="border-t border-slate-100">
                 <td className="px-3 py-1.5 font-mono text-xs">{r.code}</td>
                 <td className="px-3 py-1.5">{r.name}</td>
@@ -139,7 +147,7 @@ export default function TrialBalancePage() {
                 <td className="px-3 py-1.5 text-right tabular-nums">{money(r.balance_paise)}</td>
               </tr>
             ))}
-            {rows.length === 0 && !loading && (
+             {controls.filteredRows.length === 0 && !loading && (
               <tr>
                 <td colSpan={6} className="px-3 py-6 text-center text-slate-400">
                   No accounts.

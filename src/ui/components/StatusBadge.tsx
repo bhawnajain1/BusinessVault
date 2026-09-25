@@ -22,7 +22,7 @@ export default function StatusBadge({ status, className }: StatusBadgeProps) {
   const tone = TONE[status] ?? 'bg-slate-100 text-slate-700 border-slate-200';
   return (
     <span
-      className={`inline-flex items-center px-2 py-0.5 text-xs font-medium border rounded ${tone} ${className ?? ''}`}
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ${tone} ${className ?? ''}`}
     >
       {status}
     </span>

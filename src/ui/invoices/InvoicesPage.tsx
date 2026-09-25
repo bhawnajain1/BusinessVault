@@ -107,36 +107,42 @@ export default function InvoicesPage() {
       key: 'invoice_number',
       header: 'Invoice #',
       filterable: true,
+      sortValue: (r) => r.invoice_number,
       render: (r) => (
         <Link to={`/invoices/${r.id}`} className="text-blue-700 hover:underline">
           {r.invoice_number}
         </Link>
       ),
     },
-    { key: 'invoice_date', header: 'Date', render: (r) => r.invoice_date },
+    { key: 'invoice_date', header: 'Date', sortValue: (r) => r.invoice_date, render: (r) => r.invoice_date },
     {
       key: 'customer',
       header: 'Customer',
       filterable: true,
+      sortValue: (r) => customerById.get(r.customer_id)?.name ?? r.customer_id,
       render: (r) => customerById.get(r.customer_id)?.name ?? r.customer_id,
     },
     {
       key: 'total',
       header: 'Total',
       className: 'text-right',
+      sortValue: (r) => r.total_paise,
       render: (r) => <Money paise={r.total_paise} />,
     },
     {
       key: 'balance',
       header: 'Balance',
       className: 'text-right',
+      sortValue: (r) => r.balance_paise,
       render: (r) => <Money paise={r.balance_paise} />,
     },
-    { key: 'status', header: 'Status', render: (r) => <StatusBadge status={r.status} /> },
-    { key: 'fy', header: 'FY', render: (r) => r.financial_year },
+    { key: 'status', header: 'Status', sortValue: (r) => r.status, render: (r) => <StatusBadge status={r.status} /> },
+    { key: 'fy', header: 'Financial year', sortValue: (r) => r.financial_year, render: (r) => r.financial_year },
     {
       key: 'edit',
-      header: '',
+      header: 'Actions',
+      className: 'text-right',
+      sortable: false,
       render: (r) => (
         <div className="flex items-center gap-3 justify-end">
           {r.reversed_by_invoice_id ? (
@@ -146,7 +152,7 @@ export default function InvoicesPage() {
           ) : (
             <Link
               to={`/invoices/${r.id}/edit`}
-              className="text-xs text-blue-700 hover:underline"
+              className="action-edit text-xs"
             >
               Edit
             </Link>
@@ -154,7 +160,7 @@ export default function InvoicesPage() {
           <button
             type="button"
             onClick={() => handleDelete(r)}
-            className="text-xs text-rose-700 hover:underline"
+            className="action-delete text-xs"
           >
             Delete
           </button>

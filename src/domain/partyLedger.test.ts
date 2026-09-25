@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { computePayables, computeReceivables } from './partyLedger';
-import type { Advance, Customer, Invoice, Purchase, Supplier } from '../db/types';
+import type {
+  Advance,
+  Customer,
+  Invoice,
+  Purchase,
+  SalesReturn,
+  Supplier,
+} from '../db/types';
 
 function mkCust(o: { id: string; opening_balance_paise?: number }): Customer {
   return {
@@ -87,6 +94,8 @@ function mkInv(o: Partial<Invoice> & Pick<Invoice, 'id' | 'total_paise'>): Invoi
     igst_paise: 0,
     cess_paise: 0,
     round_off_paise: 0,
+    round_off_mode: 'none',
+    pre_round_total_paise: o.total_paise,
     total_paise: o.total_paise,
     paid_paise: o.paid_paise ?? 0,
     balance_paise: o.total_paise - (o.paid_paise ?? 0),
@@ -97,6 +106,42 @@ function mkInv(o: Partial<Invoice> & Pick<Invoice, 'id' | 'total_paise'>): Invoi
     terms: '',
     pdf_attachment_id: null,
     journal_entry_id: '',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    entity_version: 1,
+  };
+}
+
+function mkSalesReturn(
+  o: Partial<SalesReturn> & Pick<SalesReturn, 'id' | 'original_invoice_id' | 'total_paise'>,
+): SalesReturn {
+  return {
+    id: o.id,
+    business_id: 'B',
+    return_number: `SR-${o.id}`,
+    return_date: '2026-01-02',
+    original_invoice_id: o.original_invoice_id,
+    customer_id: 'C1',
+    subtotal_paise: o.total_paise,
+    discount_paise: 0,
+    taxable_paise: o.total_paise,
+    cgst_paise: 0,
+    sgst_paise: 0,
+    igst_paise: 0,
+    cess_paise: 0,
+    round_off_paise: 0,
+    round_off_mode: 'none',
+    pre_round_total_paise: o.total_paise,
+    total_paise: o.total_paise,
+    apply_to_balance_paise: o.apply_to_balance_paise ?? o.total_paise,
+    customer_credit_paise: o.customer_credit_paise ?? 0,
+    status: o.status ?? 'posted',
+    reason: '',
+    notes: '',
+    journal_entry_id: '',
+    reversed_credit_note_invoice_id: o.reversed_credit_note_invoice_id ?? null,
+    legacy_migration_classification: null,
+    device_id: 'D',
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
     entity_version: 1,
@@ -125,6 +170,8 @@ function mkPur(
     igst_paise: 0,
     cess_paise: 0,
     round_off_paise: 0,
+    round_off_mode: 'none',
+    pre_round_total_paise: o.total_paise,
     total_paise: o.total_paise,
     paid_paise: o.paid_paise ?? 0,
     balance_paise: o.total_paise - (o.paid_paise ?? 0),
@@ -156,6 +203,57 @@ describe('computeReceivables', () => {
     const ar = computeReceivables(invs, '2026-02-01');
     expect(ar.totals.outstanding_paise).toBe(60_00);
     expect(ar.perCustomer[0].total_credit_note_paise).toBe(40_00);
+  });
+
+  it('reduces outstanding by an active native sales return', () => {
+    const invs = [mkInv({ id: 'I1', total_paise: 100_00 })];
+    const returns = [
+      mkSalesReturn({ id: 'SR1', original_invoice_id: 'I1', total_paise: 25_00 }),
+    ];
+    const ar = computeReceivables(invs, '2026-02-01', [], [], returns);
+    expect(ar.totals.outstanding_paise).toBe(75_00);
+    expect(ar.perCustomer[0].total_credit_note_paise).toBe(25_00);
+  });
+
+  it('does not count cancelled or migration-linked native returns', () => {
+    const invs = [mkInv({ id: 'I1', total_paise: 100_00 })];
+    const returns = [
+      mkSalesReturn({ id: 'SR1', original_invoice_id: 'I1', total_paise: 25_00, status: 'cancelled' }),
+      mkSalesReturn({
+        id: 'SR2',
+        original_invoice_id: 'I1',
+        total_paise: 15_00,
+        reversed_credit_note_invoice_id: 'CN-I1',
+      }),
+    ];
+    const ar = computeReceivables(invs, '2026-02-01', [], [], returns);
+    expect(ar.totals.outstanding_paise).toBe(100_00);
+  });
+
+  it('does not double-count the customer-credit portion of an over-return', () => {
+    const invs = [mkInv({ id: 'I1', total_paise: 100_00 })];
+    const returns = [
+      mkSalesReturn({
+        id: 'SR1',
+        original_invoice_id: 'I1',
+        total_paise: 125_00,
+        apply_to_balance_paise: 100_00,
+        customer_credit_paise: 25_00,
+      }),
+    ];
+    const advances = [
+      mkAdv({
+        id: 'A1',
+        party_type: 'customer',
+        party_id: 'C1',
+        amount_paise: 25_00,
+        remaining_paise: 25_00,
+        reference: 'sales_return:SR-SR1',
+      }),
+    ];
+    const ar = computeReceivables(invs, '2026-02-01', advances, [], returns);
+    expect(ar.totals.outstanding_paise).toBe(0);
+    expect(ar.totals.advance_paise).toBe(25_00);
   });
 
   it('treats overpayment (paid + credits > total) as advance, not negative outstanding', () => {
@@ -271,6 +369,33 @@ describe('computePayables', () => {
     ];
     const ap = computePayables(bills, '2026-02-01');
     expect(ap.totals.outstanding_paise).toBe(130_00);
+  });
+
+  it('excludes deleted/cancelled bills from payable entries and supplier totals', () => {
+    const bills = [
+      mkPur({ id: 'LIVE', total_paise: 100_00 }),
+      mkPur({ id: 'DELETED', total_paise: 250_00, status: 'cancelled' }),
+    ];
+    const ap = computePayables(bills, '2026-02-01');
+
+    expect(ap.perPurchase.map((row) => row.purchase_id)).toEqual(['LIVE']);
+    expect(ap.totals.outstanding_paise).toBe(100_00);
+    expect(ap.totals.total_billed_paise).toBe(100_00);
+  });
+
+  it('does not expose a cancelled bill as a per-supplier payable entry', () => {
+    const ap = computePayables(
+      [mkPur({ id: 'DELETED', supplier_id: 'S1', total_paise: 250_00, status: 'cancelled' })],
+      '2026-02-01',
+    );
+
+    expect(ap.perPurchase).toEqual([]);
+    expect(ap.perSupplier).toEqual([]);
+    expect(ap.totals).toMatchObject({
+      total_billed_paise: 0,
+      outstanding_paise: 0,
+      bill_count: 0,
+    });
   });
 
   it('applies supplier-level debit-note pool FIFO to bills (legacy pre-FK debit notes)', () => {

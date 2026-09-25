@@ -8,7 +8,7 @@
  *     enabled when window.showDirectoryPicker is undefined and NODE_ENV==='test'.
  *
  * Same folder layout as the Google Drive provider:
- *   BusinessVault/<BusinessName>/
+ *   BusinessVault - <BusinessName>/
  *     README.txt
  *     metadata/{manifest.json, schema.json, sync-state.json, checksums.json}
  *     current/*.csv
@@ -477,7 +477,7 @@ CSVs will be regenerated on the next sync.
 interface BusinessLocation {
   businessId: string;
   businessName: string;
-  folderPath: string; // e.g. 'BusinessVault/Acme Traders'
+  folderPath: string; // e.g. 'BusinessVault - Acme Traders'
 }
 
 export class LocalFolderStorageProvider implements CustomerStorageProvider {
@@ -538,21 +538,6 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
         throw new Error('showDirectoryPicker is unavailable in this browser');
       }
 
-      // Ensure top-level BusinessVault/ exists — but only if the picked root
-      // doesn't already look like the BusinessVault folder itself. Detect the
-      // latter by scanning for any child whose metadata/manifest.json exists.
-      const rootEntries = await this.fs.list('');
-      let rootIsBusinessVault = false;
-      for (const e of rootEntries) {
-        if (e.kind !== 'directory') continue;
-        if (await this.fs.exists(`${e.name}/metadata/manifest.json`)) {
-          rootIsBusinessVault = true;
-          break;
-        }
-      }
-      if (!rootIsBusinessVault) {
-        await this.fs.mkdirp('BusinessVault');
-      }
       this.connected = true;
       this.connectError = undefined;
     } catch (err) {
@@ -586,13 +571,13 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
   async initializeBusiness(input: InitializeBusinessInput): Promise<InitResult> {
     const fs = this.requireFs();
     const slug = safeBusinessSlug(input.businessName);
-    // Two supported layouts:
-    //   (a) canonical: <root>/BusinessVault/<slug>/…    (new installs, and
-    //       what we create when nothing exists yet)
-    //   (b) rooted:    <root>/<slug>/…                  (user picked the
-    //       BusinessVault folder itself in the OS picker)
+    // New businesses get an independent top-level folder. The rooted and
+    // legacy layouts remain readable so existing backups can still restore.
+    //   (a) canonical: <root>/BusinessVault - <slug>/…
+    //   (b) rooted:    <root>/<slug>/… (user picked that business folder)
     // Reuse whichever already has data; otherwise create (a).
-    const canonicalPath = `BusinessVault/${slug}`;
+    const canonicalPath = `BusinessVault - ${slug}`;
+    const legacyPath = `BusinessVault/${slug}`;
     const rootedPath = slug;
     let folderPath: string;
     // The picker may point directly at the extracted business folder. In that
@@ -601,6 +586,8 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       folderPath = '.';
     } else if (await fs.exists(`${rootedPath}/metadata/manifest.json`)) {
       folderPath = rootedPath;
+    } else if (await fs.exists(`${legacyPath}/metadata/manifest.json`)) {
+      folderPath = legacyPath;
     } else {
       folderPath = canonicalPath;
     }
@@ -1243,12 +1230,9 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
     };
   }
 
-  // Enumerate BusinessVault/<name>/ folders. Supports two shapes:
-  //   (a) user picked the PARENT of BusinessVault — entries live under BusinessVault/<name>
-  //   (b) user picked BusinessVault itself — entries live under <name>
-  // Try (a) first (canonical), fall back to (b). This mirrors what the
-  // Restore flow used to do inline via `_fsForTests`, moved here so it works
-  // for real Drive providers too via the same interface.
+  // Enumerate new BusinessVault - <name>/ folders plus legacy
+  // BusinessVault/<name>/ folders. Also accept a directly selected business
+  // folder. Multiple results are intentionally returned for the restore picker.
   async listBusinesses(): Promise<DiscoveredBusinessOnProvider[]> {
     const fs = this.requireFs();
     const candidates: Array<{

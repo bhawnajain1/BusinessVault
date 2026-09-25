@@ -79,7 +79,7 @@ export interface RebuildOptions {
   db: BusinessVaultDB;
   providerConfig: ProviderConfig;
   /**
-   * Called when more than one business is found under BusinessVault/. Not
+   * Called when more than one business is found on the provider. Not
    * called when exactly one is present.
    */
   pickBusiness?: BusinessPicker;
@@ -214,7 +214,7 @@ export async function rebuildFromDrive(
     businessIds: businesses.map((business) => business.businessId),
   });
   if (businesses.length === 0) {
-    throw new Error('No BusinessVault/<business> folder found on the provider');
+    throw new Error('No BusinessVault business folder found on the provider');
   }
   let selected: DiscoveredBusiness;
   if (businesses.length === 1) {
@@ -362,7 +362,7 @@ export async function rebuildFromDrive(
   // wiping the DB and then discovering there was nothing to restore.
   const sinceEventId =
     (manifest.journalCheckpoint as string | undefined) ?? undefined;
-  const events = await provider.readJournalEvents({
+  const journalEvents = await provider.readJournalEvents({
     businessId: selected.businessId,
     sinceEventId,
   });
@@ -531,6 +531,7 @@ export async function rebuildFromDrive(
   const acct = await accountingSelfCheck(selected.businessId, { db: opts.db });
   const accountingBalanced = acct.debitsEqCredits && acct.unbalancedEntries.length === 0;
   if (!accountingBalanced) {
+    const missingJournalLines = await findPostedEntriesWithoutLines(opts.db, selected.businessId);
     issues.push({
       severity: 'error',
       code: 'ACCOUNTING_UNBALANCED',
@@ -540,6 +541,7 @@ export async function rebuildFromDrive(
         totalDebits: acct.totalDebits,
         totalCredits: acct.totalCredits,
         unbalancedEntries: acct.unbalancedEntries.slice(0, 20),
+        missingJournalLines,
       },
     });
   }
@@ -717,6 +719,7 @@ function tableNames(): string[] {
     'item_stock',
     'invoices',
     'invoice_lines',
+    'invoice_line_return_summary',
     'purchases',
     'purchase_lines',
     'payments',
@@ -858,6 +861,38 @@ interface ManifestShape {
   schemaVersion?: number;
   journalCheckpoint?: string;
   [k: string]: unknown;
+}
+
+function normalizeSnapshotTimestamp(asOf: string): string {
+  // Snapshot directory names from older backups used date-only values, while
+  // current on-demand backups use an ISO timestamp with colons replaced.
+  if (!asOf.includes('T')) return '';
+  return asOf.replace(
+    /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2}(?:\.\d+)?)Z$/,
+    '$1T$2:$3:$4Z',
+  );
+}
+
+function orderReplayEvents(events: SyncEvent[]): SyncEvent[] {
+  const createFirst: Record<string, number> = {
+    create: 0,
+    created: 0,
+    posted: 0,
+    update: 1,
+    updated: 1,
+    reverse: 2,
+    reversed: 2,
+    delete: 3,
+    deleted: 3,
+  };
+  return events
+    .map((event, index) => ({ event, index }))
+    .sort((a, b) =>
+      a.event.timestamp.localeCompare(b.event.timestamp) ||
+      (createFirst[a.event.operation] ?? 1) - (createFirst[b.event.operation] ?? 1) ||
+      a.index - b.index,
+    )
+    .map(({ event }) => event);
 }
 
 // Cache of the manifest that discoverBusinesses already parsed, so

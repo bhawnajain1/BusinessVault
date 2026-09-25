@@ -53,6 +53,9 @@ export function setTokenDb(db: DriveTokenDB): void {
 }
 
 export function resetTokenDb(): void {
+  if (_db) {
+    _db.close();
+  }
   _db = null;
 }
 

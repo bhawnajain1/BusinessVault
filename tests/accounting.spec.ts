@@ -325,7 +325,7 @@ describe('GST engine', () => {
     expect(bankersRound(0.6)).toBe(1);
   });
 
-  it('round-off nudges to nearest rupee', () => {
+  it('round-off uses standard half-up rounding', () => {
     const r = roundOffToNearestRupee(11849);
     expect(r.final_paise).toBe(11800);
     expect(r.round_off_paise).toBe(-49);
@@ -423,6 +423,8 @@ describe('GST engine', () => {
         igst_paise: igst,
         cess_paise: 0,
         round_off_paise: 0,
+        round_off_mode: 'none',
+        pre_round_total_paise: total,
         total_paise: total,
         paid_paise: 0,
         balance_paise: total,

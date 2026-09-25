@@ -35,6 +35,8 @@ const USERINFO = 'https://www.googleapis.com/oauth2/v3/userinfo';
 const MIME_FOLDER = 'application/vnd.google-apps.folder';
 const FILE_FIELDS =
   'id,name,mimeType,parents,size,md5Checksum,modifiedTime,createdTime,version,trashed';
+const MAX_GET_RETRIES = 3;
+const GET_RETRY_DELAYS_MS = [500, 1000, 2000];
 
 export interface CreateDriveApiClientOpts {
   businessId: string;
@@ -127,8 +129,14 @@ class GisDriveClient implements DriveApiClient {
     return rec.accessToken;
   }
 
-  // Internal fetch wrapper — retries once on 401 after silent refresh.
-  private async fetch(url: string, init: RequestInit, isRetry = false): Promise<Response> {
+  // Internal fetch wrapper — retries once on 401 after silent refresh and
+  // transient 5xx failures for safe, idempotent GET requests.
+  private async fetch(
+    url: string,
+    init: RequestInit,
+    isRetry = false,
+    getAttempt = 0,
+  ): Promise<Response> {
     const token = await this.currentToken();
     const headers = new Headers(init.headers ?? {});
     headers.set('Authorization', `Bearer ${token}`);
@@ -145,6 +153,22 @@ class GisDriveClient implements DriveApiClient {
         throw new DriveNeedsReconnectError();
       }
       return this.fetch(url, init, true);
+    }
+    if (
+      res.status >= 500 &&
+      res.status <= 599 &&
+      (init.method ?? 'GET') === 'GET' &&
+      getAttempt < MAX_GET_RETRIES
+    ) {
+      const delayMs = GET_RETRY_DELAYS_MS[getAttempt] ?? 2000;
+      log.warn('drive.client', 'transient Drive GET failure — retrying', {
+        businessId: this.businessId,
+        status: res.status,
+        attempt: getAttempt + 1,
+        delayMs,
+      });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return this.fetch(url, init, isRetry, getAttempt + 1);
     }
     if (res.status === 403) {
       // 403 in drive.file scope usually means permission_revoked or

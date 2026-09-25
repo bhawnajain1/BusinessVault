@@ -1,14 +1,34 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { Business } from '../../db/types';
 import { currentBusinessId } from '../../lib/business';
-import { INDIAN_STATES, findStateByCode, stateFromGstin } from '../../lib/indianStates';
-import { seedDefaultMasters } from '../../domain/defaults';
+import { INDIAN_STATES } from '../../lib/indianStates';
+import {
+  applyGstinChange,
+  applyStateChange,
+  inferManuallySet,
+  type GstinStatePair,
+} from '../../lib/gstinStateSync';
+import GstinStateBadge from '../components/GstinStateBadge';
+import { resolveDefaultInvoiceTerms, seedDefaultMasters } from '../../domain/defaults';
 import { seedChartOfAccounts } from '../../domain/coa';
 import { appendSyncEvent } from '../../domain/syncEventLog';
 import { getDeviceId } from '../../lib/device';
 import { downloadDebugLogs } from '../../lib/downloadLogs';
+import { downloadDiagnosticReport } from '../../lib/diagnosticBundle';
+import {
+  BusinessProfileService,
+  SignatureValidationError,
+} from '../../domain/BusinessProfileService';
+import { log } from '../../lib/log';
+import {
+  isLowStockAlertsEnabled,
+  isLowStockSoundEnabled,
+  setLowStockAlertsEnabled,
+  setLowStockSoundEnabled,
+} from '../../lib/lowStockPrefs';
+import { playLowStockSound } from '../../lib/lowStockSound';
 
 interface Counts {
   units: number;
@@ -28,6 +48,7 @@ export default function Settings() {
   const [saved, setSaved] = useState(false);
   const [counts, setCounts] = useState<Counts | null>(null);
   const [seedError, setSeedError] = useState<string | null>(null);
+  const [stateManuallySet, setStateManuallySet] = useState(false);
 
   async function loadCounts(businessId: string) {
     const [units, categories, warehouses, customers, suppliers, items, invoices, accounts] =
@@ -55,7 +76,8 @@ export default function Settings() {
       }
       setBusiness(b);
       if (b) {
-        setForm(b);
+        setForm({ ...b, default_invoice_terms: resolveDefaultInvoiceTerms(b.default_invoice_terms) });
+        setStateManuallySet(inferManuallySet(b.gstin ?? '', b.state_code ?? ''));
         await loadCounts(b.id);
       }
     })();
@@ -63,6 +85,13 @@ export default function Settings() {
 
   async function save() {
     if (!business) return;
+    log.info('settings', 'business profile save requested', {
+      businessId: business.id,
+      changedKeys: Object.keys(form).filter(
+        (k) => (form as Record<string, unknown>)[k] !== (business as unknown as Record<string, unknown>)[k],
+      ),
+      hasDefaultInvoiceTerms: (form.default_invoice_terms ?? '').trim().length > 0,
+    });
     setSaving(true);
     setSaved(false);
     try {
@@ -92,8 +121,211 @@ export default function Settings() {
       setBusiness(patched);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      log.info('settings', 'business profile save committed', {
+        businessId: business.id,
+        entityVersion: patched.entity_version,
+      });
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Signature block state — mirrors BusinessProfileService operations.
+  const [signaturePreviewUrl, setSignaturePreviewUrl] = useState<string | null>(null);
+  const [signatureError, setSignatureError] = useState<string | null>(null);
+  const [signatureBusy, setSignatureBusy] = useState(false);
+  const signatureInputRef = useRef<HTMLInputElement | null>(null);
+
+  // §8 Low-Stock Alerts — device-local preferences (localStorage-backed).
+  // Kept as local state so the toggles feel instant; the setters push to
+  // storage synchronously. See src/lib/lowStockPrefs.ts.
+  const [lowStockAlerts, setLowStockAlertsState] = useState<boolean>(() =>
+    isLowStockAlertsEnabled(),
+  );
+  const [lowStockSound, setLowStockSoundState] = useState<boolean>(() =>
+    isLowStockSoundEnabled(),
+  );
+  const [testSoundBusy, setTestSoundBusy] = useState(false);
+
+  function handleLowStockAlertsToggle(enabled: boolean) {
+    setLowStockAlertsEnabled(enabled);
+    setLowStockAlertsState(enabled);
+    log.info('settings', 'low stock alerts toggled', { enabled });
+  }
+  function handleLowStockSoundToggle(enabled: boolean) {
+    setLowStockSoundEnabled(enabled);
+    setLowStockSoundState(enabled);
+    log.info('settings', 'low stock sound toggled', { enabled });
+  }
+  async function handleTestSound() {
+    setTestSoundBusy(true);
+    log.info('settings', 'test sound clicked');
+    try {
+      // `force=true` resumes a suspended AudioContext because this call
+      // happens inside a direct click handler — the browser policy that
+      // gates the automatic path allows this one.
+      await playLowStockSound(true);
+    } finally {
+      setTestSoundBusy(false);
+    }
+  }
+
+  // Refresh the preview URL whenever the business's `signature_ref` changes.
+  // We hold the object URL in state so React can render it AND clean it up on
+  // unmount / next-change; a raw `URL.createObjectURL()` inline would leak.
+  useEffect(() => {
+    let revoked: string | null = null;
+    let cancelled = false;
+    (async () => {
+      const ref = business?.signature_ref ?? null;
+      if (!ref) {
+        setSignaturePreviewUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return null;
+        });
+        return;
+      }
+      const att = await db.attachments.get(ref);
+      if (cancelled) return;
+      if (!att || !att.blob) {
+        log.warn('settings', 'signature preview missing blob', {
+          businessId: business?.id,
+          signatureRef: ref,
+          hasRow: !!att,
+        });
+        setSignaturePreviewUrl(null);
+        return;
+      }
+      const url = URL.createObjectURL(att.blob);
+      revoked = url;
+      setSignaturePreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+    })();
+    return () => {
+      cancelled = true;
+      if (revoked) URL.revokeObjectURL(revoked);
+    };
+  }, [business?.id, business?.signature_ref]);
+
+  async function handleSignatureUpload(file: File) {
+    if (!business) return;
+    setSignatureError(null);
+    setSignatureBusy(true);
+    log.info('settings', 'signature upload start', {
+      businessId: business.id,
+      filename: file.name,
+      sizeBytes: file.size,
+    });
+    try {
+      const svc = new BusinessProfileService(db);
+      const { business: patched } = await svc.uploadSignature(business.id, file);
+      const deviceId = await getDeviceId();
+      await appendSyncEvent(db, {
+        businessId: patched.id,
+        deviceId,
+        entityType: 'business',
+        entityId: patched.id,
+        operation: 'updated',
+        payload: patched,
+        timestamp: patched.updated_at,
+      });
+      setBusiness(patched);
+      setForm((f) => ({
+        ...f,
+        signature_ref: patched.signature_ref,
+        show_signature_on_invoice: patched.show_signature_on_invoice,
+      }));
+    } catch (e) {
+      const msg =
+        e instanceof SignatureValidationError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : String(e);
+      log.warn('settings', 'signature upload failed', {
+        businessId: business.id,
+        error: msg,
+      });
+      setSignatureError(msg);
+    } finally {
+      setSignatureBusy(false);
+      if (signatureInputRef.current) signatureInputRef.current.value = '';
+    }
+  }
+
+  async function handleSignatureRemove() {
+    if (!business) return;
+    setSignatureError(null);
+    setSignatureBusy(true);
+    log.info('settings', 'signature remove start', { businessId: business.id });
+    try {
+      const svc = new BusinessProfileService(db);
+      const patched = await svc.removeSignature(business.id);
+      const deviceId = await getDeviceId();
+      await appendSyncEvent(db, {
+        businessId: patched.id,
+        deviceId,
+        entityType: 'business',
+        entityId: patched.id,
+        operation: 'updated',
+        payload: patched,
+        timestamp: patched.updated_at,
+      });
+      setBusiness(patched);
+      setForm((f) => ({
+        ...f,
+        signature_ref: null,
+        show_signature_on_invoice: 0,
+      }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log.warn('settings', 'signature remove failed', {
+        businessId: business.id,
+        error: msg,
+      });
+      setSignatureError(msg);
+    } finally {
+      setSignatureBusy(false);
+    }
+  }
+
+  async function handleShowSignatureToggle(enabled: boolean) {
+    if (!business) return;
+    setSignatureError(null);
+    setSignatureBusy(true);
+    log.info('settings', 'signature toggle start', {
+      businessId: business.id,
+      enabled,
+    });
+    try {
+      const svc = new BusinessProfileService(db);
+      const patched = await svc.setShowSignatureOnInvoice(business.id, enabled);
+      const deviceId = await getDeviceId();
+      await appendSyncEvent(db, {
+        businessId: patched.id,
+        deviceId,
+        entityType: 'business',
+        entityId: patched.id,
+        operation: 'updated',
+        payload: patched,
+        timestamp: patched.updated_at,
+      });
+      setBusiness(patched);
+      setForm((f) => ({
+        ...f,
+        show_signature_on_invoice: patched.show_signature_on_invoice,
+      }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log.warn('settings', 'signature toggle failed', {
+        businessId: business.id,
+        error: msg,
+      });
+      setSignatureError(msg);
+    } finally {
+      setSignatureBusy(false);
     }
   }
 
@@ -209,33 +441,43 @@ export default function Settings() {
             <input
               value={form.gstin ?? ''}
               onChange={(e) => {
-                const g = e.target.value.toUpperCase();
-                const derived = stateFromGstin(g);
-                if (derived) {
-                  setForm((f) => ({
-                    ...f,
-                    gstin: g,
-                    state: derived.name,
-                    state_code: derived.code,
-                  }));
-                } else {
-                  set('gstin', g);
-                }
+                const pair: GstinStatePair = {
+                  gstin: form.gstin ?? '',
+                  stateCode: form.state_code ?? '',
+                  stateName: form.state ?? '',
+                  stateManuallySet,
+                };
+                const next = applyGstinChange(pair, e.target.value);
+                setStateManuallySet(next.stateManuallySet);
+                setForm((f) => ({
+                  ...f,
+                  gstin: next.gstin,
+                  state: next.stateName,
+                  state_code: next.stateCode,
+                }));
               }}
               placeholder="15-char GSTIN"
               className="w-full border border-slate-300 rounded px-2 py-1.5 uppercase"
             />
+            <GstinStateBadge gstin={form.gstin ?? ''} stateCode={form.state_code ?? ''} />
           </label>
           <label>
             <span className="block text-slate-700 mb-1">State</span>
             <select
               value={form.state_code ?? ''}
               onChange={(e) => {
-                const s = findStateByCode(e.target.value);
+                const pair: GstinStatePair = {
+                  gstin: form.gstin ?? '',
+                  stateCode: form.state_code ?? '',
+                  stateName: form.state ?? '',
+                  stateManuallySet,
+                };
+                const next = applyStateChange(pair, e.target.value);
+                setStateManuallySet(next.stateManuallySet);
                 setForm((f) => ({
                   ...f,
-                  state: s?.name ?? '',
-                  state_code: e.target.value,
+                  state: next.stateName,
+                  state_code: next.stateCode,
                 }));
               }}
               className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white"
@@ -312,6 +554,19 @@ export default function Settings() {
               className="w-full border border-slate-300 rounded px-2 py-1.5"
             />
           </label>
+          <label className="col-span-2">
+            <span className="block text-slate-700 mb-1">Default invoice terms</span>
+            <textarea
+              value={form.default_invoice_terms ?? ''}
+              onChange={(e) => set('default_invoice_terms', e.target.value)}
+              placeholder="Enter the terms of business to use on new invoices"
+              rows={3}
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
+            <span className="mt-1 block text-xs text-slate-500">
+              This is used as the starting terms on every new invoice. You can edit it before saving.
+            </span>
+          </label>
           <label>
             <span className="block text-slate-700 mb-1">FY start month</span>
             <select
@@ -339,6 +594,118 @@ export default function Settings() {
             {saving ? 'Saving…' : 'Save changes'}
           </button>
           {saved && <span className="text-sm text-emerald-600">Saved.</span>}
+        </div>
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-1">Authorised Signature</h2>
+        <p className="text-xs text-slate-500 mb-3">
+          Upload a scanned signature (PNG, JPG, or WebP, up to 2 MB and 2000×2000 px).
+          Enable the toggle to print it on new invoices. Historical invoices keep the
+          signature they were issued with — replacing this image will NOT change them.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-4 sm:items-start">
+          <div className="border border-slate-200 rounded bg-slate-50 w-[220px] h-[110px] flex items-center justify-center overflow-hidden">
+            {signaturePreviewUrl ? (
+              <img
+                src={signaturePreviewUrl}
+                alt="Authorised signature"
+                className="max-h-full max-w-full object-contain"
+              />
+            ) : (
+              <span className="text-xs text-slate-400">No signature uploaded</span>
+            )}
+          </div>
+          <div className="flex-1 flex flex-col gap-2">
+            <div className="flex flex-wrap gap-2">
+              <input
+                ref={signatureInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void handleSignatureUpload(f);
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => signatureInputRef.current?.click()}
+                disabled={signatureBusy}
+                className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+              >
+                {business.signature_ref ? 'Replace signature' : 'Upload signature'}
+              </button>
+              {business.signature_ref && (
+                <button
+                  type="button"
+                  onClick={() => void handleSignatureRemove()}
+                  disabled={signatureBusy}
+                  className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={(business.show_signature_on_invoice ?? 0) === 1}
+                disabled={signatureBusy || !business.signature_ref}
+                onChange={(e) => void handleShowSignatureToggle(e.target.checked)}
+              />
+              Show signature on new invoices
+            </label>
+            {signatureError && (
+              <div className="text-xs text-rose-600">{signatureError}</div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-1">Notifications</h2>
+        <p className="text-xs text-slate-500 mb-3">
+          Alert when an item's stock drops below its reorder level. Alerts fire
+          only on threshold-crossing — once an item is low, it won't beep again
+          until stock goes back up and dips a second time.
+        </p>
+        <div className="flex flex-col gap-2 text-sm text-slate-700">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={lowStockAlerts}
+              onChange={(e) => handleLowStockAlertsToggle(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span>Low Stock Alerts</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={lowStockSound}
+              onChange={(e) => handleLowStockSoundToggle(e.target.checked)}
+              disabled={!lowStockAlerts}
+              className="h-4 w-4"
+            />
+            <span className={lowStockAlerts ? '' : 'text-slate-400'}>
+              Notification sound
+            </span>
+          </label>
+          <div>
+            <button
+              type="button"
+              onClick={() => void handleTestSound()}
+              disabled={testSoundBusy || !lowStockSound || !lowStockAlerts}
+              className="mt-1 text-xs border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100 disabled:opacity-50"
+            >
+              {testSoundBusy ? 'Playing…' : 'Test sound'}
+            </button>
+            <p className="mt-1 text-xs text-slate-500">
+              Browsers may block sound until you interact with the page — press
+              Test sound once to unlock automatic alerts for this tab.
+            </p>
+          </div>
         </div>
       </section>
 
@@ -430,6 +797,30 @@ export default function Settings() {
             className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100"
           >
             Download last 7 days
+          </button>
+        </div>
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-3">
+          Support / Diagnostics
+        </h2>
+        <p className="text-xs text-slate-600 mb-3">
+          Bundles the last 24 hours of debug logs together with app version,
+          schema version, browser info, recent audit entries, recent Drive
+          backup/restore events, and a trial-balance / receivables snapshot —
+          all in one JSON file for support triage. OAuth tokens, passwords,
+          and signature blobs are stripped before export.
+        </p>
+        <div className="flex gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => {
+              void downloadDiagnosticReport();
+            }}
+            className="text-sm border border-indigo-300 bg-indigo-50 text-indigo-700 rounded px-3 py-1.5 hover:bg-indigo-100"
+          >
+            Export Diagnostic Report
           </button>
         </div>
       </section>

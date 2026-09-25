@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:mandatory-roundtrip": "vitest run tests/e2e/local-backup-roundtrip.spec.ts",
     "test:watch": "vitest",
     "test:unit": "vitest run src",
     "test:e2e": "vitest run tests",

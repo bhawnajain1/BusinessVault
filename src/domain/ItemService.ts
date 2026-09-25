@@ -2,6 +2,7 @@ import { ulid } from 'ulid';
 import type { BusinessVaultDB } from '../db/database';
 import type { Item } from '../db/types';
 import { appendSyncEvent } from './syncEventLog';
+import { validateHsnSac } from './compliance';
 
 export interface ItemServiceDeps {
   db: BusinessVaultDB;
@@ -104,6 +105,7 @@ export class ItemService {
     assertBps('cessRateBps', input.cessRateBps);
     assertMicros('openingQtyMicros', input.openingQtyMicros);
     assertMicros('reorderLevelMicros', input.reorderLevelMicros);
+    validateHsnSac(input.hsn, input.isService === true, 'Item');
 
     const db = this.db;
     const now = this.now();
@@ -179,6 +181,13 @@ export class ItemService {
         if (existing.business_id !== input.businessId) {
           throw new Error(
             `Item ${input.id} does not belong to business ${input.businessId}`,
+          );
+        }
+        if (input.patch.hsn !== undefined || input.patch.is_service !== undefined) {
+          validateHsnSac(
+            input.patch.hsn ?? existing.hsn,
+            (input.patch.is_service ?? existing.is_service) === 1,
+            'Item',
           );
         }
         if (input.patch.sku && input.patch.sku !== existing.sku) {

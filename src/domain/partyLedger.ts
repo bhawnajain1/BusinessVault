@@ -1,4 +1,12 @@
-import type { Advance, Customer, Invoice, Purchase, Supplier } from '../db/types';
+import type {
+  Advance,
+  Customer,
+  Invoice,
+  Purchase,
+  SalesReturn,
+  Supplier,
+} from '../db/types';
+import { log } from '../lib/log';
 
 // Party ledger — derived outstanding per the spec (payablesRec.md).
 //
@@ -84,6 +92,15 @@ export interface SupplierPayable {
   aging: AgingBuckets;
 }
 
+export function isActivePurchase(purchase: Purchase): boolean {
+  return (
+    purchase.status !== 'cancelled' &&
+    purchase.status !== 'draft' &&
+    !purchase.replaced_by_purchase_id &&
+    !purchase.reversed_by_purchase_id
+  );
+}
+
 // --- Pure helpers ---
 
 // Whole-day difference between two YYYY-MM-DD dates. Positive = second is later.
@@ -127,6 +144,7 @@ function emptyAging(): AgingBuckets {
 function computeInvoiceRow(
   inv: Invoice,
   creditNotesForThisInvoice: Invoice[],
+  salesReturnsForThisInvoice: SalesReturn[],
   asOfYmd: string,
 ): InvoiceOutstanding {
   // Credit note total_paise is negative; take absolute for the "reduction" figure.
@@ -134,7 +152,14 @@ function computeInvoiceRow(
     (acc, cn) => acc + Math.abs(cn.total_paise),
     0,
   );
-  const grossOutstanding = inv.total_paise - inv.paid_paise - creditReductionPaise;
+  const salesReturnReductionPaise = salesReturnsForThisInvoice.reduce(
+    (acc, sr) => acc + (sr.apply_to_balance_paise ?? sr.total_paise),
+    0,
+  );
+  const totalCreditReductionPaise =
+    creditReductionPaise + salesReturnReductionPaise;
+  const grossOutstanding =
+    inv.total_paise - inv.paid_paise - totalCreditReductionPaise;
   const outstanding = Math.max(0, grossOutstanding);
   const advance = grossOutstanding < 0 ? -grossOutstanding : 0;
 
@@ -150,7 +175,7 @@ function computeInvoiceRow(
     due_date: dueYmd,
     grand_total_paise: inv.total_paise,
     paid_paise: inv.paid_paise,
-    credit_note_paise: creditReductionPaise,
+    credit_note_paise: totalCreditReductionPaise,
     outstanding_paise: outstanding,
     advance_paise: advance,
     overdue,
@@ -204,10 +229,15 @@ export function computeReceivables(
   asOfYmd: string,
   advances: Advance[] = [],
   customers: Customer[] = [],
+  salesReturns: SalesReturn[] = [],
 ): DerivedReceivables {
   // Partition: originals (positive-total sales), credit notes (reversing).
-  // Cancelled and draft never contribute either way.
-  const usable = invoices.filter((i) => i.status !== 'cancelled' && i.status !== 'draft');
+  // Cancelled, draft, and recycled (deleted_at set) never contribute either
+  // way — §9 requires recycled invoices to have zero effect on receivables /
+  // party balance / aging alongside TB / P&L / BS.
+  const usable = invoices.filter(
+    (i) => i.status !== 'cancelled' && i.status !== 'draft' && !i.deleted_at,
+  );
   const originals = usable.filter((i) => i.reverses_invoice_id === null);
   const creditNotes = usable.filter((i) => i.reverses_invoice_id !== null);
   const creditsByOriginalId = new Map<string, Invoice[]>();
@@ -218,8 +248,38 @@ export function computeReceivables(
     creditsByOriginalId.set(cn.reverses_invoice_id, arr);
   }
 
+  const returnsByOriginalId = new Map<string, SalesReturn[]>();
+  let activeNativeReturnCount = 0;
+  let nativeReturnCreditPaise = 0;
+  for (const sr of salesReturns) {
+    if (
+      sr.status !== 'posted' ||
+      sr.deleted_at ||
+      sr.reversed_credit_note_invoice_id
+    ) {
+      continue;
+    }
+    const arr = returnsByOriginalId.get(sr.original_invoice_id) ?? [];
+    arr.push(sr);
+    returnsByOriginalId.set(sr.original_invoice_id, arr);
+    activeNativeReturnCount += 1;
+    nativeReturnCreditPaise += sr.customer_credit_paise ?? 0;
+  }
+  if (activeNativeReturnCount > 0) {
+    log.debug('partyLedger', 'included active native sales returns', {
+      activeNativeReturnCount,
+      nativeReturnCreditPaise,
+      invoiceCount: originals.length,
+    });
+  }
+
   const perInvoice: InvoiceOutstanding[] = originals.map((inv) =>
-    computeInvoiceRow(inv, creditsByOriginalId.get(inv.id) ?? [], asOfYmd),
+    computeInvoiceRow(
+      inv,
+      creditsByOriginalId.get(inv.id) ?? [],
+      returnsByOriginalId.get(inv.id) ?? [],
+      asOfYmd,
+    ),
   );
 
   const bucket = new Map<string, CustomerReceivable>();
@@ -343,7 +403,7 @@ export function computePayables(
   advances: Advance[] = [],
   suppliers: Supplier[] = [],
 ): DerivedPayables {
-  const usable = purchases.filter((p) => p.status !== 'cancelled');
+  const usable = purchases.filter(isActivePurchase);
   const originals = usable.filter(
     (p) => p.total_paise > 0 && !p.reverses_purchase_id,
   );

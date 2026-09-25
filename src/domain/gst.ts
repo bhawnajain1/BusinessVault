@@ -108,8 +108,12 @@ export function roundOffToNearestRupee(totalPaise: number): {
   final_paise: number;
   round_off_paise: number;
 } {
-  const rupees = totalPaise / 100;
-  const rounded = bankersRound(rupees) * 100;
+  if (!Number.isFinite(totalPaise)) throw new Error('roundOffToNearestRupee: non-finite');
+  const wholeRupees = Math.floor(totalPaise / 100);
+  const paise = totalPaise - wholeRupees * 100;
+  // Standard half-up rounding: 50 paise or more goes to the next rupee;
+  // anything below 50 paise goes down to the current rupee.
+  const rounded = (wholeRupees + (paise >= 50 ? 1 : 0)) * 100;
   return {
     final_paise: rounded,
     round_off_paise: rounded - totalPaise,
@@ -152,6 +156,11 @@ export async function gstSummary(
 
   for (const inv of invoices) {
     if (inv.status === 'cancelled') continue;
+    // §9: recycled invoices must not appear in GST summary. Their journals
+    // are reversed by deleteInvoice so TB / P&L / BS already drop them; the
+    // GST summary reads invoice line rows directly so it needs an explicit
+    // filter here.
+    if (inv.deleted_at) continue;
     const lines = await db.invoice_lines
       .where('[business_id+invoice_id]')
       .equals([businessId, inv.id])

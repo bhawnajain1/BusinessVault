@@ -30,18 +30,8 @@ jobs:
 
       - name: Build
         env:
-          # Public build repo is served at /businessvault-app/. Override the
-          # default /BusinessVault/ base so asset paths match the new URL.
           BV_BASE: /businessvault-app/
-          # Google Identity Services (browser-only OAuth). The client ID is not
-          # a secret — it's designed to be visible in JS — but we route it
-          # through Actions secrets so it isn't hard-coded in source. The
-          # origin allow-list in Google Cloud Console (Authorized JavaScript
-          # origins) is what actually locks it to this deployment.
           VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          # Feedback button mailto: target. Kept in a GitHub Actions secret so
-          # the address isn't in git history / source (scrapes -> spam). When
-          # the secret is unset the Feedback button hides itself at runtime.
           VITE_FEEDBACK_EMAIL: ${{ secrets.FEEDBACK_EMAIL }}
         run: npm run build
 
@@ -65,15 +55,11 @@ jobs:
           SRC_SHORT="${SRC_SHA:0:7}"
 
           cd dist
-          # SPA fallback for GitHub Pages — a copy of index.html served as 404.
-          # (public/404.html has its own redirect; this fallback matches it.)
-          touch .nojekyll  # tell Pages not to run Jekyll on this tree
+          touch .nojekyll
 
           git init -q -b main
           git remote add origin git@github.com:bhawnajain1/businessvault-app.git
           git add -A
           git commit -q -m "Deploy build from bhawnajain1/BusinessVault@${SRC_SHORT}"
-          # Force push: the build repo is a pure output mirror, history has no value.
-          # Nothing on the build repo is ever hand-authored.
           GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519 -o UserKnownHostsFile=~/.ssh/known_hosts" \
             git push --force origin main

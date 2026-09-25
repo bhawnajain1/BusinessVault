@@ -7,6 +7,8 @@ interface DrawerProps {
   children: ReactNode;
   width?: string;
   footer?: ReactNode;
+  fullPage?: boolean;
+  showFullPageBack?: boolean;
 }
 
 export default function Drawer({
@@ -16,6 +18,8 @@ export default function Drawer({
   children,
   width = 'w-[560px]',
   footer,
+  fullPage = false,
+  showFullPageBack = true,
 }: DrawerProps) {
   useEffect(() => {
     if (!open) return;
@@ -27,6 +31,25 @@ export default function Drawer({
   }, [open, onClose]);
 
   if (!open) return null;
+
+  if (fullPage) {
+    return (
+      <div className="fixed inset-0 z-40 overflow-y-auto bg-slate-50/95">
+        <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-6 p-5 sm:p-8">
+        <div className="flex items-center justify-between">
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-950">{title}</h1>
+          {showFullPageBack && (
+            <button type="button" onClick={onClose} className="text-sm font-semibold text-blue-700 hover:text-blue-800">Back</button>
+          )}
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+          <div className="flex-1 overflow-y-auto p-5 sm:p-7">{children}</div>
+          {footer && <div className="border-t border-slate-100 bg-slate-50/80 px-5 py-4 sm:px-7">{footer}</div>}
+        </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-40" role="dialog" aria-modal="true">
