@@ -21,7 +21,11 @@ import { createDriveApiClient } from '../../drive/google';
 import { log } from '../../lib/log';
 import { downloadDebugLogs } from '../../lib/downloadLogs';
 import { beginAppOperation, updateAppOperation } from '../../lib/operationLock';
-import { stopSyncWorkerAsync, tryBootProvider } from '../../sync/bootProvider';
+import {
+  resumeAutomaticBoot,
+  stopSyncWorkerAsync,
+  tryBootProvider,
+} from '../../sync/bootProvider';
 
 type Step =
   | 'idle'
@@ -230,7 +234,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
 
       try {
         log.info('restore-ui', 'stopping sync worker before restore');
-        await stopSyncWorkerAsync();
+        await stopSyncWorkerAsync(true);
         log.info('restore-ui', 'calling rebuildFromDrive');
         const result = await rebuildFromDrive(provider, {
           db,
@@ -292,6 +296,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         log.info('restore-ui', 'success state scheduled for render');
       } catch (err) {
         release();
+        resumeAutomaticBoot();
         log.error('restore-ui', 'restore rejected', {
           error: err instanceof Error ? err : String(err),
         });
