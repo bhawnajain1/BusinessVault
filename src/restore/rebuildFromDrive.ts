@@ -238,7 +238,7 @@ export async function rebuildFromDrive(
 
   // Bind the provider to the selected business so subsequent journal/snapshot
   // reads know which folder to look in.
-  await provider.initializeBusiness({
+  const initializedProvider = await provider.initializeBusiness({
     businessId: selected.businessId,
     businessName: selected.businessName,
   });
@@ -611,6 +611,12 @@ export async function rebuildFromDrive(
     await opts.db.businesses.update(selected.businessId, {
       drive_folder_id: null,
       drive_connected_email: null,
+    });
+  } else {
+    const connection = await provider.connectionStatus();
+    await opts.db.businesses.update(selected.businessId, {
+      drive_folder_id: initializedProvider.providerFolderId,
+      drive_connected_email: connection.account ?? null,
     });
   }
   const counts = await countTables(opts.db, selected.businessId);

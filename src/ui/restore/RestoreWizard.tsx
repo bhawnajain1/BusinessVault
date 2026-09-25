@@ -19,6 +19,7 @@ import {
 import { env } from '../../lib/env';
 import { connectDrive } from '../../drive/connectDrive';
 import { createDriveApiClient } from '../../drive/google';
+import { rebindDriveTokensToBusiness } from '../onboarding/driveGlue';
 import { log } from '../../lib/log';
 import { downloadDebugLogs } from '../../lib/downloadLogs';
 import { beginAppOperation, updateAppOperation } from '../../lib/operationLock';
@@ -315,6 +316,9 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         });
         appendLog(`Restore complete. Events replayed: ${result.eventsReplayed}.`);
         release();
+        if (providerKind === 'google-drive') {
+          await rebindDriveTokensToBusiness(result.businessId);
+        }
         sessionStorage.setItem(
           RESTORE_SUCCESS_NOTICE_KEY,
           `Restore completed successfully for ${result.businessName}. ${result.eventsReplayed} event(s) replayed.`,
