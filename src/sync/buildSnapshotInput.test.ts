@@ -152,6 +152,31 @@ describe('buildSnapshotInput', () => {
     expect(input.manifest.applicationVersion).toBeTypeOf('string');
   });
 
+  it('records the latest business journal event as the restore checkpoint', async () => {
+    await db.sync_events.add({
+      event_id: '01M0G4JP150NDHP8CP2RNTZZP9',
+      business_id: BID,
+      device_id: 'device-test',
+      entity_type: 'customer',
+      entity_id: 'customer-test',
+      operation: 'created',
+      entity_version: 1,
+      timestamp: '2026-08-26T10:00:00.000Z',
+      payload: { id: 'customer-test', business_id: BID },
+      payload_hash: 'hash',
+      previous_hash: '',
+      sync_status: 'SYNCED',
+      sync_attempts: 0,
+      last_error: null,
+      synced_at: '2026-08-26T10:00:00.000Z',
+      journal_file: 'journal/2026/2026-08.events.jsonl',
+    });
+
+    const input = await buildSnapshotInput(db, BID, BNAME, 'ondemand', '2026-08-26T10-01-00.000Z');
+
+    expect(input.manifest.journalCheckpoint).toBe('01M0G4JP150NDHP8CP2RNTZZP9');
+  });
+
   it('§20 emits CSVs for the new sales_returns / attachments / audit_log tables', async () => {
     // Seed one row in each new table so we can verify the writer picks them up.
     const now = new Date().toISOString();

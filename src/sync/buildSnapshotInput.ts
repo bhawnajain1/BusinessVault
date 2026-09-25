@@ -39,6 +39,21 @@ export async function buildSnapshotInput(
   const files: SnapshotCsvFile[] = [];
   const counts: Record<string, number> = {};
 
+  // Restore uses this to avoid replaying historical events already represented
+  // by the snapshot.
+  const eventRows = await db.sync_events
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+  const journalCheckpoint = eventRows.reduce<string | undefined>(
+    (latest, event) =>
+      event.sync_status === 'SYNCED' &&
+      (!latest || event.event_id > latest)
+        ? event.event_id
+        : latest,
+    undefined,
+  );
+
   log.info('snapshot.build.start', 'snapshot: assembling CSV files', {
     businessId,
     kind,
@@ -145,6 +160,7 @@ export async function buildSnapshotInput(
       businessId,
       businessName,
       counts,
+      ...(journalCheckpoint ? { journalCheckpoint } : {}),
     },
   };
 }

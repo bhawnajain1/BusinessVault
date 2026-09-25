@@ -410,6 +410,7 @@ const je2_lines = [
 
 async function makeSnapshotFiles(
   snapshotBusiness: Record<string, unknown> = business,
+  snapshotPayments: Payment[] = [],
 ) {
   const byStore: Record<string, Record<string, unknown>[]> = {
     businesses: [snapshotBusiness],
@@ -434,7 +435,7 @@ async function makeSnapshotFiles(
     invoice_lines: [inv1_line],
     purchases: [],
     purchase_lines: [],
-    payments: [],
+    payments: snapshotPayments as unknown as Record<string, unknown>[],
     expenses: [],
     stock_movements: [mvOpening, mvSale],
     accounts,
@@ -483,7 +484,7 @@ function makePaymentEvent(): SyncEvent {
     operation: 'create',
     entity_version: 1,
     timestamp: '2026-08-20T10:00:00.000Z',
-    payload: payment1,
+      payload: payment1 as unknown as Readonly<Record<string, unknown>>,
     payload_hash: 'deadbeef',
     previous_hash: null,
     sync_status: 'LOCAL_ONLY',
@@ -680,6 +681,47 @@ describe('rebuildFromDrive', () => {
     expect(inv!.paid_paise).toBe(10000);
     expect(inv!.balance_paise).toBe(13600);
     expect(inv!.status).toBe('partial');
+  });
+
+  it('does not replay historical allocation events already covered by a snapshot', async () => {
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeSnapshot({
+      businessId: BID,
+      kind: 'daily',
+      asOf: '2026-08-21T10-00-00.000Z',
+      files: await makeSnapshotFiles(business, [payment1 as unknown as Payment]),
+      manifest: { schemaVersion: 1 },
+    });
+    await producer.writeJournalEvents([{
+      event_id: '01HISTORICALALLOCATION0000001',
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: 'payment',
+      entity_id: payment1.id,
+      operation: 'update',
+      entity_version: 2,
+      timestamp: '2026-08-18T10:00:00.000Z',
+      payload: {
+        payment_id: payment1.id,
+        allocations: payment1.allocations,
+      },
+      payload_hash: 'historical-allocation',
+      previous_hash: null,
+      sync_status: 'LOCAL_ONLY',
+    }]);
+
+    const report = await rebuildFromDrive(new LocalFolderStorageProvider(), {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(report.eventsReplayed).toBe(0);
+    expect(report.diagnostics.ok).toBe(true);
+    expect(await db.payments.get(payment1.id)).toMatchObject({
+      allocations: payment1.allocations,
+    });
   });
 
   it('is idempotent — running restore twice yields the same DB state', async () => {

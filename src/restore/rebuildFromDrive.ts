@@ -362,14 +362,25 @@ export async function rebuildFromDrive(
   // wiping the DB and then discovering there was nothing to restore.
   const sinceEventId =
     (manifest.journalCheckpoint as string | undefined) ?? undefined;
-  const events = await provider.readJournalEvents({
+  const journalEvents = await provider.readJournalEvents({
     businessId: selected.businessId,
     sinceEventId,
   });
+  // Legacy snapshots have no checkpoint. Their journal may still contain
+  // historical events already represented by the snapshot, so only replay
+  // events written after the snapshot's asOf boundary.
+  const snapshotAsOf = snapshotHandle
+    ? normalizeSnapshotTimestamp(snapshotHandle.asOf)
+    : undefined;
+  const events = sinceEventId || !snapshotAsOf
+    ? journalEvents
+    : journalEvents.filter((event) => event.timestamp > snapshotAsOf);
   log.info('restore.journal.loaded', 'restore: journal events loaded', {
     businessId: selected.businessId,
     eventCount: events.length,
     sinceEventId: sinceEventId ?? null,
+    journalEventCount: journalEvents.length,
+    snapshotAsOf: snapshotAsOf ?? null,
   });
 
   // Zero snapshots + zero journal events = a backup folder that was never
@@ -863,6 +874,16 @@ interface ManifestShape {
   schemaVersion?: number;
   journalCheckpoint?: string;
   [k: string]: unknown;
+}
+
+function normalizeSnapshotTimestamp(asOf: string): string {
+  // Snapshot directory names from older backups used date-only values, while
+  // current on-demand backups use an ISO timestamp with colons replaced.
+  if (!asOf.includes('T')) return '';
+  return asOf.replace(
+    /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2}(?:\.\d+)?)Z$/,
+    '$1T$2:$3:$4Z',
+  );
 }
 
 // Cache of the manifest that discoverBusinesses already parsed, so
