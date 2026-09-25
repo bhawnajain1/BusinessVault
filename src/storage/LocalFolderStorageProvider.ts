@@ -43,6 +43,7 @@ import type {
   WriteJournalResult,
   WriteSnapshotInput,
 } from './CustomerStorageProvider';
+import { canonicalJson, GENESIS_HASH, sha256Hex as sha256Event } from '../journal/event';
 
 // ---------------------------------------------------------------------------
 // Tiny FS abstraction — one implementation over FileSystemDirectoryHandle,
@@ -73,7 +74,15 @@ function makeNodeBackend(rootPath: string): FsBackend {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const nodePath = require('node:path') as typeof import('node:path');
 
-  const abs = (p: string): string => nodePath.join(rootPath, p);
+  const abs = (p: string): string => {
+    const normalized = validateRelativePath(p);
+    const root = nodePath.resolve(rootPath);
+    const target = nodePath.resolve(root, normalized || '.');
+    if (target !== root && !target.startsWith(`${root}${nodePath.sep}`)) {
+      throw new Error(`Path escapes selected backup folder: ${p}`);
+    }
+    return target;
+  };
 
   return {
     kind: 'node',
@@ -134,8 +143,13 @@ type DirHandle = FileSystemDirectoryHandle;
 
 function makeFsApiBackend(root: DirHandle): FsBackend {
   async function resolveDir(path: string, create: boolean): Promise<DirHandle> {
-    if (path === '' || path === '.') return root;
-    const parts = path.split('/').filter(Boolean);
+    const safePath = validateRelativePath(path);
+    if (safePath === '') return root;
+    // File System Access rejects '.' as a directory name. Directly selected
+    // business folders use '.' as their provider-relative root path, so drop
+    // dot segments before resolving the remaining path.
+    const parts = safePath.split('/');
+    if (parts.length === 0) return root;
     let cur: DirHandle = root;
     for (const part of parts) {
       cur = await cur.getDirectoryHandle(part, { create });
@@ -376,7 +390,22 @@ async function reRequestPermission(handle: DirHandle): Promise<boolean> {
 
 function safeBusinessSlug(name: string): string {
   // Keep it human-readable but filesystem-safe.
-  return name.trim().replace(/[/\\:*?"<>|]/g, '_');
+  const slug = name.trim().replace(/[/\\:*?"<>|]/g, '_');
+  if (!slug || slug === '.' || slug === '..') {
+    throw new Error('Business name cannot resolve to an unsafe backup folder name');
+  }
+  return slug;
+}
+
+function validateRelativePath(path: string): string {
+  if (path.includes('\\') || path.startsWith('/') || /^[A-Za-z]:/.test(path)) {
+    throw new Error(`Backup path must be relative: ${path}`);
+  }
+  const parts = path.split('/');
+  if (parts.some((part) => part === '..')) {
+    throw new Error(`Backup path traversal rejected: ${path}`);
+  }
+  return parts.filter((part) => part && part !== '.').join('/');
 }
 
 function journalPathFor(businessFolder: string, ts: string): {
@@ -458,6 +487,7 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
   private business: BusinessLocation | null = null;
   private connectError: string | undefined;
   private injectedHandle: DirHandle | null = null;
+  private journalWriteTail: Promise<void> = Promise.resolve();
 
   /** Pre-seed the folder handle from a click-gesture call, bypassing the
    *  saved-handle silent-reuse path. connect() will use this handle instead
@@ -565,13 +595,31 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
     const canonicalPath = `BusinessVault/${slug}`;
     const rootedPath = slug;
     let folderPath: string;
-    if (await fs.exists(`${rootedPath}/metadata/manifest.json`)) {
+    // The picker may point directly at the extracted business folder. In that
+    // layout metadata/manifest.json is at the provider root.
+    if (await fs.exists('metadata/manifest.json')) {
+      folderPath = '.';
+    } else if (await fs.exists(`${rootedPath}/metadata/manifest.json`)) {
       folderPath = rootedPath;
     } else {
       folderPath = canonicalPath;
     }
 
     const reused = await fs.exists(folderPath);
+
+    if (reused && (await fs.exists(`${folderPath}/metadata/manifest.json`))) {
+      let existingManifest: { businessId?: string };
+      try {
+        existingManifest = JSON.parse(
+          await fs.readFileText(`${folderPath}/metadata/manifest.json`),
+        ) as { businessId?: string };
+      } catch {
+        throw new Error('Existing backup manifest is invalid JSON');
+      }
+      if (existingManifest.businessId && existingManifest.businessId !== input.businessId) {
+        throw new Error('Existing backup folder belongs to a different business');
+      }
+    }
 
     // Full folder tree.
     const dirs = [
@@ -651,6 +699,22 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
   }
 
   async writeJournalEvents(events: SyncEvent[]): Promise<WriteJournalResult> {
+    // Keep read/append/write journal updates atomic from the provider's point
+    // of view, even when multiple sync jobs flush concurrently.
+    let release!: () => void;
+    const previous = this.journalWriteTail;
+    this.journalWriteTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await this.writeJournalEventsUnlocked(events);
+    } finally {
+      release();
+    }
+  }
+
+  private async writeJournalEventsUnlocked(events: SyncEvent[]): Promise<WriteJournalResult> {
     const fs = this.requireFs();
     if (events.length === 0) {
       return { written: 0, duplicates: [], journalPath: '' };
@@ -745,7 +809,7 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       const years = await fs.list(journalRoot);
       for (const y of years) {
         if (y.kind !== 'directory') continue;
-        const months = await fs.list(`${journalRoot}/${y.name}`);
+        const months = await fs.list(`${journalRoot}/${y.name}`).catch(() => []);
         for (const m of months) {
           if (m.kind === 'file' && m.name.endsWith('.events.jsonl')) {
             files.push(`${journalRoot}/${y.name}/${m.name}`);
@@ -874,10 +938,10 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       throw new Error(`readSnapshot: not found at ${dir}`);
     }
 
-    const manifest = JSON.parse(await fs.readFileText(`${dir}/manifest.json`)) as Record<
-      string,
-      unknown
-    >;
+    const manifestPath = (await fs.exists(`${dir}/manifest.json`))
+      ? `${dir}/manifest.json`
+      : `${business.folderPath}/metadata/manifest.json`;
+    const manifest = JSON.parse(await fs.readFileText(manifestPath)) as Record<string, unknown>;
     let checksums: Record<string, string> = {};
     if (await fs.exists(`${dir}/checksums.json`)) {
       checksums = JSON.parse(await fs.readFileText(`${dir}/checksums.json`));
@@ -913,8 +977,9 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
     const out: SnapshotIndex[] = [];
     for (const e of entries) {
       if (e.kind !== 'directory') continue;
+      if (e.name === '.staging') continue;
       const snapDir = `${dir}/${e.name}`;
-      const files = await fs.list(snapDir);
+      const files = await fs.list(snapDir).catch(() => []);
       let sizeBytes = 0;
       let fileCount = 0;
       let verified = false;
@@ -924,10 +989,21 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
         const s = await fs.stat(`${snapDir}/${f.name}`);
         sizeBytes += s.size;
       }
-      // Verified iff checksums.json + manifest.json both present and all
-      // declared files exist. Deep check is verifyIntegrity's job.
-      if (await fs.exists(`${snapDir}/manifest.json`) && await fs.exists(`${snapDir}/checksums.json`)) {
-        verified = true;
+      // Google Drive snapshots contain checksums.json and the CSV payloads;
+      // their manifest is stored at business metadata/manifest.json rather
+      // than duplicated inside every snapshot folder. Match that layout here.
+      if (await fs.exists(`${snapDir}/checksums.json`)) {
+        try {
+          const parsed = JSON.parse(await fs.readFileText(`${snapDir}/checksums.json`)) as
+            | { files?: Record<string, string> }
+            | Record<string, string>;
+          const declared = 'files' in parsed && parsed.files ? parsed.files : parsed;
+          verified = Object.keys(declared).every((name) =>
+            files.some((file) => file.kind === 'file' && file.name === name),
+          );
+        } catch {
+          verified = false;
+        }
       }
       out.push({
         handle: {
@@ -977,6 +1053,9 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       const entries = await fs.list(kindDir);
       for (const e of entries) {
         if (e.kind !== 'directory') continue;
+        // Atomic snapshot writes use this directory temporarily. It is not a
+        // snapshot and must not be subject to snapshot checksum validation.
+        if (e.name === '.staging') continue;
         const snapDir = `${kindDir}/${e.name}`;
         const checksumsPath = `${snapDir}/checksums.json`;
         if (!(await fs.exists(checksumsPath))) {
@@ -990,7 +1069,15 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
         }
         let declared: Record<string, string>;
         try {
-          declared = JSON.parse(await fs.readFileText(checksumsPath));
+          const parsed = JSON.parse(await fs.readFileText(checksumsPath)) as
+            | Record<string, unknown>
+            | Record<string, string>;
+          // Current snapshots wrap hashes in metadata alongside the files
+          // map; older local snapshots used the direct map format.
+          const files = (parsed as Record<string, unknown>).files;
+          declared = files && typeof files === 'object'
+            ? files as Record<string, string>
+            : parsed as Record<string, string>;
         } catch (err) {
           issues.push({
             severity: 'error',
@@ -1026,23 +1113,32 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       }
     }
 
-    // Verify journal files parse line-by-line.
+    // Verify journal files parse line-by-line and preserve the payload/hash chain.
     const journalRoot = `${business.folderPath}/journal`;
     if (await fs.exists(journalRoot)) {
+      const allJournalEvents: SyncEvent[] = [];
       const years = await fs.list(journalRoot);
       for (const y of years) {
         if (y.kind !== 'directory') continue;
-        const months = await fs.list(`${journalRoot}/${y.name}`);
+        const months = await fs.list(`${journalRoot}/${y.name}`).catch(() => []);
         for (const m of months) {
           if (m.kind !== 'file' || !m.name.endsWith('.events.jsonl')) continue;
           filesChecked++;
           const text = await fs.readFileText(`${journalRoot}/${y.name}/${m.name}`);
           let lineNo = 0;
+          const seenEventIds = new Set<string>();
+          const parsedEvents: SyncEvent[] = [];
           for (const line of text.split('\n')) {
             lineNo++;
             if (!line) continue;
             try {
-              JSON.parse(line);
+              const event = JSON.parse(line) as SyncEvent;
+              parsedEvents.push(event);
+              allJournalEvents.push(event);
+              if (seenEventIds.has(event.event_id)) {
+                issues.push({ severity: 'error', code: 'DUPLICATE_JOURNAL_EVENT', path: `journal/${y.name}/${m.name}:${lineNo}`, detail: event.event_id });
+              }
+              seenEventIds.add(event.event_id);
             } catch (err) {
               issues.push({
                 severity: 'error',
@@ -1052,6 +1148,33 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
               });
             }
           }
+          const hasCryptoHashes = parsedEvents.length > 0 && parsedEvents.every(
+            (event) => /^[0-9a-f]{64}$/.test(event.payload_hash),
+          );
+          if (hasCryptoHashes) {
+            for (const event of parsedEvents) {
+              const payloadHash = await sha256Event(canonicalJson(event.payload));
+              if (event.payload_hash !== payloadHash) {
+                issues.push({ severity: 'error', code: 'PAYLOAD_HASH_MISMATCH', path: `journal/${y.name}/${m.name}`, detail: `expected ${payloadHash}, got ${event.payload_hash}` });
+              }
+            }
+          }
+        }
+      }
+      const payloadHashes = new Set(allJournalEvents.map((event) => event.payload_hash));
+      for (const event of allJournalEvents) {
+        if (
+          event.previous_hash !== null &&
+          event.previous_hash !== 'genesis' &&
+          event.previous_hash !== GENESIS_HASH &&
+          !payloadHashes.has(event.previous_hash)
+        ) {
+          issues.push({
+            severity: 'error',
+            code: 'BROKEN_JOURNAL_CHAIN',
+            path: `journal/event:${event.event_id}`,
+            detail: `previous hash ${event.previous_hash} is not present in the journal`,
+          });
         }
       }
     }
@@ -1084,7 +1207,7 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
       const years = await fs.list(journalRoot);
       for (const y of years) {
         if (y.kind !== 'directory') continue;
-        const months = await fs.list(`${journalRoot}/${y.name}`);
+        const months = await fs.list(`${journalRoot}/${y.name}`).catch(() => []);
         for (const m of months) {
           if (m.kind !== 'file' || !m.name.endsWith('.events.jsonl')) continue;
           const rel = `journal/${y.name}/${m.name}`;
@@ -1139,6 +1262,29 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
 
     const out: DiscoveredBusinessOnProvider[] = [];
     const seen = new Set<string>();
+
+    // Also accept selecting the extracted BusinessVault/<business> folder
+    // itself, where metadata/manifest.json is directly under the picked root.
+    if (await fs.exists('metadata/manifest.json')) {
+      try {
+        const manifest = JSON.parse(await fs.readFileText('metadata/manifest.json')) as Record<string, unknown>;
+        const nested = (manifest.userManifest ?? {}) as {
+          businessId?: unknown;
+          businessName?: unknown;
+        };
+        const name = String(manifest.businessName ?? nested.businessName ?? fs.rootLabel);
+        out.push({
+          businessId: String(manifest.businessId ?? nested.businessId ?? name),
+          businessName: name,
+          folderPath: '.',
+          manifest,
+        });
+        return out;
+      } catch {
+        // Continue with the standard parent/BusinessVault layouts below.
+      }
+    }
+
     for (const cand of candidates) {
       for (const e of cand.entries) {
         if (e.kind !== 'directory') continue;
@@ -1168,7 +1314,6 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
           manifest,
         });
       }
-      if (out.length > 0) return out;
     }
     return out;
   }

@@ -25,6 +25,8 @@ import { saveTokens, loadTokens, clearTokens } from './tokenStore';
 
 const USERINFO_ENDPOINT = 'https://www.googleapis.com/oauth2/v3/userinfo';
 
+const silentRefreshes = new Map<string, Promise<string>>();
+
 export interface DriveIdentity {
   email: string;
   sub: string;
@@ -128,32 +130,44 @@ export async function silentRefreshDrive(businessId: string): Promise<string> {
     throw new Error('Google Drive not configured (missing VITE_GOOGLE_CLIENT_ID)');
   }
   const existing = await loadTokens(businessId);
-  const hint = existing?.email;
-  log.debug('connectDrive', 'silent refresh', { businessId, hint });
-  try {
-    const token = await requestGisAccessToken({
-      clientId: env.googleClientId,
-      scope: DRIVE_FILE_SCOPE,
-      prompt: '',
-      hint,
-    });
-    await saveTokens(
-      businessId,
-      {
-        accessToken: token.accessToken,
-        expiresAt: token.expiresAt,
-        tokenType: 'Bearer',
-        scope: token.scope,
-      },
-      existing?.email && existing?.googleSub
-        ? { email: existing.email, sub: existing.googleSub }
-        : undefined,
-    );
-    return token.accessToken;
-  } catch (err) {
-    log.warn('connectDrive', 'silent refresh failed', { businessId, error: err });
-    throw err;
+  const pending = silentRefreshes.get(businessId);
+  if (pending) {
+    log.debug('connectDrive', 'joining in-flight silent refresh', { businessId });
+    return pending;
   }
+  const refresh = (async (): Promise<string> => {
+    const hint = existing?.email;
+    log.info('connectDrive', 'silent refresh started', { businessId, hint });
+    try {
+      const token = await requestGisAccessToken({
+        clientId: env.googleClientId,
+        scope: DRIVE_FILE_SCOPE,
+        prompt: '',
+        hint,
+      });
+      await saveTokens(
+        businessId,
+        {
+          accessToken: token.accessToken,
+          expiresAt: token.expiresAt,
+          tokenType: 'Bearer',
+          scope: token.scope,
+        },
+        existing?.email && existing?.googleSub
+          ? { email: existing.email, sub: existing.googleSub }
+          : undefined,
+      );
+      log.info('connectDrive', 'silent refresh completed', { businessId });
+      return token.accessToken;
+    } catch (err) {
+      log.warn('connectDrive', 'silent refresh failed', { businessId, error: err });
+      throw err;
+    } finally {
+      silentRefreshes.delete(businessId);
+    }
+  })();
+  silentRefreshes.set(businessId, refresh);
+  return refresh;
 }
 
 export async function disconnectDrive(businessId: string): Promise<void> {

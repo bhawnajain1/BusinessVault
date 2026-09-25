@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { Blob as NodeBlob } from 'node:buffer';
 import { LocalFolderStorageProvider } from './LocalFolderStorageProvider';
 import type { SyncEvent } from './CustomerStorageProvider';
+import { canonicalJson, GENESIS_HASH, sha256Hex } from '../journal/event';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).Blob = NodeBlob;
@@ -112,6 +113,78 @@ describe('LocalFolderStorageProvider', () => {
     await p2.connect({ kind: 'local-folder', rootPath: root });
     const r2 = await p2.initializeBusiness({ businessId: 'biz_1', businessName: 'Acme Traders' });
     expect(r2.reused).toBe(true);
+  });
+
+  it('rejects reuse of a folder owned by another business', async () => {
+    await fs.mkdir(path.join(root, 'BusinessVault', 'Acme Traders', 'metadata'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, 'BusinessVault', 'Acme Traders', 'metadata', 'manifest.json'),
+      JSON.stringify({ businessId: 'biz_other' }),
+    );
+
+    const provider = new LocalFolderStorageProvider();
+    await provider.connect({ kind: 'local-folder', rootPath: root });
+    await expect(
+      provider.initializeBusiness({ businessId: 'biz_1', businessName: 'Acme Traders' }),
+    ).rejects.toThrow(/different business/);
+  });
+
+  it('rejects path traversal through the node backend', async () => {
+    const provider = new LocalFolderStorageProvider();
+    await provider.connect({ kind: 'local-folder', rootPath: root });
+    await provider.initializeBusiness({ businessId: 'biz_1', businessName: 'Acme Traders' });
+    await expect(
+      provider.uploadAttachment({
+        path: '../outside.txt',
+        blob: new Blob(['unsafe']),
+        mimeType: 'text/plain',
+      }),
+    ).rejects.toThrow(/traversal|relative|escapes/);
+  });
+
+  it('discovers every business when the picked folder contains multiple layouts', async () => {
+    await fs.mkdir(path.join(root, 'BusinessVault', 'Real Buiness', 'metadata'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, 'BusinessVault', 'Real Buiness', 'metadata', 'manifest.json'),
+      JSON.stringify({ businessId: 'real-1', businessName: 'Real Buiness', schemaVersion: 1 }),
+    );
+    await fs.mkdir(path.join(root, 'Tiger Marketing', 'metadata'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, 'Tiger Marketing', 'metadata', 'manifest.json'),
+      JSON.stringify({ businessId: 'tiger-1', businessName: 'Tiger Marketing', schemaVersion: 1 }),
+    );
+
+    const p = new LocalFolderStorageProvider();
+    await p.connect({ kind: 'local-folder', rootPath: root });
+    const businesses = await p.listBusinesses();
+
+    expect(businesses.map((business) => business.businessName)).toEqual([
+      'Real Buiness',
+      'Tiger Marketing',
+    ]);
+  });
+
+  it('reads a snapshot that stores its manifest at the business metadata path', async () => {
+    const p = await connectAndInit(root);
+    const snapshotDir = path.join(
+      root,
+      'BusinessVault/Acme Traders/snapshots/ondemand/2026-09-24T09-26-06.407Z',
+    );
+    await fs.mkdir(snapshotDir, { recursive: true });
+    const csv = 'id,business_id\n1,biz_1\n';
+    await fs.writeFile(path.join(snapshotDir, 'businesses.csv'), csv);
+    await fs.writeFile(
+      path.join(snapshotDir, 'checksums.json'),
+      JSON.stringify({ files: { 'businesses.csv': await sha256(new TextEncoder().encode(csv)) } }),
+    );
+
+    const snapshots = await p.listSnapshots({ kind: 'ondemand' });
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].verified).toBe(true);
+
+    const snapshot = await p.readSnapshot(snapshots[0].handle);
+    expect(snapshot.manifest.businessId).toBe('biz_1');
+    expect(snapshot.files).toHaveLength(1);
   });
 
   it('writeJournalEvents appends to YYYY-MM.events.jsonl and is idempotent', async () => {
@@ -286,6 +359,23 @@ describe('LocalFolderStorageProvider', () => {
     expect(hashMismatches[0].severity).toBe('error');
   });
 
+  it('verifyIntegrity accepts metadata-wrapped snapshot checksums', async () => {
+    const p = await connectAndInit(root);
+    const snapshotDir = path.join(root, 'BusinessVault', 'Acme Traders', 'snapshots', 'ondemand', '2026-09-23');
+    await fs.mkdir(snapshotDir, { recursive: true });
+    const csv = 'id,name\n1,Acme\n';
+    await fs.writeFile(path.join(snapshotDir, 'customers.csv'), csv);
+    const hash = await sha256(new TextEncoder().encode(csv));
+    await fs.writeFile(
+      path.join(snapshotDir, 'checksums.json'),
+      JSON.stringify({ schemaVersion: 1, kind: 'ondemand', asOf: '2026-09-23', files: { 'customers.csv': hash } }),
+    );
+
+    const report = await p.verifyIntegrity();
+    expect(report.ok).toBe(true);
+    expect(report.issues).toEqual([]);
+  });
+
   it('verifyIntegrity flags corrupt journal lines', async () => {
     const p = await connectAndInit(root);
     await p.writeJournalEvents([mkEvent({ event_id: 'evt_1' })]);
@@ -300,6 +390,29 @@ describe('LocalFolderStorageProvider', () => {
     const r = await p.verifyIntegrity();
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.code === 'CORRUPT_JOURNAL_LINE')).toBe(true);
+  });
+
+  it('verifyIntegrity validates cryptographic journal chains', async () => {
+    const p = await connectAndInit(root);
+    const payload = { amount: 100 };
+    const payloadHash = await sha256Hex(canonicalJson(payload));
+    await p.writeJournalEvents([
+      mkEvent({ payload, payload_hash: payloadHash, previous_hash: GENESIS_HASH }),
+    ]);
+
+    const clean = await p.verifyIntegrity();
+    expect(clean.ok).toBe(true);
+
+    const journalPath = path.join(
+      root,
+      'BusinessVault/Acme Traders/journal/2026/2026-08.events.jsonl',
+    );
+    const original = await fs.readFile(journalPath, 'utf8');
+    await fs.writeFile(journalPath, original.replace('"amount":100', '"amount":101'));
+
+    const tampered = await p.verifyIntegrity();
+    expect(tampered.ok).toBe(false);
+    expect(tampered.issues.some((i) => i.code === 'PAYLOAD_HASH_MISMATCH')).toBe(true);
   });
 
   it('readSnapshot round-trips CSVs and manifest', async () => {
@@ -387,6 +500,28 @@ describe('LocalFolderStorageProvider', () => {
     expect(s2.folderPath).toBe('BusinessVault/Acme Traders');
     await p.disconnect();
     expect((await p.connectionStatus()).state).toBe('DISCONNECTED');
+  });
+
+  it('discovers and reuses a directly selected business folder', async () => {
+    const producer = await connectAndInit(root);
+    await producer.writeJournalEvents([
+      mkEvent({ event_id: 'evt_1' }),
+    ]);
+
+    const businessRoot = path.join(root, 'BusinessVault', 'Acme Traders');
+    const direct = new LocalFolderStorageProvider();
+    await direct.connect({ kind: 'local-folder', rootPath: businessRoot });
+
+    const businesses = await direct.listBusinesses();
+    expect(businesses).toHaveLength(1);
+    expect(businesses[0].businessName).toBe('Acme Traders');
+    expect(businesses[0].folderPath).toBe('.');
+
+    await direct.initializeBusiness({
+      businessId: businesses[0].businessId,
+      businessName: businesses[0].businessName,
+    });
+    expect((await direct.restoreBusiness()).journalFiles).toHaveLength(1);
   });
 
   it('rejects a config of the wrong kind', async () => {

@@ -336,6 +336,7 @@ describe('§39 interruption scenarios', () => {
     };
 
     const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:00Z'),
@@ -417,6 +418,7 @@ describe('§39 interruption scenarios', () => {
     });
 
     const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:00Z'),
@@ -442,6 +444,7 @@ describe('§39 interruption scenarios', () => {
 
     // Restart fresh — Dexie state persists across worker instances.
     const fresh = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:01Z'),
@@ -478,6 +481,7 @@ describe('§39 interruption scenarios', () => {
     await db.sync_events.bulkAdd([makeEvent()]);
 
     const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:00Z'),
@@ -576,6 +580,7 @@ describe('§39 interruption scenarios', () => {
 
     let lastStatus = '';
     const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: (s) => {
         lastStatus = s.status;
@@ -614,6 +619,7 @@ describe('§39 interruption scenarios', () => {
     await db.sync_events.put(ev);
 
     const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:00Z'),

@@ -4,6 +4,7 @@ import { db } from '../db';
 import type { Business, SyncEvent } from '../db/types';
 import {
   computeBackoffMs,
+  claimDue,
   enqueue,
   listDue,
   pendingCount,
@@ -202,6 +203,24 @@ describe('syncQueue persistence', () => {
     expect(due).toHaveLength(1);
     expect(due[0].kind).toBe('journal_flush');
   });
+
+  it('claims due jobs atomically so a second claimant gets none', async () => {
+    await enqueue({
+      businessId: BUSINESS_ID,
+      kind: 'journal_flush',
+      payload: { businessId: BUSINESS_ID, eventIds: [] },
+      runAt: '1970-01-01T00:00:00.000Z',
+    });
+
+    const [first, second] = await Promise.all([
+      claimDue(BUSINESS_ID, new Date('2026-08-19T12:00:00Z'), 1),
+      claimDue(BUSINESS_ID, new Date('2026-08-19T12:00:00Z'), 1),
+    ]);
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(0);
+    expect((await db.sync_queue.toArray())[0].status).toBe('running');
+  });
 });
 
 describe('startSyncWorker — batching', () => {
@@ -212,6 +231,7 @@ describe('startSyncWorker — batching', () => {
     await db.sync_events.bulkAdd(events);
 
     const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:00Z'),
@@ -232,6 +252,65 @@ describe('startSyncWorker — batching', () => {
       .count();
     expect(synced).toBe(250);
   });
+
+  it('binds work to one business and coalesces concurrent ticks', async () => {
+    const otherBusinessId = '01OTHERBUSINESS000000000000';
+    await db.businesses.add({ ...makeBusiness(), id: otherBusinessId, name: 'Other' });
+    const provider = new FakeProvider();
+    await db.sync_events.bulkAdd([
+      makeEvent(),
+      makeEvent({ business_id: otherBusinessId }),
+    ]);
+    const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
+      provider,
+      onStateChange: () => {},
+      clock: () => new Date('2026-08-19T12:00:00Z'),
+      batchWindowMs: 0,
+      isOnline: () => true,
+      autoStart: false,
+    });
+
+    await Promise.all([handle.tick(), handle.tick(), handle.tick()]);
+
+    expect(provider.writes).toBe(1);
+    expect(await db.sync_events.where('[business_id+sync_status]').equals([BUSINESS_ID, 'SYNCED']).count()).toBe(1);
+    expect(await db.sync_events.where('[business_id+sync_status]').equals([otherBusinessId, 'QUEUED']).count()).toBe(1);
+    handle.stop();
+  });
+
+  it('stopAsync drains an in-flight tick without late status callbacks', async () => {
+    const provider = new FakeProvider();
+    await db.sync_events.add(makeEvent());
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let started = false;
+    provider.writeJournalEvents = async (events): Promise<WriteResult> => {
+      started = true;
+      await blocked;
+      return { written: events.length, duplicates: [], journalPath: 'journal/test' };
+    };
+    const seen: BackupHealth[] = [];
+    const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
+      provider,
+      onStateChange: (health) => seen.push(health),
+      clock: () => new Date('2026-08-19T12:00:00Z'),
+      batchWindowMs: 0,
+      isOnline: () => true,
+      autoStart: false,
+    });
+    const tick = handle.tick();
+    while (!started) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const seenBeforeStop = seen.length;
+    const draining = handle.stopAsync();
+    release();
+    await draining;
+    await tick;
+
+    expect(seen.length).toBe(seenBeforeStop);
+    expect((await db.sync_queue.toArray())[0].status).toBe('done');
+  });
 });
 
 describe('startSyncWorker — offline queueing survives restart', () => {
@@ -240,6 +319,7 @@ describe('startSyncWorker — offline queueing survives restart', () => {
     await db.sync_events.bulkAdd([makeEvent(), makeEvent()]);
 
     const offlineHandle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:00Z'),
@@ -257,6 +337,7 @@ describe('startSyncWorker — offline queueing survives restart', () => {
 
     // Restart with connectivity restored — Dexie state persists.
     const onlineHandle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:01Z'),
@@ -288,6 +369,7 @@ describe('startSyncWorker — OAuth expired retries via backoff (GIS)', () => {
     await db.sync_events.bulkAdd([makeEvent()]);
 
     const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:00Z'),
@@ -314,6 +396,7 @@ describe('startSyncWorker — OAuth expired retries via backoff (GIS)', () => {
     await db.sync_events.bulkAdd([makeEvent()]);
 
     const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:00Z'),
@@ -341,6 +424,7 @@ describe('startSyncWorker — dead letter after N attempts', () => {
     await db.sync_events.bulkAdd([makeEvent()]);
 
     const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: () => {},
       clock: () => new Date('2026-08-19T12:00:00Z'),
@@ -376,6 +460,7 @@ describe('startSyncWorker — health reporting', () => {
     await db.sync_events.bulkAdd([makeEvent()]);
     const seen: BackupHealth[] = [];
     const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
       provider,
       onStateChange: (s) => seen.push(s),
       clock: () => new Date('2026-08-19T12:00:00Z'),

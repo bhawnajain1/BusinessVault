@@ -1,4 +1,5 @@
 import { db } from '../db';
+import { ulid } from 'ulid';
 import type { SyncEvent, SyncQueueJob } from '../db/types';
 import type {
   CustomerStorageProvider,
@@ -8,12 +9,12 @@ import type {
 } from '../storage/CustomerStorageProvider';
 import {
   computeBackoffMs,
+  claimDue,
   enqueue,
-  listDue,
   markDone,
   markFailure,
-  markInFlight,
   pendingCount,
+  recoverStaleRunningJobs,
 } from './syncQueue';
 import {
   addPokeListener,
@@ -42,6 +43,7 @@ export interface BackupHealth {
 }
 
 export interface StartWorkerDeps {
+  businessId: string;
   provider: CustomerStorageProvider;
   onStateChange: (state: BackupHealth) => void;
   // Injectable knobs — tests set these; production omits them.
@@ -57,6 +59,7 @@ export interface StartWorkerDeps {
 
 export interface StopHandle {
   stop: () => void;
+  stopAsync: () => Promise<void>;
   tick: () => Promise<void>;
   flushBatch: () => Promise<void>;
   getHealth: () => BackupHealth;
@@ -81,6 +84,7 @@ interface AttachmentPayload {
 }
 
 const HEALTH_KV_KEY = 'sync.backupHealth';
+let healthWriteTail: Promise<void> = Promise.resolve();
 const DEFAULT_TICK_MS = 5_000;
 const DEFAULT_OFFLINE_TICK_MS = 30_000;
 const DEFAULT_BATCH_WINDOW_MS = 5_000;
@@ -115,7 +119,30 @@ async function loadHealth(): Promise<BackupHealth> {
 }
 
 async function saveHealth(h: BackupHealth): Promise<void> {
-  await db.kv.put({ key: HEALTH_KV_KEY, value: h, updated_at: h.updatedAt });
+  let release!: () => void;
+  const previous = healthWriteTail;
+  healthWriteTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    const existingRow = await db.kv.get(HEALTH_KV_KEY);
+    const existing = existingRow?.value as BackupHealth | undefined;
+    const newest = (a: string | null | undefined, b: string | null | undefined): string | null => {
+      if (!a) return b ?? null;
+      if (!b) return a;
+      return a >= b ? a : b;
+    };
+    const merged: BackupHealth = {
+      ...h,
+      lastEventSyncAt: newest(existing?.lastEventSyncAt, h.lastEventSyncAt),
+      lastFullSnapshotAt: newest(existing?.lastFullSnapshotAt, h.lastFullSnapshotAt),
+      updatedAt: newest(existing?.updatedAt, h.updatedAt) ?? h.updatedAt,
+    };
+    await db.kv.put({ key: HEALTH_KV_KEY, value: merged, updated_at: merged.updatedAt });
+  } finally {
+    release();
+  }
 }
 
 export function toProviderEvent(e: SyncEvent): ProviderSyncEvent {
@@ -179,6 +206,8 @@ export async function coalescePendingEvents(
 }
 
 export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
+  const businessId = deps.businessId;
+  const workerId = ulid();
   const clock = deps.clock ?? ((): Date => new Date());
   const rng = deps.rng ?? Math.random;
   const tickMs = deps.tickIntervalMs ?? DEFAULT_TICK_MS;
@@ -188,6 +217,9 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
   const isOnline = deps.isOnline ?? isOnlineDefault;
 
   let stopped = false;
+  let generation = 0;
+  let activeTick: Promise<void> | null = null;
+  let currentTickId = '';
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastBatchAt = clock().getTime();
   let currentHealth: BackupHealth = {
@@ -198,7 +230,8 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
     updatedAt: iso(clock()),
   };
 
-  const emit = (patch: Partial<BackupHealth>): void => {
+  const emit = (patch: Partial<BackupHealth>, callbackGeneration = generation): void => {
+    if (stopped || callbackGeneration !== generation) return;
     currentHealth = {
       ...currentHealth,
       ...patch,
@@ -210,30 +243,29 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
 
   // Boot: pick up persisted health so the header renders correctly during
   // the first tick, per §29.
+  const bootGeneration = generation;
   void loadHealth().then((h) => {
+    if (stopped || bootGeneration !== generation) return;
     currentHealth = h;
     deps.onStateChange(h);
   });
 
   const flushBatch = async (): Promise<void> => {
-    // Coalesce all QUEUED sync_events across businesses. Simpler than
-    // per-business timers; providers dedupe by event_id anyway (§10 idem).
-    const businesses = await db.businesses.toArray();
-    for (const b of businesses) {
-      // Drain: keep enqueueing batches of up to maxBatch until empty.
-      while (!stopped) {
-        const jobId = await coalescePendingEvents(b.id, maxBatch, clock());
-        if (!jobId) break;
-      }
+    // This worker is permanently scoped to one business.
+    while (!stopped) {
+      const jobId = await coalescePendingEvents(businessId, maxBatch, clock());
+      if (!jobId) break;
     }
     lastBatchAt = clock().getTime();
   };
 
   const runJob = async (job: SyncQueueJob): Promise<void> => {
+    if (job.business_id !== businessId) return;
     const now = clock();
-    await markInFlight(job.id, now);
     const t0 = clock().getTime();
     log.info('sync', 'job start', {
+      workerId,
+      tickId: currentTickId,
       jobId: job.id,
       kind: job.kind,
       businessId: job.business_id,
@@ -250,6 +282,8 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
           .toArray();
         const providerEvents = rows.map(toProviderEvent);
         log.debug('sync', 'journal_flush shipping', {
+          workerId,
+          tickId: currentTickId,
           jobId: job.id,
           eventCount: providerEvents.length,
           firstEventId: providerEvents[0]?.event_id,
@@ -269,6 +303,8 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
           });
         await markDone(job.id, clock());
         log.info('sync', 'journal_flush done', {
+          workerId,
+          tickId: currentTickId,
           jobId: job.id,
           written: res.written,
           duplicates: res.duplicates.length,
@@ -277,7 +313,7 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
         });
         emit({
           status: 'HEALTHY',
-          pending: await pendingCount(),
+          pending: await pendingCount(businessId),
           lastEventSyncAt: nowIso,
         });
       } else if (job.kind === 'snapshot') {
@@ -299,6 +335,8 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
           return;
         }
         log.info('sync', 'snapshot shipping', {
+          workerId,
+          tickId: currentTickId,
           jobId: job.id,
           businessId: p.input.businessId,
           asOf: p.input.asOf,
@@ -308,6 +346,8 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
         const handle = await deps.provider.writeSnapshot(p.input);
         await markDone(job.id, clock());
         log.info('sync', 'snapshot done', {
+          workerId,
+          tickId: currentTickId,
           jobId: job.id,
           path: handle.path,
           providerFolderId: handle.providerFolderId,
@@ -316,12 +356,14 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
         });
         emit({
           status: 'HEALTHY',
-          pending: await pendingCount(),
+          pending: await pendingCount(businessId),
           lastFullSnapshotAt: handle.createdAt,
         });
       } else if (job.kind === 'attachment_upload') {
         const p = job.payload as AttachmentPayload;
         log.debug('sync', 'attachment shipping', {
+          workerId,
+          tickId: currentTickId,
           jobId: job.id,
           attachmentId: p.attachmentId,
         });
@@ -334,11 +376,13 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
         }
         await markDone(job.id, clock());
         log.info('sync', 'attachment done', {
+          workerId,
+          tickId: currentTickId,
           jobId: job.id,
           providerFileId: res.providerFileId,
           ms: clock().getTime() - t0,
         });
-        emit({ status: 'HEALTHY', pending: await pendingCount() });
+        emit({ status: 'HEALTHY', pending: await pendingCount(businessId) });
       } else {
         // Unknown kinds get shelved as dead so they don't retry forever.
         await markFailure({
@@ -353,6 +397,8 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn('sync', 'job failed', {
+        workerId,
+        tickId: currentTickId,
         jobId: job.id,
         kind: job.kind,
         businessId: job.business_id,
@@ -409,7 +455,7 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
         });
         emit({
           status: disconnected ? 'DISCONNECTED' : 'ERROR',
-          pending: await pendingCount(),
+          pending: await pendingCount(businessId),
           lastError: msg,
         });
       } else {
@@ -428,22 +474,24 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
         });
         emit({
           status: disconnected ? 'DISCONNECTED' : 'ERROR',
-          pending: await pendingCount(),
+          pending: await pendingCount(businessId),
           lastError: msg,
         });
       }
     }
   };
 
-  const tickOnce = async (): Promise<void> => {
+  const tickOnceImpl = async (): Promise<void> => {
     if (stopped) return;
     if (!isOnline()) {
       emit({
         status: 'OFFLINE',
-        pending: await pendingCount(),
+        pending: await pendingCount(businessId),
       });
       return;
     }
+
+    await recoverStaleRunningJobs(clock(), undefined, businessId);
 
     // Promote LOCAL_ONLY → QUEUED. Every domain service (Invoice, Payment,
     // Advance, Purchase, Return, ...) writes new sync_events with
@@ -453,40 +501,51 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
     // IndexedDB — the user-visible symptom is empty `current/` /
     // `journal/` folders under the local backup root despite active work.
     await db.sync_events
-      .where('sync_status')
-      .equals('LOCAL_ONLY')
+      .where('[business_id+sync_status]')
+      .equals([businessId, 'LOCAL_ONLY'])
       .modify({ sync_status: 'QUEUED' });
 
     // Batching: coalesce whenever we've accumulated a full batch or the
     // window has elapsed. §12.
     const now = clock().getTime();
     const anyQueued = await db.sync_events
-      .where('sync_status')
-      .equals('QUEUED')
+      .where('[business_id+sync_status]')
+      .equals([businessId, 'QUEUED'])
       .limit(1)
       .count();
     if (
       anyQueued > 0 &&
       (now - lastBatchAt >= batchWindowMs ||
         (await db.sync_events
-          .where('sync_status')
-          .equals('QUEUED')
+          .where('[business_id+sync_status]')
+          .equals([businessId, 'QUEUED'])
           .count()) >= maxBatch)
     ) {
       await flushBatch();
     }
 
-    emit({ status: 'SYNCING', pending: await pendingCount() });
-    const due = await listDue({ now: clock(), limit: 25 });
+    emit({ status: 'SYNCING', pending: await pendingCount(businessId) });
+    const due = await claimDue(businessId, clock(), 25);
     if (due.length === 0) {
-      emit({ status: 'HEALTHY', pending: await pendingCount() });
+      emit({ status: 'HEALTHY', pending: await pendingCount(businessId) });
       return;
     }
-    log.debug('sync', 'draining jobs', { count: due.length });
+    log.debug('sync', 'draining jobs', { workerId, tickId: currentTickId, businessId, count: due.length });
     for (const job of due) {
       if (stopped) return;
       await runJob(job);
     }
+  };
+
+  const tickOnce = (): Promise<void> => {
+    if (activeTick) return activeTick;
+    currentTickId = ulid();
+    log.debug('sync', 'tick start', { workerId, tickId: currentTickId, businessId });
+    activeTick = tickOnceImpl().finally(() => {
+      log.debug('sync', 'tick end', { workerId, tickId: currentTickId, businessId });
+      activeTick = null;
+    });
+    return activeTick;
   };
 
   const loop = (): void => {
@@ -516,9 +575,18 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
   return {
     stop: (): void => {
       stopped = true;
+      generation += 1;
       removePokeListener(onPoke);
       if (timer) clearTimeout(timer);
       timer = null;
+    },
+    stopAsync: async (): Promise<void> => {
+      stopped = true;
+      generation += 1;
+      removePokeListener(onPoke);
+      if (timer) clearTimeout(timer);
+      timer = null;
+      await activeTick;
     },
     tick: tickOnce,
     flushBatch,

@@ -15,6 +15,7 @@
  * CustomerStorageProvider.SyncEvent. Journal payloads are whatever the emitter
  * wrote; we treat them as `Record<string, unknown>` and coerce.
  */
+import Dexie from 'dexie';
 import type { BusinessVaultDB } from '../db/database';
 import type { SyncEvent } from '../storage/CustomerStorageProvider';
 import type {
@@ -35,7 +36,11 @@ import type {
   JournalEntry,
   JournalLine,
   StockMovement,
+  SalesReturn,
+  SalesReturnItem,
+  CustomerItemPrice,
 } from '../db/types';
+import { log } from '../lib/log';
 
 export interface HandlerContext {
   db: BusinessVaultDB;
@@ -56,41 +61,125 @@ function asRecord(v: unknown, evtId: string): Record<string, unknown> {
 }
 
 const put =
-  <T>(table: (db: BusinessVaultDB) => { put(v: T): Promise<unknown> }) =>
+  <T extends { id: string; business_id?: string; entity_version?: number }>(
+    table: (db: BusinessVaultDB) => {
+      get(id: string): Promise<T | undefined>;
+      put(v: T): Promise<unknown>;
+    },
+  ) =>
   async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
     const row = asRecord(evt.payload, evt.event_id) as unknown as T;
+    const businessId = (row as { business_id?: string }).business_id;
+    if (businessId && businessId !== ctx.businessId) {
+      throw new Error(`event ${evt.event_id}: row belongs to another business`);
+    }
+    const existing = await table(ctx.db).get(row.id);
+    const eventVersion = evt.entity_version ?? row.entity_version ?? 0;
+    if (existing && eventVersion > 0 && (existing.entity_version ?? 0) >= eventVersion) {
+      ctx.diagnostics.push(`${evt.entity_type}:create ${row.id}: stale event ignored`);
+      return;
+    }
     await table(ctx.db).put(row);
   };
 
+const merge =
+  <T extends { id: string; business_id?: string }>(
+    entityType: string,
+    table: (db: BusinessVaultDB) => {
+      get(id: string): Promise<T | undefined>;
+      put(v: T): Promise<unknown>;
+    },
+  ) =>
+  async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
+    const patch = asRecord(evt.payload, evt.event_id);
+    const id = String(patch.id ?? evt.entity_id ?? '');
+    if (!id) throw new Error(`event ${evt.event_id}: ${entityType} update has no id`);
+    const existing = await table(ctx.db).get(id);
+    if (!existing) {
+      const message = `${entityType}:update ${id}: existing row not found`;
+      ctx.diagnostics.push(message);
+      log.warn('restore.event.merge-missing', 'restore: update target not found', {
+        businessId: ctx.businessId,
+        eventId: evt.event_id,
+        entityType,
+        entityId: id,
+        patchFields: Object.keys(patch),
+      });
+      return;
+    }
+    if (existing.business_id && existing.business_id !== ctx.businessId) {
+      throw new Error(
+        `event ${evt.event_id}: ${entityType} ${id} belongs to another business`,
+      );
+    }
+    const currentVersion = (existing as { entity_version?: number }).entity_version ?? 0;
+    const eventVersion = evt.entity_version ?? Number(patch.entity_version ?? 0);
+    if (eventVersion > 0 && currentVersion >= eventVersion) {
+      ctx.diagnostics.push(`${entityType}:update ${id}: stale event ignored`);
+      return;
+    }
+    const next = {
+      ...existing,
+      ...patch,
+      id: existing.id,
+      ...(existing.business_id ? { business_id: existing.business_id } : {}),
+    } as T;
+    await table(ctx.db).put(next);
+    Dexie.currentTransaction?.on('complete', () => log.debug(
+      'restore.event.merged',
+      'restore: partial update merged',
+      {
+        businessId: ctx.businessId,
+        eventId: evt.event_id,
+        entityType,
+        entityId: id,
+        fromVersion: (existing as { entity_version?: number }).entity_version ?? null,
+        toVersion: (next as { entity_version?: number }).entity_version ?? null,
+        patchFields: Object.keys(patch),
+      },
+    ));
+  };
+
 const HANDLERS: Record<string, EventHandler> = {
-  'business:create': put<unknown>((db) => db.businesses),
-  'business:created': put<unknown>((db) => db.businesses),
-  'business:update': put<unknown>((db) => db.businesses),
-  'business:updated': put<unknown>((db) => db.businesses),
+  'business:create': put((db) => db.businesses),
+  'business:created': put((db) => db.businesses),
+  'business:update': merge('business', (db) => db.businesses),
+  'business:updated': merge('business', (db) => db.businesses),
 
   'customer:create': put<Customer>((db) => db.customers),
-  'customer:update': put<Customer>((db) => db.customers),
+  'customer:update': merge<Customer>('customer', (db) => db.customers),
   'customer:created': put<Customer>((db) => db.customers),
-  'customer:updated': put<Customer>((db) => db.customers),
+  'customer:updated': merge<Customer>('customer', (db) => db.customers),
+
+  'customer_item_price:create': put<CustomerItemPrice>((db) => db.customer_item_prices),
+  'customer_item_price:created': put<CustomerItemPrice>((db) => db.customer_item_prices),
+  'customer_item_price:update': merge<CustomerItemPrice>('customer_item_price', (db) => db.customer_item_prices),
+  'customer_item_price:updated': merge<CustomerItemPrice>('customer_item_price', (db) => db.customer_item_prices),
 
   'supplier:create': put<Supplier>((db) => db.suppliers),
   'supplier:created': put<Supplier>((db) => db.suppliers),
-  'supplier:update': put<Supplier>((db) => db.suppliers),
-  'supplier:updated': put<Supplier>((db) => db.suppliers),
+  'supplier:update': merge<Supplier>('supplier', (db) => db.suppliers),
+  'supplier:updated': merge<Supplier>('supplier', (db) => db.suppliers),
 
   'category:create': put<Category>((db) => db.categories),
   'category:created': put<Category>((db) => db.categories),
+  'category:update': merge<Category>('category', (db) => db.categories),
+  'category:updated': merge<Category>('category', (db) => db.categories),
 
   'unit:create': put<Unit>((db) => db.units),
   'unit:created': put<Unit>((db) => db.units),
+  'unit:update': merge<Unit>('unit', (db) => db.units),
+  'unit:updated': merge<Unit>('unit', (db) => db.units),
 
   'warehouse:create': put<Warehouse>((db) => db.warehouses),
   'warehouse:created': put<Warehouse>((db) => db.warehouses),
+  'warehouse:update': merge<Warehouse>('warehouse', (db) => db.warehouses),
+  'warehouse:updated': merge<Warehouse>('warehouse', (db) => db.warehouses),
 
   'item:create': put<Item>((db) => db.items),
   'item:created': put<Item>((db) => db.items),
-  'item:update': put<Item>((db) => db.items),
-  'item:updated': put<Item>((db) => db.items),
+  'item:update': merge<Item>('item', (db) => db.items),
+  'item:updated': merge<Item>('item', (db) => db.items),
 
   'invoice:create': put<Invoice>((db) => db.invoices),
   'invoice:created': put<Invoice>((db) => db.invoices),
@@ -113,6 +202,9 @@ const HANDLERS: Record<string, EventHandler> = {
         );
         return;
       }
+      if (inv.business_id !== ctx.businessId) {
+        throw new Error(`invoice:update ${invoiceId}: invoice belongs to another business`);
+      }
       inv.deleted_at = null;
       inv.deleted_reason = null;
       inv.updated_at = String(p.restored_at ?? new Date().toISOString());
@@ -123,6 +215,7 @@ const HANDLERS: Record<string, EventHandler> = {
       for (const pid of restoredPaymentIds) {
         const pay = await ctx.db.payments.get(pid);
         if (pay) {
+          if (pay.business_id !== ctx.businessId) throw new Error(`invoice:update ${pid}: payment belongs to another business`);
           pay.deleted_at = null;
           pay.deleted_reason = null;
           await ctx.db.payments.put(pay);
@@ -134,6 +227,7 @@ const HANDLERS: Record<string, EventHandler> = {
       for (const aid of restoredAdvanceIds) {
         const adv = await ctx.db.advances.get(aid);
         if (adv) {
+          if (adv.business_id !== ctx.businessId) throw new Error(`invoice:update ${aid}: advance belongs to another business`);
           adv.deleted_at = null;
           adv.deleted_reason = null;
           await ctx.db.advances.put(adv);
@@ -141,9 +235,9 @@ const HANDLERS: Record<string, EventHandler> = {
       }
       return;
     }
-    await ctx.db.invoices.put(p as unknown as Invoice);
+    await merge<Invoice>('invoice', (db) => db.invoices)(evt, ctx);
   },
-  'invoice:updated': put<Invoice>((db) => db.invoices),
+  'invoice:updated': merge<Invoice>('invoice', (db) => db.invoices),
 
   'invoice_line:create': put<InvoiceLine>((db) => db.invoice_lines),
   'invoice_line:created': put<InvoiceLine>((db) => db.invoice_lines),
@@ -174,17 +268,68 @@ const HANDLERS: Record<string, EventHandler> = {
         );
         return;
       }
+      if (existing.business_id !== ctx.businessId) throw new Error(`purchase:update ${id}: purchase belongs to another business`);
       existing.reversed_by_purchase_id =
         (p.reversed_by_purchase_id as string | null | undefined) ?? null;
+      for (const field of [
+        'replaces_purchase_id',
+        'replaced_by_purchase_id',
+        'reversal_journal_entry_id',
+        'cancelled_at',
+        'cancel_reason',
+      ] as const) {
+        if (p[field] !== undefined) existing[field] = p[field] as never;
+      }
       if (typeof p.entity_version === 'number') {
         existing.entity_version = p.entity_version;
       }
       await ctx.db.purchases.put(existing);
       return;
     }
-    await ctx.db.purchases.put(p as unknown as Purchase);
+    await merge<Purchase>('purchase', (db) => db.purchases)(evt, ctx);
   },
-  'purchase:updated': put<Purchase>((db) => db.purchases),
+  'purchase:updated': merge<Purchase>('purchase', (db) => db.purchases),
+
+  'purchase:reverse': async (evt, ctx) => {
+    const p = asRecord(evt.payload, evt.event_id);
+    const id = String(p.purchase_id ?? p.id ?? evt.entity_id ?? '');
+    const existing = await ctx.db.purchases.get(id);
+    if (!existing) {
+      ctx.diagnostics.push(`purchase:reverse ${id}: purchase not found`);
+      log.warn('restore.event.purchase-reverse-missing', 'restore: purchase reversal target missing', {
+        businessId: ctx.businessId,
+        eventId: evt.event_id,
+        purchaseId: id,
+      });
+      return;
+    }
+    if (existing.business_id !== ctx.businessId) throw new Error(`purchase:reverse ${id}: purchase belongs to another business`);
+    await ctx.db.purchases.put({
+      ...existing,
+      bill_number: String(p.renamed_bill_number ?? existing.bill_number),
+      status: 'cancelled',
+      notes: p.reason
+        ? `${existing.notes ? `${existing.notes}\n` : ''}[REVERSED ${evt.timestamp}] ${String(p.reason)}`
+        : existing.notes,
+      reversal_journal_entry_id:
+        (p.reversal_journal_id as string | null | undefined) ?? existing.reversal_journal_entry_id ?? null,
+      cancelled_at: existing.cancelled_at ?? evt.timestamp,
+      cancel_reason: (p.reason as string | null | undefined) ?? existing.cancel_reason ?? null,
+      updated_at: evt.timestamp,
+      entity_version: Math.max(existing.entity_version + 1, evt.entity_version),
+    });
+    Dexie.currentTransaction?.on('complete', () => log.info(
+      'restore.event.purchase-reversed',
+      'restore: purchase reversal applied',
+      {
+        businessId: ctx.businessId,
+        eventId: evt.event_id,
+        purchaseId: id,
+        renamedBillNumber: p.renamed_bill_number ?? null,
+        reversalJournalId: p.reversal_journal_id ?? null,
+      },
+    ));
+  },
 
   'purchase_line:create': put<PurchaseLine>((db) => db.purchase_lines),
   'purchase_line:created': put<PurchaseLine>((db) => db.purchase_lines),
@@ -215,14 +360,14 @@ const HANDLERS: Record<string, EventHandler> = {
       await ctx.db.payments.put(existing);
       return;
     }
-    await ctx.db.payments.put(p as unknown as Payment);
+    await merge<Payment>('payment', (db) => db.payments)(evt, ctx);
   },
-  'payment:updated': put<Payment>((db) => db.payments),
+  'payment:updated': merge<Payment>('payment', (db) => db.payments),
 
   'expense:create': put<Expense>((db) => db.expenses),
   'expense:created': put<Expense>((db) => db.expenses),
-  'expense:update': put<Expense>((db) => db.expenses),
-  'expense:updated': put<Expense>((db) => db.expenses),
+  'expense:update': merge<Expense>('expense', (db) => db.expenses),
+  'expense:updated': merge<Expense>('expense', (db) => db.expenses),
 
   'advance:create': put<Advance>((db) => db.advances),
   'advance:created': put<Advance>((db) => db.advances),
@@ -271,12 +416,25 @@ const HANDLERS: Record<string, EventHandler> = {
       await ctx.db.advances.put(existing);
       return;
     }
-    await ctx.db.advances.put(p as unknown as Advance);
+    await merge<Advance>('advance', (db) => db.advances)(evt, ctx);
   },
-  'advance:updated': put<Advance>((db) => db.advances),
+  'advance:updated': merge<Advance>('advance', (db) => db.advances),
+
+  'sales_return:create': put<SalesReturn>((db) => db.sales_returns),
+  'sales_return:created': put<SalesReturn>((db) => db.sales_returns),
+  'sales_return:update': merge<SalesReturn>('sales_return', (db) => db.sales_returns),
+  'sales_return:updated': merge<SalesReturn>('sales_return', (db) => db.sales_returns),
+  'sales_return_item:create': put<SalesReturnItem>((db) => db.sales_return_items),
+  'sales_return_item:created': put<SalesReturnItem>((db) => db.sales_return_items),
+  'sales_return_item:update': merge<SalesReturnItem>(
+    'sales_return_item',
+    (db) => db.sales_return_items,
+  ),
 
   'account:create': put<Account>((db) => db.accounts),
   'account:created': put<Account>((db) => db.accounts),
+  'account:update': merge<Account>('account', (db) => db.accounts),
+  'account:updated': merge<Account>('account', (db) => db.accounts),
 
   'journal_entry:posted': put<JournalEntry>((db) => db.journal_entries),
   'journal_entry:create': put<JournalEntry>((db) => db.journal_entries),
@@ -350,6 +508,45 @@ const HANDLERS: Record<string, EventHandler> = {
       ctx.diagnostics.push(`invoice:delete event ${evt.event_id} has no invoice_id`);
       return;
     }
+    if (p.permanently_deleted === true) {
+      const paymentIds = Array.isArray(p.cascaded_payment_ids)
+        ? (p.cascaded_payment_ids as string[])
+        : [];
+      const advanceIds = Array.isArray(p.cascaded_advance_ids)
+        ? (p.cascaded_advance_ids as string[])
+        : [];
+      const cascadeTag = `cascade:${id}`;
+      const paymentsToDelete = (
+        await ctx.db.payments.bulkGet(paymentIds)
+      ).filter(
+        (row): row is Payment =>
+          !!row &&
+          row.business_id === ctx.businessId &&
+          row.deleted_reason === cascadeTag &&
+          row.allocations.length > 0 &&
+          row.allocations.every((allocation) => allocation.invoice_id === id),
+      );
+      const advancesToDelete = (
+        await ctx.db.advances.bulkGet(advanceIds)
+      ).filter(
+        (row): row is Advance =>
+          !!row &&
+          row.business_id === ctx.businessId &&
+          row.deleted_reason === cascadeTag &&
+          row.remaining_paise === 0 &&
+          row.applications.length > 0 &&
+          row.applications.every((application) => application.invoice_id === id),
+      );
+      await ctx.db.invoice_line_return_summary
+        .where('invoice_id')
+        .equals(id)
+        .delete();
+      await ctx.db.invoice_lines.where('invoice_id').equals(id).delete();
+      await ctx.db.payments.bulkDelete(paymentsToDelete.map((row) => row.id));
+      await ctx.db.advances.bulkDelete(advancesToDelete.map((row) => row.id));
+      await ctx.db.invoices.delete(id);
+      return;
+    }
     const inv = await ctx.db.invoices.get(id);
     if (!inv) {
       ctx.diagnostics.push(`invoice:delete ${id}: invoice not found`);
@@ -359,6 +556,9 @@ const HANDLERS: Record<string, EventHandler> = {
     const reason = (p.reason as string | undefined) ?? '';
     inv.deleted_at = deletedAt;
     inv.deleted_reason = reason;
+    inv.deletion_reversal_journal_id =
+      (p.deletion_reversal_journal_id as string | null | undefined) ??
+      inv.deletion_reversal_journal_id;
     inv.updated_at = deletedAt;
     await ctx.db.invoices.put(inv);
     const cascadeTag = `cascade:${id}`;
@@ -420,8 +620,31 @@ export async function applyEvent(
   evt: SyncEvent,
   ctx: HandlerContext,
 ): Promise<'applied' | 'unhandled'> {
+  if (evt.business_id !== ctx.businessId) {
+    throw new Error(
+      `event ${evt.event_id}: event belongs to business ${evt.business_id}, expected ${ctx.businessId}`,
+    );
+  }
+  if (evt.payload && typeof evt.payload === 'object' && !Array.isArray(evt.payload)) {
+    const payloadBusinessId = (evt.payload as { business_id?: unknown }).business_id;
+    if (typeof payloadBusinessId === 'string' && payloadBusinessId !== ctx.businessId) {
+      throw new Error(
+        `event ${evt.event_id}: payload belongs to business ${payloadBusinessId}, expected ${ctx.businessId}`,
+      );
+    }
+  }
   const h = getEventHandler(evt.entity_type, evt.operation);
-  if (!h) return 'unhandled';
+  if (!h) {
+    log.warn('restore.event.unhandled', 'restore: no event handler registered', {
+      businessId: ctx.businessId,
+      eventId: evt.event_id,
+      entityType: evt.entity_type,
+      operation: evt.operation,
+      entityId: evt.entity_id,
+      entityVersion: evt.entity_version,
+    });
+    return 'unhandled';
+  }
   await h(evt, ctx);
   return 'applied';
 }

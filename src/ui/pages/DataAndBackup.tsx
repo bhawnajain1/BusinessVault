@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { currentBusinessId } from '../../lib/business';
 import BackupSettings from '../settings/BackupSettings';
 import { reconnectWithUserGesture } from '../../sync/bootProvider';
-import { hasGoogleClientId } from '../../auth/gis';
 import { log } from '../../lib/log';
+import { resetAppToFreshState } from '../../lib/resetApp';
+import { beginAppOperation } from '../../lib/operationLock';
 
 // Settings → Data & Backup (spec §3, §28). Under GIS, Reconnect is an inline
 // popup — no navigation to /onboarding, no redirect_uri round-trip.
@@ -15,7 +16,6 @@ export default function DataAndBackup() {
   const [loading, setLoading] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState<string | null>(null);
-  const [reconnectMessage, setReconnectMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,15 +35,10 @@ export default function DataAndBackup() {
     };
   }, []);
 
-  const onReconnect = useCallback(async (): Promise<void> => {
+  const onReconnect = useCallback(async (selectedLocalHandle?: FileSystemDirectoryHandle): Promise<void> => {
     setReconnectError(null);
-    setReconnectMessage(null);
     if (!businessId) {
       setReconnectError('No active business.');
-      return;
-    }
-    if (!hasGoogleClientId()) {
-      setReconnectError('Google Drive is not configured. Set VITE_GOOGLE_CLIENT_ID and reload.');
       return;
     }
     setReconnecting(true);
@@ -56,10 +51,9 @@ export default function DataAndBackup() {
       // kept the stale DISCONNECTED provider + old worker, so the yellow
       // "needs to reconnect" banner and the DISCONNECTED status never
       // cleared even though sign-in succeeded.
-      const ok = await reconnectWithUserGesture();
+      const ok = await reconnectWithUserGesture(selectedLocalHandle);
       if (ok) {
         log.info('DataAndBackup', 'reconnect: success — provider adopted', { businessId });
-        setReconnectMessage('Reconnected. Sync will resume in the background.');
       } else {
         log.warn('DataAndBackup', 'reconnect: bootProvider reported failure', { businessId });
         setReconnectError(
@@ -74,6 +68,21 @@ export default function DataAndBackup() {
       setReconnecting(false);
     }
   }, [businessId]);
+
+  const onResetFresh = useCallback(async (): Promise<void> => {
+    const release = beginAppOperation({
+      kind: 'start-fresh',
+      label: 'Start Fresh',
+      cancelable: false,
+    });
+    try {
+      await resetAppToFreshState();
+      window.location.assign(`${import.meta.env.BASE_URL}onboarding`);
+    } catch (err) {
+      release();
+      setReconnectError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
 
   if (loading) {
     return <div className="p-6 text-slate-500">Loading backup settings…</div>;
@@ -100,14 +109,10 @@ export default function DataAndBackup() {
           {reconnectError}
         </div>
       )}
-      {reconnectMessage && (
-        <div className="mx-6 mt-6 rounded-md border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-          {reconnectMessage}
-        </div>
-      )}
       <BackupSettings
         businessId={businessId}
         onReconnect={reconnecting ? undefined : onReconnect}
+        onResetFresh={onResetFresh}
       />
     </div>
   );

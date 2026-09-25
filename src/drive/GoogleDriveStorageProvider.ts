@@ -343,7 +343,7 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       throw new Error(`GoogleDriveStorageProvider cannot handle config kind '${config.kind}'`);
     }
     if (config.scope && config.scope !== 'drive.file') {
-      throw new Error("GoogleDriveStorageProvider requires scope 'drive.file'");
+      throw new Error("GoogleDriveStorageProvider requires the GIS drive.file scope configuration");
     }
     this.config = config;
 
@@ -407,61 +407,66 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
 
     // Directory scaffold from §4. ensureFolder is idempotent, so re-running
     // initializeBusiness on an existing folder does not disturb data.
-    const dirs = [
+    const topLevelDirs = [
       'metadata',
       'current',
       'journal',
-      `journal/${new Date().getUTCFullYear()}`,
       'invoices',
       'attachments',
-      'attachments/purchases',
-      'attachments/expenses',
-      'attachments/products',
       'reports',
       'snapshots',
-      'snapshots/daily',
-      'snapshots/monthly',
-      'snapshots/annual',
     ];
-    for (const d of dirs) {
-      await this.ensureDir(d);
-    }
+    // Resolve independent branches concurrently. Each branch still resolves
+    // its own parents in order, so this preserves Drive's dependency and
+    // idempotency requirements while avoiding a long serial round trip chain.
+    await Promise.all(topLevelDirs.map((d) => this.ensureDir(d)));
+    await Promise.all([
+      this.ensureDir(`journal/${new Date().getUTCFullYear()}`),
+      this.ensureDir('attachments/purchases'),
+      this.ensureDir('attachments/expenses'),
+      this.ensureDir('attachments/products'),
+      this.ensureDir('snapshots/daily'),
+      this.ensureDir('snapshots/monthly'),
+      this.ensureDir('snapshots/annual'),
+    ]);
 
     // Initial README, manifest, schema — only write if missing (§4 idempotency).
-    await this.writeFileIfMissing('README.txt', textBlob(this.initialReadme(safeName), MIME_TEXT), MIME_TEXT);
-    await this.writeFileIfMissing(
-      'metadata/schema.json',
-      textBlob(JSON.stringify({ schemaVersion: SCHEMA_VERSION }, null, 2), MIME_JSON),
-      MIME_JSON,
-    );
-    await this.writeFileIfMissing(
-      'metadata/manifest.json',
-      textBlob(
-        JSON.stringify(
-          {
-            schemaVersion: SCHEMA_VERSION,
-            businessId: input.businessId,
-            businessName: safeName,
-            createdAt: nowIso(),
-            currentSnapshot: null,
-          },
-          null,
-          2,
+    await Promise.all([
+      this.writeFileIfMissing('README.txt', textBlob(this.initialReadme(safeName), MIME_TEXT), MIME_TEXT),
+      this.writeFileIfMissing(
+        'metadata/schema.json',
+        textBlob(JSON.stringify({ schemaVersion: SCHEMA_VERSION }, null, 2), MIME_JSON),
+        MIME_JSON,
+      ),
+      this.writeFileIfMissing(
+        'metadata/manifest.json',
+        textBlob(
+          JSON.stringify(
+            {
+              schemaVersion: SCHEMA_VERSION,
+              businessId: input.businessId,
+              businessName: safeName,
+              createdAt: nowIso(),
+              currentSnapshot: null,
+            },
+            null,
+            2,
+          ),
+          MIME_JSON,
         ),
         MIME_JSON,
       ),
-      MIME_JSON,
-    );
-    await this.writeFileIfMissing(
-      'metadata/sync-state.json',
-      textBlob(JSON.stringify({ schemaVersion: SCHEMA_VERSION, lastSyncedAt: null }, null, 2), MIME_JSON),
-      MIME_JSON,
-    );
-    await this.writeFileIfMissing(
-      'metadata/checksums.json',
-      textBlob(JSON.stringify({ schemaVersion: SCHEMA_VERSION, files: {} }, null, 2), MIME_JSON),
-      MIME_JSON,
-    );
+      this.writeFileIfMissing(
+        'metadata/sync-state.json',
+        textBlob(JSON.stringify({ schemaVersion: SCHEMA_VERSION, lastSyncedAt: null }, null, 2), MIME_JSON),
+        MIME_JSON,
+      ),
+      this.writeFileIfMissing(
+        'metadata/checksums.json',
+        textBlob(JSON.stringify({ schemaVersion: SCHEMA_VERSION, files: {} }, null, 2), MIME_JSON),
+        MIME_JSON,
+      ),
+    ]);
 
     return {
       businessId: input.businessId,

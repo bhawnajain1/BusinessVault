@@ -20,6 +20,8 @@ import { connectDrive } from '../../drive/connectDrive';
 import { createDriveApiClient } from '../../drive/google';
 import { log } from '../../lib/log';
 import { downloadDebugLogs } from '../../lib/downloadLogs';
+import { beginAppOperation } from '../../lib/operationLock';
+import { stopSyncWorkerAsync, tryBootProvider } from '../../sync/bootProvider';
 
 type Step =
   | 'idle'
@@ -160,6 +162,13 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         return;
       }
 
+      const abortController = new AbortController();
+      const release = beginAppOperation({
+        kind: 'restore',
+        label: 'Restore',
+        cancelable: true,
+        cancel: () => abortController.abort(),
+      });
       setStep('connecting');
       setError(null);
       setReport(null);
@@ -180,6 +189,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       }
 
       if (!provider) {
+        release();
         setStep('error');
         setError('Provider is not available in this build.');
         return;
@@ -191,6 +201,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       }
 
       try {
+        await stopSyncWorkerAsync();
         const result = await rebuildFromDrive(provider, {
           db,
           providerConfig,
@@ -200,6 +211,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
             appendLog(`Progress: ${msg}${pct != null ? ` (${pct}%)` : ''}`);
             if (pct != null) setProgressPct(pct);
           },
+          signal: abortController.signal,
           pickBusiness: async (ctx) => {
             appendLog(`Found ${ctx.businesses.length} businesses: ${ctx.businesses.map((b) => b.businessName).join(', ')}`);
             setBusinesses(ctx.businesses);
@@ -212,7 +224,19 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         appendLog(`Restore complete. Events replayed: ${result.eventsReplayed}.`);
         setReport(result);
         setStep('done');
+        // Restore replaces IndexedDB rows underneath the mounted application.
+        // Reload so list pages and cached live queries read the restored rows
+        // instead of retaining the pre-restore in-memory view.
+        window.setTimeout(() => window.location.reload(), 0);
       } catch (err) {
+        release();
+        await tryBootProvider().catch(() => false);
+        if (err instanceof Error && err.name === 'AbortError') {
+          appendLog('Restore cancelled; local data was left unchanged.');
+          setError(err.message);
+          setStep('error');
+          return;
+        }
         if (err instanceof UnshippedEventsError) {
           appendLog(
             `Refused to overwrite: ${err.summary.total} unshipped event(s) on this device would be lost.`,
@@ -562,6 +586,21 @@ export default function RestoreWizard(props: RestoreWizardProps) {
                 {report.schemaVersion}.
               </div>
             )}
+            <div className={report.countReconciliation.exact ? 'text-emerald-700' : 'text-rose-700'}>
+              Entity counts: {report.countReconciliation.compared
+                ? report.countReconciliation.exact
+                  ? 'exact match between backup and restored app.'
+                  : 'mismatch detected.'
+                : 'snapshot counts recorded; journal replay changed the final totals.'}
+            </div>
+            <details className="mt-2">
+              <summary className="cursor-pointer text-slate-600">Entity count comparison</summary>
+              <pre className="mt-1 bg-slate-50 border rounded p-2 whitespace-pre-wrap font-mono text-xs overflow-auto max-h-64">
+                {Object.keys(report.counts)
+                  .map((store) => `${store}: backup ${report.sourceCounts[store] ?? 0} | restored ${report.counts[store] ?? 0}`)
+                  .join('\n')}
+              </pre>
+            </details>
           </div>
           <details className="text-sm">
             <summary className="cursor-pointer text-slate-600">

@@ -393,9 +393,11 @@ const je2_lines = [
 // Test helper: turn our fixture rows into snapshot CSV files
 // ---------------------------------------------------------------------------
 
-async function makeSnapshotFiles() {
+async function makeSnapshotFiles(
+  snapshotBusiness: Record<string, unknown> = business,
+) {
   const byStore: Record<string, Record<string, unknown>[]> = {
-    businesses: [business],
+    businesses: [snapshotBusiness],
     customers: [cust1, cust2],
     suppliers: [],
     categories: [],
@@ -582,6 +584,14 @@ describe('rebuildFromDrive', () => {
     expect(report.counts.payments).toBe(1);
     expect(report.counts.journal_entries).toBe(2); // je_1 (snapshot) + je_2 (replay)
     expect(report.counts.journal_lines).toBe(4 + 2); // je_1 has 4, je_2 has 2
+    expect(report.countReconciliation).toEqual({
+      exact: true,
+      compared: true,
+      mismatches: {},
+    });
+    expect(report.sourceCounts.payments).toBe(1);
+    expect(report.sourceCounts.journal_entries).toBe(2);
+    expect(report.sourceCounts.journal_lines).toBe(6);
 
     // Validation flags.
     expect(report.checksumsOk).toBe(true);
@@ -589,6 +599,7 @@ describe('rebuildFromDrive', () => {
     expect(report.inventoryConsistent).toBe(true);
     expect(report.gstReconciled).toBe(true);
     expect(report.diagnostics.ok).toBe(true);
+    expect(report.diagnostics.issues.filter((issue) => issue.severity === 'warning')).toHaveLength(0);
 
     // Derived rebuild: invoice paid/balance recomputed from payment replay.
     const inv = await db.invoices.get('inv_1');
@@ -794,6 +805,43 @@ describe('rebuildFromDrive', () => {
     const row = await metaDb().settings.get('current_business_id');
     expect(row).toBeDefined();
     expect(row!.value).toBe(BID);
+  });
+
+  it('clears historical Drive linkage when restoring from a local folder', async () => {
+    const files = await makeSnapshotFiles({
+      ...business,
+      drive_folder_id: 'old-drive-folder',
+      drive_connected_email: 'old@example.com',
+    });
+    await provider.connect({ kind: 'local-folder', rootPath: root });
+    await provider.initializeBusiness({
+      businessId: BID,
+      businessName: 'Acme Traders',
+    });
+    await provider.writeSnapshot({
+      businessId: BID,
+      kind: 'daily',
+      asOf: '2026-08-19',
+      files,
+      manifest: {
+        schemaVersion: 1,
+        counts: files.reduce(
+          (acc, f) => ({ ...acc, [f.name]: f.rowCount }),
+          {} as Record<string, number>,
+        ),
+      },
+    });
+    await rebuildFromDrive(provider, {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+      confirmDataLoss: true,
+      preConnectedProvider: provider,
+    });
+
+    await expect(db.businesses.get(BID)).resolves.toMatchObject({
+      drive_folder_id: null,
+      drive_connected_email: null,
+    });
   });
 
   it('refuses to wipe local data when the backup folder has no snapshots and no events', async () => {

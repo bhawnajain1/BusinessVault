@@ -12,7 +12,20 @@
 import { log } from '../lib/log';
 import { env } from '../lib/env';
 
-export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+// Space-delimited scope list. Metadata discovery of an existing BusinessVault
+// folder requires the read-only metadata scope in addition to drive.file.
+export const DRIVE_FILE_SCOPE =
+  'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.metadata.readonly';
+
+export const DRIVE_REQUIRED_SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/drive.metadata.readonly',
+] as const;
+
+export function hasRequiredDriveScopes(scope?: string): boolean {
+  const granted = new Set((scope ?? '').split(/\s+/).filter(Boolean));
+  return DRIVE_REQUIRED_SCOPES.every((required) => granted.has(required));
+}
 
 interface GisTokenClient {
   requestAccessToken(opts?: { prompt?: '' | 'consent' | 'select_account' }): void;
