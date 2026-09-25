@@ -460,7 +460,7 @@ export async function rebuildFromDrive(
     // journal inside one transaction allows IndexedDB to commit between
     // awaited handler operations, which Dexie reports as "Transaction
     // committed too early" on larger Google Drive restores.
-    for (const evt of events) {
+    for (const evt of orderReplayEvents(events)) {
       throwIfAborted();
       try {
         let wasApplied = false;
@@ -884,6 +884,28 @@ function normalizeSnapshotTimestamp(asOf: string): string {
     /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2}(?:\.\d+)?)Z$/,
     '$1T$2:$3:$4Z',
   );
+}
+
+function orderReplayEvents(events: SyncEvent[]): SyncEvent[] {
+  const createFirst: Record<string, number> = {
+    create: 0,
+    created: 0,
+    posted: 0,
+    update: 1,
+    updated: 1,
+    reverse: 2,
+    reversed: 2,
+    delete: 3,
+    deleted: 3,
+  };
+  return events
+    .map((event, index) => ({ event, index }))
+    .sort((a, b) =>
+      a.event.timestamp.localeCompare(b.event.timestamp) ||
+      (createFirst[a.event.operation] ?? 1) - (createFirst[b.event.operation] ?? 1) ||
+      a.index - b.index,
+    )
+    .map(({ event }) => event);
 }
 
 // Cache of the manifest that discoverBusinesses already parsed, so

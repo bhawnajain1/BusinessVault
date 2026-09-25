@@ -724,6 +724,57 @@ describe('rebuildFromDrive', () => {
     });
   });
 
+  it('reorders same-timestamp payment create before allocation update', async () => {
+    const payment: Payment = {
+      ...(payment1 as Payment),
+      id: 'payment_out_of_order',
+      payment_number: 'PAY-OUT-OF-ORDER',
+    };
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeJournalEvents([
+      {
+        event_id: '01ORDEREDUPDATE00000000000001',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'payment',
+        entity_id: payment.id,
+        operation: 'update',
+        entity_version: 2,
+        timestamp: '2026-08-20T10:00:00.000Z',
+        payload: { payment_id: payment.id, allocations: payment.allocations },
+        payload_hash: 'update-first',
+        previous_hash: null,
+        sync_status: 'LOCAL_ONLY',
+      },
+      {
+        event_id: '01ORDEREDCREATE00000000000001',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'payment',
+        entity_id: payment.id,
+        operation: 'create',
+        entity_version: 1,
+        timestamp: '2026-08-20T10:00:00.000Z',
+        payload: payment as unknown as Readonly<Record<string, unknown>>,
+        payload_hash: 'create-second',
+        previous_hash: null,
+        sync_status: 'LOCAL_ONLY',
+      },
+    ]);
+
+    const report = await rebuildFromDrive(new LocalFolderStorageProvider(), {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(report.diagnostics.ok).toBe(true);
+    expect(await db.payments.get(payment.id)).toMatchObject({
+      allocations: payment.allocations,
+    });
+  });
+
   it('is idempotent — running restore twice yields the same DB state', async () => {
     await rebuildFromDrive(provider, {
       db,
