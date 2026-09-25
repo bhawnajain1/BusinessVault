@@ -31,6 +31,12 @@ export function beginAppOperation(operation: Omit<AppOperation, 'cancel'> & { ca
   };
 }
 
+export function updateAppOperation(update: Partial<Pick<AppOperation, 'label' | 'cancelable' | 'cancel'>> & { progress?: number; message?: string }): void {
+  if (!active) return;
+  active = { ...active, ...update };
+  notify();
+}
+
 export function getAppOperation(): AppOperation | null {
   return active;
 }

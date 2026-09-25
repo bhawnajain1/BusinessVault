@@ -449,7 +449,7 @@ export async function rebuildFromDrive(
     // journal inside one transaction allows IndexedDB to commit between
     // awaited handler operations, which Dexie reports as "Transaction
     // committed too early" on larger Google Drive restores.
-    for (const evt of events) {
+    for (const evt of journalEvents) {
       throwIfAborted();
       try {
         let wasApplied = false;
@@ -593,7 +593,7 @@ export async function rebuildFromDrive(
     });
   }
   const counts = await countTables(opts.db, selected.businessId);
-  const sourceCounts = expectedCountsAfterJournal(snapshotTables, events);
+  const sourceCounts = expectedCountsAfterJournal(snapshotTables, journalEvents);
   const countReconciliation = reconcileCounts(sourceCounts, counts);
   if (!countReconciliation.exact) {
     log.error('restore.count-mismatch', 'restore: source and local counts differ', {
