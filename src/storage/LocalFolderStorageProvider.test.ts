@@ -524,6 +524,41 @@ describe('LocalFolderStorageProvider', () => {
     expect((await direct.restoreBusiness()).journalFiles).toHaveLength(1);
   });
 
+  it('discovers a downloaded v1.0.62 direct folder with a nested user manifest', async () => {
+    const businessRoot = path.join(root, 'BusinessVault - Tiger Marketing');
+    await fs.mkdir(path.join(businessRoot, 'metadata'), { recursive: true });
+    await fs.writeFile(
+      path.join(businessRoot, 'metadata', 'manifest.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        businessId: '01M0YRYGJS1Z4YJC915311BYPX',
+        businessName: 'Tiger Marketing',
+        currentSnapshot: {
+          kind: 'ondemand',
+          asOf: '2026-09-25T11-48-37.133Z',
+          path: 'snapshots/ondemand/2026-09-25T11-48-37.133Z',
+        },
+        userManifest: {
+          schemaVersion: 12,
+          applicationVersion: '1.0.62',
+          businessId: '01M0YRYGJS1Z4YJC915311BYPX',
+          businessName: 'Tiger Marketing',
+        },
+      }),
+    );
+
+    const direct = new LocalFolderStorageProvider();
+    await direct.connect({ kind: 'local-folder', rootPath: businessRoot });
+    const businesses = await direct.listBusinesses();
+
+    expect(businesses).toHaveLength(1);
+    expect(businesses[0]).toMatchObject({
+      businessId: '01M0YRYGJS1Z4YJC915311BYPX',
+      businessName: 'Tiger Marketing',
+      folderPath: '.',
+    });
+  });
+
   it('rejects a config of the wrong kind', async () => {
     const p = new LocalFolderStorageProvider();
     await expect(
