@@ -89,6 +89,7 @@ const merge =
       get(id: string): Promise<T | undefined>;
       put(v: T): Promise<unknown>;
     },
+    options: { recordMissing?: boolean } = {},
   ) =>
   async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
     const patch = asRecord(evt.payload, evt.event_id);
@@ -97,7 +98,7 @@ const merge =
     const existing = await table(ctx.db).get(id);
     if (!existing) {
       const message = `${entityType}:update ${id}: existing row not found`;
-      ctx.diagnostics.push(message);
+      if (options.recordMissing !== false) ctx.diagnostics.push(message);
       log.warn('restore.event.merge-missing', 'restore: update target not found', {
         businessId: ctx.businessId,
         eventId: evt.event_id,

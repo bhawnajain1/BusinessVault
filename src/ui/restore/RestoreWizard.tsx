@@ -21,7 +21,7 @@ import { connectDrive } from '../../drive/connectDrive';
 import { createDriveApiClient } from '../../drive/google';
 import { log } from '../../lib/log';
 import { downloadDebugLogs } from '../../lib/downloadLogs';
-import { beginAppOperation } from '../../lib/operationLock';
+import { beginAppOperation, updateAppOperation } from '../../lib/operationLock';
 import { stopSyncWorkerAsync, tryBootProvider } from '../../sync/bootProvider';
 
 type Step =

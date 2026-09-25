@@ -411,6 +411,7 @@ const je2_lines = [
 
 async function makeSnapshotFiles(
   snapshotBusiness: Record<string, unknown> = business,
+  snapshotPayments: Payment[] = [],
 ) {
   const byStore: Record<string, Record<string, unknown>[]> = {
     businesses: [snapshotBusiness],

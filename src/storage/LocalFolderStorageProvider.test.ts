@@ -168,7 +168,7 @@ describe('LocalFolderStorageProvider', () => {
     const p = await connectAndInit(root);
     const snapshotDir = path.join(
       root,
-      'BusinessVault/Acme Traders/snapshots/ondemand/2026-09-24T09-26-06.407Z',
+      'BusinessVault - Acme Traders/snapshots/ondemand/2026-09-24T09-26-06.407Z',
     );
     await fs.mkdir(snapshotDir, { recursive: true });
     const csv = 'id,business_id\n1,biz_1\n';
@@ -361,7 +361,7 @@ describe('LocalFolderStorageProvider', () => {
 
   it('verifyIntegrity accepts metadata-wrapped snapshot checksums', async () => {
     const p = await connectAndInit(root);
-    const snapshotDir = path.join(root, 'BusinessVault', 'Acme Traders', 'snapshots', 'ondemand', '2026-09-23');
+    const snapshotDir = path.join(root, 'BusinessVault - Acme Traders', 'snapshots', 'ondemand', '2026-09-23');
     await fs.mkdir(snapshotDir, { recursive: true });
     const csv = 'id,name\n1,Acme\n';
     await fs.writeFile(path.join(snapshotDir, 'customers.csv'), csv);
@@ -405,7 +405,7 @@ describe('LocalFolderStorageProvider', () => {
 
     const journalPath = path.join(
       root,
-      'BusinessVault/Acme Traders/journal/2026/2026-08.events.jsonl',
+      'BusinessVault - Acme Traders/journal/2026/2026-08.events.jsonl',
     );
     const original = await fs.readFile(journalPath, 'utf8');
     await fs.writeFile(journalPath, original.replace('"amount":100', '"amount":101'));
@@ -508,7 +508,7 @@ describe('LocalFolderStorageProvider', () => {
       mkEvent({ event_id: 'evt_1' }),
     ]);
 
-    const businessRoot = path.join(root, 'BusinessVault', 'Acme Traders');
+    const businessRoot = path.join(root, 'BusinessVault - Acme Traders');
     const direct = new LocalFolderStorageProvider();
     await direct.connect({ kind: 'local-folder', rootPath: businessRoot });
 

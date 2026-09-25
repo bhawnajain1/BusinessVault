@@ -352,6 +352,15 @@ export async function rebuildFromDrive(
       migrated: migratedFrom !== undefined,
     });
   } else {
+    const declaredSnapshot = manifest.currentSnapshot as
+      | { path?: unknown; kind?: unknown; asOf?: unknown }
+      | undefined;
+    if (declaredSnapshot?.path || declaredSnapshot?.kind || declaredSnapshot?.asOf) {
+      throw new BackupIntegrityError(
+        'The backup declares a current snapshot, but no verified snapshot was found. Re-select the correct backup folder and try again.',
+        { businessId: selected.businessId, declaredSnapshot },
+      );
+    }
     log.warn('restore.snapshot.missing', 'restore: no verified snapshot found; journal replay only', {
       businessId: selected.businessId,
     });
@@ -366,10 +375,18 @@ export async function rebuildFromDrive(
     businessId: selected.businessId,
     sinceEventId,
   });
+  const snapshotAsOf = snapshotHandle
+    ? normalizeSnapshotTimestamp(snapshotHandle.asOf)
+    : undefined;
+  const events = sinceEventId || !snapshotAsOf
+    ? journalEvents
+    : journalEvents.filter((event) => event.timestamp > snapshotAsOf);
   log.info('restore.journal.loaded', 'restore: journal events loaded', {
     businessId: selected.businessId,
-    eventCount: journalEvents.length,
+    eventCount: events.length,
     sinceEventId: sinceEventId ?? null,
+    journalEventCount: journalEvents.length,
+    snapshotAsOf: snapshotAsOf ?? null,
   });
 
   // Zero snapshots + zero journal events = a backup folder that was never
@@ -449,7 +466,7 @@ export async function rebuildFromDrive(
     // journal inside one transaction allows IndexedDB to commit between
     // awaited handler operations, which Dexie reports as "Transaction
     // committed too early" on larger Google Drive restores.
-    for (const evt of journalEvents) {
+    for (const evt of orderReplayEvents(events)) {
       throwIfAborted();
       try {
         let wasApplied = false;
@@ -482,11 +499,15 @@ export async function rebuildFromDrive(
       }
     }
     if (diagnostics.length > 0) {
-      throw new Error(`Restore replay failed for ${diagnostics.length} event(s)`);
+      throw new Error(
+        `Restore replay failed for ${diagnostics.length} event(s): ${diagnostics
+          .slice(0, 5)
+          .join(' | ')}`,
+      );
     }
     log.info('restore.replay.complete', 'restore: journal replay complete', {
       businessId: selected.businessId,
-      eventCount: journalEvents.length,
+      eventCount: events.length,
       replayed,
       unhandled,
       failed: diagnostics.length,
@@ -593,7 +614,7 @@ export async function rebuildFromDrive(
     });
   }
   const counts = await countTables(opts.db, selected.businessId);
-  const sourceCounts = expectedCountsAfterJournal(snapshotTables, journalEvents);
+  const sourceCounts = expectedCountsAfterJournal(snapshotTables, events);
   const countReconciliation = reconcileCounts(sourceCounts, counts);
   if (!countReconciliation.exact) {
     log.error('restore.count-mismatch', 'restore: source and local counts differ', {
@@ -703,9 +724,53 @@ export async function repairLegacyJournalHeaders(
   return repairs.map((repair) => repair.id);
 }
 
+async function findPostedEntriesWithoutLines(
+  db: BusinessVaultDB,
+  businessId: string,
+): Promise<string[]> {
+  const [entries, lines] = await Promise.all([
+    db.journal_entries.where('business_id').equals(businessId).toArray(),
+    db.journal_lines.where('business_id').equals(businessId).toArray(),
+  ]);
+  const entryIds = new Set(lines.map((line) => line.entry_id));
+  return entries
+    .filter((entry) => entry.posted === 1 && !entryIds.has(entry.id))
+    .map((entry) => entry.id);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function normalizeSnapshotTimestamp(asOf: string): string {
+  if (!asOf.includes('T')) return '';
+  return asOf.replace(
+    /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2}(?:\.\d+)?)Z$/,
+    '$1T$2:$3:$4Z',
+  );
+}
+
+function orderReplayEvents(events: SyncEvent[]): SyncEvent[] {
+  const operationOrder: Record<string, number> = {
+    create: 0,
+    created: 0,
+    posted: 0,
+    update: 1,
+    updated: 1,
+    reverse: 2,
+    reversed: 2,
+    delete: 3,
+    deleted: 3,
+  };
+  return events
+    .map((event, index) => ({ event, index }))
+    .sort((a, b) =>
+      a.event.timestamp.localeCompare(b.event.timestamp) ||
+      (operationOrder[a.event.operation] ?? 1) - (operationOrder[b.event.operation] ?? 1) ||
+      a.index - b.index,
+    )
+    .map(({ event }) => event);
+}
 
 function tableNames(): string[] {
   return [
@@ -861,38 +926,6 @@ interface ManifestShape {
   schemaVersion?: number;
   journalCheckpoint?: string;
   [k: string]: unknown;
-}
-
-function normalizeSnapshotTimestamp(asOf: string): string {
-  // Snapshot directory names from older backups used date-only values, while
-  // current on-demand backups use an ISO timestamp with colons replaced.
-  if (!asOf.includes('T')) return '';
-  return asOf.replace(
-    /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2}(?:\.\d+)?)Z$/,
-    '$1T$2:$3:$4Z',
-  );
-}
-
-function orderReplayEvents(events: SyncEvent[]): SyncEvent[] {
-  const createFirst: Record<string, number> = {
-    create: 0,
-    created: 0,
-    posted: 0,
-    update: 1,
-    updated: 1,
-    reverse: 2,
-    reversed: 2,
-    delete: 3,
-    deleted: 3,
-  };
-  return events
-    .map((event, index) => ({ event, index }))
-    .sort((a, b) =>
-      a.event.timestamp.localeCompare(b.event.timestamp) ||
-      (createFirst[a.event.operation] ?? 1) - (createFirst[b.event.operation] ?? 1) ||
-      a.index - b.index,
-    )
-    .map(({ event }) => event);
 }
 
 // Cache of the manifest that discoverBusinesses already parsed, so

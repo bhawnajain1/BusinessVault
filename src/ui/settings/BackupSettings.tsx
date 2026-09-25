@@ -274,6 +274,11 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
       if (!business) {
         throw new Error('Business is still loading.');
       }
+      releaseOperation = beginAppOperation({
+        kind: 'start-fresh',
+        label: 'Backup',
+        cancelable: false,
+      });
       // The user may have deleted the vault in Drive while this tab was open.
       // Re-run initialization so the provider rediscovers or recreates the
       // remote folder instead of using its stale cached folder id.
