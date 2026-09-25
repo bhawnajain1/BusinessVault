@@ -202,6 +202,9 @@ const HANDLERS: Record<string, EventHandler> = {
         );
         return;
       }
+      if (inv.business_id !== ctx.businessId) {
+        throw new Error(`invoice:update ${invoiceId}: invoice belongs to another business`);
+      }
       inv.deleted_at = null;
       inv.deleted_reason = null;
       inv.updated_at = String(p.restored_at ?? new Date().toISOString());
@@ -212,6 +215,7 @@ const HANDLERS: Record<string, EventHandler> = {
       for (const pid of restoredPaymentIds) {
         const pay = await ctx.db.payments.get(pid);
         if (pay) {
+          if (pay.business_id !== ctx.businessId) throw new Error(`invoice:update ${pid}: payment belongs to another business`);
           pay.deleted_at = null;
           pay.deleted_reason = null;
           await ctx.db.payments.put(pay);
@@ -223,6 +227,7 @@ const HANDLERS: Record<string, EventHandler> = {
       for (const aid of restoredAdvanceIds) {
         const adv = await ctx.db.advances.get(aid);
         if (adv) {
+          if (adv.business_id !== ctx.businessId) throw new Error(`invoice:update ${aid}: advance belongs to another business`);
           adv.deleted_at = null;
           adv.deleted_reason = null;
           await ctx.db.advances.put(adv);
@@ -263,6 +268,7 @@ const HANDLERS: Record<string, EventHandler> = {
         );
         return;
       }
+      if (existing.business_id !== ctx.businessId) throw new Error(`purchase:update ${id}: purchase belongs to another business`);
       existing.reversed_by_purchase_id =
         (p.reversed_by_purchase_id as string | null | undefined) ?? null;
       for (const field of [
@@ -297,6 +303,7 @@ const HANDLERS: Record<string, EventHandler> = {
       });
       return;
     }
+    if (existing.business_id !== ctx.businessId) throw new Error(`purchase:reverse ${id}: purchase belongs to another business`);
     await ctx.db.purchases.put({
       ...existing,
       bill_number: String(p.renamed_bill_number ?? existing.bill_number),

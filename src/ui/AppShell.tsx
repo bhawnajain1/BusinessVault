@@ -9,6 +9,7 @@ import LowStockToast from './notifications/LowStockToast';
 import { useActiveBusiness } from './hooks/useActiveBusiness';
 import { runLegacyMigrationsForBusiness } from '../boot/runLegacyMigrations';
 import { log } from '../lib/log';
+import OperationLockOverlay from './OperationLockOverlay';
 
 // When the user prints (window.print() from InvoicePrint, browser print
 // dialog, or "Save as PDF") we want ONLY the invoice pane on paper — no
@@ -64,6 +65,7 @@ export default function AppShell() {
         <div data-print-hide>
           <LowStockToast />
         </div>
+        <OperationLockOverlay />
       </NotificationProvider>
     </BackupHealthProvider>
   );

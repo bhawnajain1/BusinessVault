@@ -1,6 +1,7 @@
 import { db } from '../db';
 import { enqueue } from './syncQueue';
 import type { WriteSnapshotInput } from '../storage/CustomerStorageProvider';
+import { log } from '../lib/log';
 
 // Spec §13: daily snapshot after activity, monthly on 1st, financial-year on
 // Apr 1 (India). Uses chained setTimeout so it survives a process kill —
@@ -38,18 +39,18 @@ interface LastSnapshotState {
   annual: string | null; // YYYY
 }
 
-const KV_KEY = 'sync.lastSnapshotState';
+const KV_KEY_PREFIX = 'sync.lastSnapshotState:';
 
-async function loadState(): Promise<LastSnapshotState> {
-  const row = await db.kv.get(KV_KEY);
+async function loadState(businessId: string): Promise<LastSnapshotState> {
+  const row = await db.kv.get(`${KV_KEY_PREFIX}${businessId}`);
   if (row && row.value && typeof row.value === 'object') {
     return row.value as LastSnapshotState;
   }
   return { daily: null, monthly: null, annual: null };
 }
 
-async function saveState(s: LastSnapshotState, now: Date): Promise<void> {
-  await db.kv.put({ key: KV_KEY, value: s, updated_at: iso(now) });
+async function saveState(businessId: string, s: LastSnapshotState, now: Date): Promise<void> {
+  await db.kv.put({ key: `${KV_KEY_PREFIX}${businessId}`, value: s, updated_at: iso(now) });
 }
 
 function msUntilNextFire(
@@ -75,17 +76,21 @@ export function startSnapshotScheduler(
 
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let fireInFlight: Promise<void> | null = null;
 
-  const fireOnce = async (): Promise<void> => {
+  const fireOnceImpl = async (): Promise<void> => {
     if (stopped) return;
     const now = clock();
-    const state = await loadState();
     const businesses = await db.businesses.toArray();
+    log.debug('snapshot.scheduler', 'fire started', { businessCount: businesses.length });
 
     for (const b of businesses) {
+      if (stopped) return;
+      const state = await loadState(b.id);
       // Daily — once per calendar day, after activity.
       const today = day(now);
       if (state.daily !== today) {
+        log.info('snapshot.scheduler', 'daily snapshot due', { businessId: b.id, day: today });
         const input = await deps.buildSnapshot(b.id, 'daily', now);
         await enqueue({
           businessId: b.id,
@@ -97,6 +102,7 @@ export function startSnapshotScheduler(
       // Monthly — first of the month.
       const monthKey = today.slice(0, 7);
       if (isFirstOfMonth(now) && state.monthly !== monthKey) {
+        log.info('snapshot.scheduler', 'monthly snapshot due', { businessId: b.id, month: monthKey });
         const input = await deps.buildSnapshot(b.id, 'monthly', now);
         await enqueue({
           businessId: b.id,
@@ -108,6 +114,7 @@ export function startSnapshotScheduler(
       // Annual — India FY start (Apr 1).
       const yearKey = today.slice(0, 4);
       if (isFyStart(now) && state.annual !== yearKey) {
+        log.info('snapshot.scheduler', 'annual snapshot due', { businessId: b.id, year: yearKey });
         const input = await deps.buildSnapshot(b.id, 'annual', now);
         await enqueue({
           businessId: b.id,
@@ -116,9 +123,21 @@ export function startSnapshotScheduler(
         });
         state.annual = yearKey;
       }
+      await saveState(b.id, state, now);
+      log.debug('snapshot.scheduler', 'business state saved', { businessId: b.id, state });
     }
+    log.debug('snapshot.scheduler', 'fire completed', { businessCount: businesses.length });
+  };
 
-    await saveState(state, now);
+  const fireOnce = async (): Promise<void> => {
+    if (fireInFlight) {
+      log.debug('snapshot.scheduler', 'joining in-flight fire');
+      return fireInFlight;
+    }
+    fireInFlight = fireOnceImpl().finally(() => {
+      fireInFlight = null;
+    });
+    return fireInFlight;
   };
 
   const loop = (): void => {

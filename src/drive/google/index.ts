@@ -6,7 +6,8 @@
 // we surface DriveNeedsReconnectError so the UI can route the user to a
 // Reconnect button.
 //
-// Scope: drive.file only (per-file access; app-created files only).
+// Scope: drive.file plus drive.metadata.readonly. The metadata scope is
+// read-only and is required to discover an existing BusinessVault folder.
 // We deliberately avoid the "spaces=appDataFolder" mode so the user can see
 // and manage the BusinessVault folder in their normal Drive UI.
 //
@@ -23,6 +24,7 @@ import {
 } from '../GoogleDriveStorageProvider';
 import { loadTokens, saveTokens } from '../tokenStore';
 import { silentRefreshDrive } from '../connectDrive';
+import { hasRequiredDriveScopes } from '../../auth/gis';
 
 // Re-export so callers can import from one place.
 export { DriveNeedsReconnectError };
@@ -68,11 +70,18 @@ class GisDriveClient implements DriveApiClient {
       try {
         const fresh = await silentRefreshDrive(this.businessId);
         this.cachedToken = { accessToken: fresh, expiresAt: 0 };
-        return true;
+        const refreshed = await loadTokens(this.businessId);
+        return hasRequiredDriveScopes(refreshed?.scope);
       } catch (err) {
         log.warn('drive.client', 'silent refresh failed', { error: err });
         return false;
       }
+    }
+    if (!hasRequiredDriveScopes(rec.scope)) {
+      log.info('drive.client', 'stored token missing required Drive scopes', {
+        businessId: this.businessId,
+      });
+      return false;
     }
     this.cachedToken = { accessToken: rec.accessToken, expiresAt: rec.expiresAt };
     return true;

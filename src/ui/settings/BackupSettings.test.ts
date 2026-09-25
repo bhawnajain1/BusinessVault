@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { deriveDisplayStatus, shouldShowDisconnectedDuringBoot } from './BackupSettings';
+import {
+  deriveDisplayStatus,
+  shouldShowDisconnectedDuringBoot,
+  shouldShowDriveFolderLink,
+} from './BackupSettings';
 import type {
   ConnectionStatus,
   IntegrityReport,
@@ -94,5 +98,20 @@ describe('shouldShowDisconnectedDuringBoot', () => {
 
   it('never shows disconnected when a provider is available', () => {
     expect(shouldShowDisconnectedDuringBoot('error', true)).toBe(false);
+  });
+});
+
+describe('shouldShowDriveFolderLink', () => {
+  it('hides the previous Drive location after disconnect', () => {
+    expect(shouldShowDriveFolderLink('DISCONNECTED', 'old-drive-folder')).toBe(false);
+  });
+
+  it('shows the Drive location while connected', () => {
+    expect(shouldShowDriveFolderLink('HEALTHY', 'drive-folder')).toBe(true);
+    expect(shouldShowDriveFolderLink('SYNCING', 'drive-folder')).toBe(true);
+  });
+
+  it('does not show a link without a folder id', () => {
+    expect(shouldShowDriveFolderLink('HEALTHY', null)).toBe(false);
   });
 });

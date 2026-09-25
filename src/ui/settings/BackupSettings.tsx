@@ -117,6 +117,13 @@ export function shouldShowDisconnectedDuringBoot(
   return bootStatus !== 'idle' && bootStatus !== 'starting';
 }
 
+export function shouldShowDriveFolderLink(
+  status: BackupHealthStatus,
+  driveFolderId: string | null,
+): boolean {
+  return driveFolderId !== null && status !== 'DISCONNECTED';
+}
+
 interface Props {
   businessId: string;
   onReconnect?: (selectedLocalHandle?: FileSystemDirectoryHandle) => void | Promise<void>;
@@ -297,10 +304,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
       while (true) {
         const row = await db.sync_queue.get(job.id);
         if (!row) {
-          // Job row disappeared — worker completed and cleaned it up, or
-          // db was cleared. Treat as success rather than error.
-           setMessage('Backup complete.');
-          return true;
+          throw new Error('Backup job disappeared before successful completion. Nothing was cleared.');
         }
         if (row.status === 'done') {
            setMessage('Backup complete.');
@@ -485,6 +489,13 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
       let current = await db.businesses.get(businessId);
       if (!current) throw new Error('Business is still loading.');
 
+      const localBusinesses = await db.businesses.toArray();
+      if (localBusinesses.length !== 1 || localBusinesses[0]?.id !== businessId) {
+        throw new Error(
+          'Start Fresh is blocked because this device has multiple businesses. Back up each business before clearing the browser.',
+        );
+      }
+
       if (!current.drive_folder_id) {
         setMessage('Google Drive is required. Connect it to continue.');
         await onSwitchToDrive();
@@ -510,6 +521,13 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
       const backedUp = await runBackup();
       if (!backedUp) {
         throw new Error('Final Google Drive backup did not complete. Nothing was cleared.');
+      }
+
+      const integrity = await provider.verifyIntegrity();
+      if (!integrity.ok) {
+        throw new Error(
+          `Final Google Drive backup failed integrity verification (${integrity.issues.length} issue${integrity.issues.length === 1 ? '' : 's'}). Nothing was cleared.`,
+        );
       }
 
       setMessage('Backup complete. Clearing this browser…');
@@ -624,7 +642,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
             value={
               <span className="inline-flex items-center gap-2">
                 <span>{folderPath}</span>
-                {driveFolderId ? (
+                {shouldShowDriveFolderLink(status, driveFolderId) && driveFolderId ? (
                   <a
                     href={DRIVE_FOLDER_URL(driveFolderId)}
                     target="_blank"

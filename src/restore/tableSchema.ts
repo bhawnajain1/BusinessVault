@@ -29,6 +29,7 @@ export interface TableSpec {
   /** Primary key column — must be present in every row. */
   pk: string;
   columns: ColumnSpec[];
+  required?: string[];
 }
 
 const COMMON_AUDIT: ColumnSpec[] = [
@@ -71,6 +72,7 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'show_signature_on_invoice', type: 'boolean_int' },
       ...COMMON_AUDIT,
     ],
+    required: ['id', 'name'],
   },
   {
     file: 'customer_item_prices.csv',
@@ -84,6 +86,7 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'unit_price_paise', type: 'number' },
       ...COMMON_AUDIT,
     ],
+    required: ['id', 'business_id', 'customer_id', 'item_id'],
   },
   {
     file: 'customers.csv',

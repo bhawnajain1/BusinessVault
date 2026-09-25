@@ -171,6 +171,7 @@ describe.runIf(RUN)('E2E: local folder receives invoice writes', () => {
 
     // Start the worker; poll it via tick()
     const worker = startSyncWorker({
+      businessId,
       provider,
       onStateChange: () => {},
       autoStart: false,

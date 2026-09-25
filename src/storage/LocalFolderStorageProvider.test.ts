@@ -115,6 +115,33 @@ describe('LocalFolderStorageProvider', () => {
     expect(r2.reused).toBe(true);
   });
 
+  it('rejects reuse of a folder owned by another business', async () => {
+    await fs.mkdir(path.join(root, 'BusinessVault', 'Acme Traders', 'metadata'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, 'BusinessVault', 'Acme Traders', 'metadata', 'manifest.json'),
+      JSON.stringify({ businessId: 'biz_other' }),
+    );
+
+    const provider = new LocalFolderStorageProvider();
+    await provider.connect({ kind: 'local-folder', rootPath: root });
+    await expect(
+      provider.initializeBusiness({ businessId: 'biz_1', businessName: 'Acme Traders' }),
+    ).rejects.toThrow(/different business/);
+  });
+
+  it('rejects path traversal through the node backend', async () => {
+    const provider = new LocalFolderStorageProvider();
+    await provider.connect({ kind: 'local-folder', rootPath: root });
+    await provider.initializeBusiness({ businessId: 'biz_1', businessName: 'Acme Traders' });
+    await expect(
+      provider.uploadAttachment({
+        path: '../outside.txt',
+        blob: new Blob(['unsafe']),
+        mimeType: 'text/plain',
+      }),
+    ).rejects.toThrow(/traversal|relative|escapes/);
+  });
+
   it('discovers every business when the picked folder contains multiple layouts', async () => {
     await fs.mkdir(path.join(root, 'BusinessVault', 'Real Buiness', 'metadata'), { recursive: true });
     await fs.writeFile(

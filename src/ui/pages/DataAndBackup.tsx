@@ -5,6 +5,7 @@ import BackupSettings from '../settings/BackupSettings';
 import { reconnectWithUserGesture } from '../../sync/bootProvider';
 import { log } from '../../lib/log';
 import { resetAppToFreshState } from '../../lib/resetApp';
+import { beginAppOperation } from '../../lib/operationLock';
 
 // Settings → Data & Backup (spec §3, §28). Under GIS, Reconnect is an inline
 // popup — no navigation to /onboarding, no redirect_uri round-trip.
@@ -69,10 +70,16 @@ export default function DataAndBackup() {
   }, [businessId]);
 
   const onResetFresh = useCallback(async (): Promise<void> => {
+    const release = beginAppOperation({
+      kind: 'start-fresh',
+      label: 'Start Fresh',
+      cancelable: false,
+    });
     try {
       await resetAppToFreshState();
       window.location.assign(`${import.meta.env.BASE_URL}onboarding`);
     } catch (err) {
+      release();
       setReconnectError(err instanceof Error ? err.message : String(err));
     }
   }, []);

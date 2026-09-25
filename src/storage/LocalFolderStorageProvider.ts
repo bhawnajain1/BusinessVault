@@ -74,7 +74,15 @@ function makeNodeBackend(rootPath: string): FsBackend {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const nodePath = require('node:path') as typeof import('node:path');
 
-  const abs = (p: string): string => nodePath.join(rootPath, p);
+  const abs = (p: string): string => {
+    const normalized = validateRelativePath(p);
+    const root = nodePath.resolve(rootPath);
+    const target = nodePath.resolve(root, normalized || '.');
+    if (target !== root && !target.startsWith(`${root}${nodePath.sep}`)) {
+      throw new Error(`Path escapes selected backup folder: ${p}`);
+    }
+    return target;
+  };
 
   return {
     kind: 'node',
@@ -135,11 +143,12 @@ type DirHandle = FileSystemDirectoryHandle;
 
 function makeFsApiBackend(root: DirHandle): FsBackend {
   async function resolveDir(path: string, create: boolean): Promise<DirHandle> {
-    if (path === '' || path === '.') return root;
+    const safePath = validateRelativePath(path);
+    if (safePath === '') return root;
     // File System Access rejects '.' as a directory name. Directly selected
     // business folders use '.' as their provider-relative root path, so drop
     // dot segments before resolving the remaining path.
-    const parts = path.split('/').filter((part) => part && part !== '.');
+    const parts = safePath.split('/');
     if (parts.length === 0) return root;
     let cur: DirHandle = root;
     for (const part of parts) {
@@ -381,7 +390,22 @@ async function reRequestPermission(handle: DirHandle): Promise<boolean> {
 
 function safeBusinessSlug(name: string): string {
   // Keep it human-readable but filesystem-safe.
-  return name.trim().replace(/[/\\:*?"<>|]/g, '_');
+  const slug = name.trim().replace(/[/\\:*?"<>|]/g, '_');
+  if (!slug || slug === '.' || slug === '..') {
+    throw new Error('Business name cannot resolve to an unsafe backup folder name');
+  }
+  return slug;
+}
+
+function validateRelativePath(path: string): string {
+  if (path.includes('\\') || path.startsWith('/') || /^[A-Za-z]:/.test(path)) {
+    throw new Error(`Backup path must be relative: ${path}`);
+  }
+  const parts = path.split('/');
+  if (parts.some((part) => part === '..')) {
+    throw new Error(`Backup path traversal rejected: ${path}`);
+  }
+  return parts.filter((part) => part && part !== '.').join('/');
 }
 
 function journalPathFor(businessFolder: string, ts: string): {
@@ -582,6 +606,20 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
     }
 
     const reused = await fs.exists(folderPath);
+
+    if (reused && (await fs.exists(`${folderPath}/metadata/manifest.json`))) {
+      let existingManifest: { businessId?: string };
+      try {
+        existingManifest = JSON.parse(
+          await fs.readFileText(`${folderPath}/metadata/manifest.json`),
+        ) as { businessId?: string };
+      } catch {
+        throw new Error('Existing backup manifest is invalid JSON');
+      }
+      if (existingManifest.businessId && existingManifest.businessId !== input.businessId) {
+        throw new Error('Existing backup folder belongs to a different business');
+      }
+    }
 
     // Full folder tree.
     const dirs = [

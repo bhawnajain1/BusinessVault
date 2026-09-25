@@ -96,6 +96,8 @@ export interface RebuildOptions {
    * acknowledged the loss.
    */
   confirmDataLoss?: boolean;
+  /** Abort a restore before or between destructive/replay phases. */
+  signal?: AbortSignal;
 }
 
 export interface RestoreReport {
@@ -106,6 +108,12 @@ export interface RestoreReport {
   migratedFrom?: number;
   snapshotUsed?: SnapshotHandle;
   counts: Record<string, number>;
+  sourceCounts: Record<string, number>;
+  countReconciliation: {
+    exact: boolean;
+    compared: boolean;
+    mismatches: Record<string, { source: number; restored: number }>;
+  };
   eventsReplayed: number;
   unhandledEvents: number;
   checksumsOk: boolean;
@@ -173,6 +181,13 @@ export async function rebuildFromDrive(
   opts: RebuildOptions,
 ): Promise<RestoreReport> {
   const progress = opts.onProgress ?? (() => undefined);
+  const throwIfAborted = (): void => {
+    if (opts.signal?.aborted) {
+      const error = new Error('Restore cancelled. Local data was restored to its previous state.');
+      error.name = 'AbortError';
+      throw error;
+    }
+  };
   const restoreStartedAt = Date.now();
   log.info('restore.start', 'restore: started', {
     providerKind: opts.providerConfig.kind,
@@ -181,6 +196,7 @@ export async function rebuildFromDrive(
 
   // 1. connect
   progress('Connecting to storage provider', 5);
+  throwIfAborted();
   if (!opts.preConnectedProvider) {
     await provider.connect(opts.providerConfig);
   }
@@ -191,6 +207,7 @@ export async function rebuildFromDrive(
 
   // 2. locate BusinessVault and pick a business
   progress('Locating BusinessVault folder', 10);
+  throwIfAborted();
   const businesses = await discoverBusinesses(provider);
   log.info('restore.businesses.discovered', 'restore: businesses discovered', {
     count: businesses.length,
@@ -210,6 +227,9 @@ export async function rebuildFromDrive(
     }
     selected = await opts.pickBusiness({ businesses });
   }
+  if (!businesses.some((candidate) => candidate === selected || candidate.businessId === selected.businessId)) {
+    throw new Error('Selected restore business is not one of the discovered backup businesses');
+  }
   log.info('restore.business.selected', 'restore: business selected', {
     businessId: selected.businessId,
     schemaVersion: selected.schemaVersion,
@@ -225,7 +245,14 @@ export async function rebuildFromDrive(
 
   // 3. read + validate manifest
   progress('Reading manifest', 15);
+  throwIfAborted();
   const manifest = await readManifest(provider, selected);
+  if (manifest.businessId && manifest.businessId !== selected.businessId) {
+    throw new BackupIntegrityError('Backup manifest business identity does not match selected business', {
+      expected: selected.businessId,
+      actual: manifest.businessId,
+    });
+  }
   const foundSchema = Number(manifest.schemaVersion ?? selected.schemaVersion ?? 0);
   if (foundSchema > CURRENT_SCHEMA_VERSION) {
     throw new UnsupportedSchemaError(foundSchema, CURRENT_SCHEMA_VERSION);
@@ -233,6 +260,7 @@ export async function rebuildFromDrive(
 
   // 4. checksum verification (spec §7)
   progress('Verifying backup integrity', 25);
+  throwIfAborted();
   const integrity = await provider.verifyIntegrity();
   const checksumsOk = integrity.ok;
   if (!checksumsOk) {
@@ -275,6 +303,7 @@ export async function rebuildFromDrive(
 
   // 5. pick + load the latest verified snapshot
   progress('Loading latest backup', 40);
+  throwIfAborted();
   const snapshotIndex = await pickLatestVerifiedSnapshot(provider);
   let snapshotTables: SnapshotTables = emptyTables();
   let snapshotHandle: SnapshotHandle | undefined;
@@ -296,6 +325,7 @@ export async function rebuildFromDrive(
       }
     }
     const parsedTables = await parseSnapshotFiles(snap.files);
+    validateSnapshotTables(parsedTables, selected.businessId);
     const snapSchema = Number(snap.manifest.schemaVersion ?? foundSchema);
     if (snapSchema > CURRENT_SCHEMA_VERSION) {
       throw new UnsupportedSchemaError(snapSchema, CURRENT_SCHEMA_VERSION);
@@ -366,10 +396,12 @@ export async function rebuildFromDrive(
   const diagnostics: string[] = [];
   let replayed = 0;
   let unhandled = 0;
+  const previousState = await captureSelectedBusinessState(opts.db, selected.businessId);
   try {
     // Replace only the selected business under one transaction. Other local
     // businesses may have independent unsynced work and must remain untouched.
     progress('Rebuilding local database', 55);
+    throwIfAborted();
     await opts.db.transaction(
       'rw',
       tableNames(),
@@ -418,6 +450,7 @@ export async function rebuildFromDrive(
     // awaited handler operations, which Dexie reports as "Transaction
     // committed too early" on larger Google Drive restores.
     for (const evt of events) {
+      throwIfAborted();
       try {
         let wasApplied = false;
         await opts.db.transaction('rw', tableNames(), async () => {
@@ -448,6 +481,9 @@ export async function rebuildFromDrive(
         );
       }
     }
+    if (diagnostics.length > 0) {
+      throw new Error(`Restore replay failed for ${diagnostics.length} event(s)`);
+    }
     log.info('restore.replay.complete', 'restore: journal replay complete', {
       businessId: selected.businessId,
       eventCount: events.length,
@@ -458,11 +494,18 @@ export async function rebuildFromDrive(
 
     // 7. rebuild derived caches
     progress('Rebuilding derived tables', 80);
+    throwIfAborted();
     await rebuildItemStockFromMovements(opts.db, selected.businessId);
     await rebuildDocumentSettlementBalances(opts.db, selected.businessId);
     log.info('restore.derived.complete', 'restore: derived caches rebuilt', {
       businessId: selected.businessId,
     });
+  } catch (err) {
+    // Snapshot replacement commits before replay so large restores do not hit
+    // IndexedDB's transaction lifetime limit. If replay or derived rebuild
+    // fails, restore the pre-restore rows before surfacing the failure.
+    await restoreSelectedBusinessState(opts.db, selected.businessId, previousState);
+    throw err;
   } finally {
     dbWithFlag.__bvSuppressLowStock = false;
   }
@@ -477,10 +520,10 @@ export async function rebuildFromDrive(
   const repairedJournalHeaders = await repairLegacyJournalHeaders(selected.businessId, opts.db);
   if (repairedJournalHeaders.length > 0) {
     issues.push({
-      severity: 'warning',
+      severity: 'info',
       code: 'LEGACY_JOURNAL_HEADER_TOTALS_REPAIRED',
       message:
-        'Legacy journal header totals were corrected from their balanced journal lines.',
+        'Legacy journal header totals were normalized from their balanced journal lines.',
       detail: { entries: repairedJournalHeaders.slice(0, 20) },
     });
   }
@@ -537,7 +580,32 @@ export async function rebuildFromDrive(
   }
 
   // 9. counts + report
+  // A local-folder restore must not resurrect a historical Google Drive
+  // connection from businesses.csv. OAuth tokens were intentionally cleared
+  // during a fresh reset, so retaining the old folder id would make the next
+  // boot select Drive and show a stale "Open My Google Drive Folder" link.
+  if (opts.providerConfig.kind === 'local-folder') {
+    await opts.db.businesses.update(selected.businessId, {
+      drive_folder_id: null,
+      drive_connected_email: null,
+    });
+  }
   const counts = await countTables(opts.db, selected.businessId);
+  const sourceCounts = expectedCountsAfterJournal(snapshotTables, events);
+  const countReconciliation = reconcileCounts(sourceCounts, counts);
+  if (!countReconciliation.exact) {
+    log.error('restore.count-mismatch', 'restore: source and local counts differ', {
+      businessId: selected.businessId,
+      sourceCounts,
+      restoredCounts: counts,
+      mismatches: countReconciliation.mismatches,
+    });
+    await restoreSelectedBusinessState(opts.db, selected.businessId, previousState);
+    throw new BackupIntegrityError(
+      'Restore count verification failed. Local data was left unchanged.',
+      { sourceCounts, restoredCounts: counts, mismatches: countReconciliation.mismatches },
+    );
+  }
   const report = makeDiagnosticReport({
     businessId: selected.businessId,
     counts,
@@ -573,6 +641,8 @@ export async function rebuildFromDrive(
     migratedFrom,
     snapshotUsed: snapshotHandle,
     counts,
+    sourceCounts,
+    countReconciliation,
     eventsReplayed: replayed,
     unhandledEvents: unhandled,
     checksumsOk,
@@ -666,6 +736,51 @@ function tableNames(): string[] {
   ];
 }
 
+type SelectedBusinessState = Record<string, unknown[]>;
+
+async function captureSelectedBusinessState(
+  db: BusinessVaultDB,
+  businessId: string,
+): Promise<SelectedBusinessState> {
+  const state: SelectedBusinessState = {};
+  await db.transaction('r', tableNames(), async () => {
+    for (const tableName of tableNames()) {
+      const table = (db as unknown as Record<string, { toArray(): Promise<unknown[]> }>)[tableName];
+      if (!table) continue;
+      const rows = await table.toArray();
+      state[tableName] = rows.filter((row) => {
+        if (tableName === 'businesses') return (row as { id?: string }).id === businessId;
+        return (row as { business_id?: string }).business_id === businessId;
+      });
+    }
+  });
+  return state;
+}
+
+async function restoreSelectedBusinessState(
+  db: BusinessVaultDB,
+  businessId: string,
+  state: SelectedBusinessState,
+): Promise<void> {
+  await db.transaction('rw', tableNames(), async () => {
+    for (const tableName of tableNames()) {
+      const table = (db as unknown as Record<string, {
+        delete(key: string): Promise<void>;
+        where(k: string): { equals(v: unknown): { delete(): Promise<number> } };
+        bulkPut(rows: unknown[]): Promise<unknown>;
+      }>)[tableName];
+      if (!table) continue;
+      if (tableName === 'businesses') {
+        await db.businesses.delete(businessId);
+      } else {
+        await table.where('business_id').equals(businessId).delete();
+      }
+      const rows = state[tableName];
+      if (rows?.length) await table.bulkPut(rows);
+    }
+  });
+}
+
 function emptyTables(): SnapshotTables {
   const t: SnapshotTables = {};
   for (const spec of TABLE_SPECS) t[spec.store] = [];
@@ -681,13 +796,44 @@ async function parseSnapshotFiles(
     if (!spec) continue; // unknown file — snapshot is a superset of what we import
     const text = await blobToText(f.content);
     const parsed = parseCsv(text);
+    const expected = new Set(spec.columns.map((column) => column.name));
+    for (const required of spec.required ?? [spec.pk]) {
+      if (!parsed.headers.includes(required)) {
+        throw new Error(`Snapshot ${f.name} is missing required column '${required}'`);
+      }
+    }
+    for (const header of parsed.headers) {
+      if (!expected.has(header)) {
+        throw new Error(`Snapshot ${f.name} contains unknown column '${header}'`);
+      }
+    }
     const rows: Record<string, unknown>[] = [];
+    const primaryKeys = new Set<string>();
     for (const raw of parsed.rows) {
-      rows.push(coerceRow(raw, spec));
+      const row = coerceRow(raw, spec);
+      const key = String(row[spec.pk] ?? '');
+      if (!key) throw new Error(`Snapshot ${f.name} contains a blank primary key`);
+      if (primaryKeys.has(key)) throw new Error(`Snapshot ${f.name} contains duplicate primary key '${key}'`);
+      primaryKeys.add(key);
+      rows.push(row);
     }
     out[spec.store] = rows;
   }
   return out;
+}
+
+function validateSnapshotTables(tables: SnapshotTables, businessId: string): void {
+  for (const spec of TABLE_SPECS) {
+    for (const row of tables[spec.store] ?? []) {
+      if (spec.store === 'businesses') {
+        if (row.id !== businessId) {
+          throw new Error(`Snapshot ${spec.file} contains a different business '${String(row.id)}'`);
+        }
+      } else if (row.business_id !== businessId) {
+        throw new Error(`Snapshot ${spec.file} contains a row for another business`);
+      }
+    }
+  }
 }
 
 async function blobToText(blob: Blob): Promise<string> {
@@ -1133,6 +1279,138 @@ async function countTables(
     }
   }
   return counts;
+}
+
+function countSnapshotTables(
+  snapshotTables: SnapshotTables | null,
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const spec of TABLE_SPECS) {
+    counts[spec.store] = snapshotTables?.[spec.store]?.length ?? 0;
+  }
+  return counts;
+}
+
+const JOURNAL_ENTITY_STORE: Record<string, string> = {
+  business: 'businesses',
+  customer: 'customers',
+  customer_item_price: 'customer_item_prices',
+  supplier: 'suppliers',
+  category: 'categories',
+  unit: 'units',
+  warehouse: 'warehouses',
+  item: 'items',
+  invoice: 'invoices',
+  invoice_line: 'invoice_lines',
+  purchase: 'purchases',
+  purchase_line: 'purchase_lines',
+  payment: 'payments',
+  expense: 'expenses',
+  advance: 'advances',
+  stock_movement: 'stock_movements',
+  account: 'accounts',
+  journal_entry: 'journal_entries',
+  journal_line: 'journal_lines',
+  sales_return: 'sales_returns',
+  sales_return_item: 'sales_return_items',
+};
+
+function expectedCountsAfterJournal(
+  snapshotTables: SnapshotTables,
+  events: SyncEvent[],
+): Record<string, number> {
+  const ids = new Map<string, Set<string>>();
+  const counts = countSnapshotTables(snapshotTables);
+  for (const spec of TABLE_SPECS) {
+    const rows = snapshotTables[spec.store] ?? [];
+    ids.set(spec.store, new Set(rows.map((row) => String(row[spec.pk]))));
+  }
+
+  for (const event of events) {
+    const store = JOURNAL_ENTITY_STORE[event.entity_type];
+    if (!store) continue;
+    const storeIds = ids.get(store);
+    if (!storeIds) continue;
+    const payload = event.payload as Record<string, unknown>;
+    const id = String(payload.id ?? event.entity_id ?? '');
+    if (!id) continue;
+
+    if (event.entity_type === 'invoice' && event.operation === 'delete' && payload.permanently_deleted === true) {
+      if (storeIds.delete(id)) counts[store]--;
+      removeRelatedJournalRows(snapshotTables, ids, counts, event, id);
+      continue;
+    }
+
+    const putsOnUpdate = event.entity_type === 'invoice_line' ||
+      event.entity_type === 'purchase_line' ||
+      event.entity_type === 'journal_entry' ||
+      event.entity_type === 'journal_line' ||
+      event.entity_type === 'stock_movement';
+    const addsRow = event.operation === 'create' ||
+      (event.operation === 'update' && putsOnUpdate);
+    if (addsRow && !storeIds.has(id) && event.entity_type !== 'invoice') {
+      storeIds.add(id);
+      counts[store] = (counts[store] ?? 0) + 1;
+    } else if (addsRow && !storeIds.has(id) && event.entity_type === 'invoice' && payload.invoice_id === undefined) {
+      storeIds.add(id);
+      counts[store] = (counts[store] ?? 0) + 1;
+    }
+  }
+
+  const stockKeys = new Set(
+    (snapshotTables.stock_movements ?? []).map((row) =>
+      `${row.item_id}:${row.warehouse_id}`,
+    ),
+  );
+  for (const event of events) {
+    if (event.entity_type !== 'stock_movement') continue;
+    const row = event.payload as Record<string, unknown>;
+    if (row.item_id !== undefined && row.warehouse_id !== undefined) {
+      stockKeys.add(`${row.item_id}:${row.warehouse_id}`);
+    }
+  }
+  counts.item_stock = stockKeys.size;
+  return counts;
+}
+
+function removeRelatedJournalRows(
+  snapshotTables: SnapshotTables,
+  ids: Map<string, Set<string>>,
+  counts: Record<string, number>,
+  event: SyncEvent,
+  invoiceId: string,
+): void {
+  const payload = event.payload as Record<string, unknown>;
+  const remove = (store: string, rowId: string): void => {
+    const storeIds = ids.get(store);
+    if (storeIds?.delete(rowId)) counts[store]--;
+  };
+  for (const row of snapshotTables.invoice_lines ?? []) {
+    if (row.invoice_id === invoiceId) remove('invoice_lines', String(row.id));
+  }
+  for (const key of ['cascaded_payment_ids', 'cascaded_advance_ids']) {
+    const store = key === 'cascaded_payment_ids' ? 'payments' : 'advances';
+    for (const id of Array.isArray(payload[key]) ? payload[key] as unknown[] : []) {
+      remove(store, String(id));
+    }
+  }
+}
+
+function reconcileCounts(
+  sourceCounts: Record<string, number>,
+  restoredCounts: Record<string, number>,
+): RestoreReport['countReconciliation'] {
+  const mismatches: Record<string, { source: number; restored: number }> = {};
+  for (const spec of TABLE_SPECS) {
+    const source = sourceCounts[spec.store] ?? 0;
+    const restored = restoredCounts[spec.store] ?? 0;
+    if (source !== restored) mismatches[spec.store] = { source, restored };
+  }
+  return {
+    exact: Object.keys(mismatches).length === 0,
+    compared: true,
+    mismatches,
+  };
 }
 
 // ---------------------------------------------------------------------------

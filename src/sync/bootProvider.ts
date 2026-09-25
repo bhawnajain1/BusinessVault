@@ -147,6 +147,7 @@ async function tryBootDrive(business: Business): Promise<boolean> {
     activeBusinessIdBound = business.id;
     setActiveProvider(provider);
     installWorker(startSyncWorker({
+      businessId: business.id,
       provider,
       onStateChange: (h) => emit({ health: h }),
     }));
@@ -209,6 +210,7 @@ export async function reconnectWithUserGesture(
       activeBusinessIdBound = business.id;
       setActiveProvider(provider);
       installWorker(startSyncWorker({
+        businessId: business.id,
         provider,
         onStateChange: (h) => emit({ health: h }),
       }));
@@ -245,6 +247,7 @@ export async function reconnectWithUserGesture(
     activeBusinessIdBound = business.id;
     setActiveProvider(provider);
     installWorker(startSyncWorker({
+      businessId: business.id,
       provider,
       onStateChange: (h) => emit({ health: h }),
     }));
@@ -279,6 +282,7 @@ async function bootWithHandle(
     activeBusinessIdBound = business.id;
     setActiveProvider(provider);
     installWorker(startSyncWorker({
+      businessId: business.id,
       provider,
       onStateChange: (h) => emit({ health: h }),
     }));
@@ -317,6 +321,7 @@ export function adoptConnectedProvider(
     : 'google-drive';
   setActiveProvider(provider);
   installWorker(startSyncWorker({
+    businessId: boundBusinessId,
     provider,
     onStateChange: (h) => emit({ health: h }),
   }));
@@ -328,6 +333,19 @@ export function stopSyncWorker(): void {
   if (workerHandle) {
     workerHandle.stop();
     workerHandle = null;
+  }
+  activeBusinessIdBound = null;
+  setActiveProvider(null);
+  emit({ status: 'idle', error: null, kind: null });
+}
+
+/** Stop scheduling and wait for the active provider operation to finish. */
+export async function stopSyncWorkerAsync(): Promise<void> {
+  const handle = workerHandle;
+  if (handle) {
+    handle.stop();
+    await handle.stopAsync();
+    if (workerHandle === handle) workerHandle = null;
   }
   activeBusinessIdBound = null;
   setActiveProvider(null);
