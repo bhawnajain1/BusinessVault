@@ -25,6 +25,7 @@ import { connectDrive, disconnectDrive } from '../../drive/connectDrive';
 import { buildDriveProvider } from '../onboarding/driveGlue';
 import { hasGoogleClientId } from '../../auth/gis';
 import { log } from '../../lib/log';
+import { beginAppOperation, updateAppOperation } from '../../lib/operationLock';
 import type {
   ConnectionStatus,
   IntegrityReport,
@@ -264,10 +265,18 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
     }
     setBusy('backup');
     setMessage('Preparing backup…');
+    let releaseOperation: (() => void) | null = null;
     try {
       if (!business) {
         throw new Error('Business is still loading.');
       }
+      releaseOperation = beginAppOperation({
+        kind: 'backup',
+        label: 'Backup',
+        cancelable: false,
+        progress: 5,
+        message: 'Preparing backup…',
+      });
       // The user may have deleted the vault in Drive while this tab was open.
       // Re-run initialization so the provider rediscovers or recreates the
       // remote folder instead of using its stale cached folder id.
@@ -287,49 +296,128 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
        // second manual backup on the same day look like an idempotent retry.
        const asOf = new Date().toISOString().replace(/:/g, '-');
       const input = await buildSnapshotInput(db, businessId, business.name, 'ondemand', asOf);
-      const job = await enqueue({
+       const job = await enqueue({
         businessId,
         kind: 'snapshot',
         payload: { input },
       });
-      pokeSyncWorker();
-      setMessage('Backup uploading to Google Drive…');
+       pokeSyncWorker();
+       const destination = business.drive_folder_id == null ? 'local backup folder' : 'Google Drive';
+       setMessage(`Backup writing to ${destination}…`);
+       updateAppOperation({ progress: 35, message: `Backup queued for ${destination}…` });
       // Poll the queued job until it lands. Backup jobs typically take
       // 60-120s wall-clock; a fire-and-forget toast used to leave the user
       // wondering whether it had failed. Poll every 750ms — cheap indexeddb
       // read — and terminate on done/failed/timeout.
-      const startedAt = Date.now();
-      const TIMEOUT_MS = 10 * 60 * 1000; // 10 min hard ceiling
+       const startedAt = Date.now();
+       const TIMEOUT_MS = 10 * 60 * 1000; // 10 min hard ceiling
       // eslint-disable-next-line no-constant-condition
       while (true) {
         const row = await db.sync_queue.get(job.id);
         if (!row) {
           throw new Error('Backup job disappeared before successful completion. Nothing was cleared.');
         }
-        if (row.status === 'done') {
-           setMessage('Backup complete.');
-          return true;
+         if (row.status === 'done') {
+            setMessage('Backup complete.');
+            updateAppOperation({ progress: 100, message: 'Backup complete.' });
+           return true;
         }
-        if (row.status === 'failed') {
-           setError(`Backup failed: ${row.last_error ?? 'unknown error'}`);
-          return false;
+         if (row.status === 'failed') {
+            setError(`Backup failed: ${row.last_error ?? 'unknown error'}`);
+            updateAppOperation({ message: 'Backup failed.' });
+           return false;
         }
-        if (Date.now() - startedAt > TIMEOUT_MS) {
-           setError('Backup is still running after 10 minutes. Check back later — it may finish in the background.');
-          return false;
-        }
-        if (row.status === 'running') {
-          setMessage(`Backup uploading… (attempt ${row.attempts + 1})`);
-        }
+         if (Date.now() - startedAt > TIMEOUT_MS) {
+            setError(`Backup is still running after 10 minutes. Check the ${destination} and try again later.`);
+           return false;
+         }
+         if (row.status === 'running') {
+           const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+           const phase = destination === 'local backup folder' ? 'writing files' : 'uploading';
+            const progress = destination === 'local backup folder' ? 65 : 70;
+            const statusMessage = `Backup ${phase}… ${elapsedSeconds}s (attempt ${row.attempts + 1})`;
+            setMessage(statusMessage);
+            updateAppOperation({ progress, message: statusMessage });
+         } else if (row.status === 'pending') {
+            const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+            const statusMessage = `Backup is queued… ${elapsedSeconds}s`;
+            setMessage(statusMessage);
+            updateAppOperation({ progress: 35, message: statusMessage });
+         }
         await new Promise((r) => setTimeout(r, 750));
       }
     } catch (e) {
       setError((e as Error).message);
       return false;
     } finally {
+      releaseOperation?.();
       setBusy(null);
     }
   }, [businessId, business, onReconnect]);
+
+  const backupAllBusinessesBeforeReset = useCallback(async (): Promise<void> => {
+    const businesses = await db.businesses.toArray();
+    if (businesses.length === 0) throw new Error('No businesses found on this device. Nothing was cleared.');
+
+    for (let index = 0; index < businesses.length; index++) {
+      const target = businesses[index];
+      setMessage(`Backing up business ${index + 1} of ${businesses.length}: ${target.name}…`);
+
+      if (!target.drive_folder_id) {
+        const identity = await connectDrive({ businessId: target.id, prompt: 'consent' });
+        await db.businesses.update(target.id, {
+          drive_connected_email: identity.identity.email,
+          updated_at: new Date().toISOString(),
+        });
+      }
+      const provider = await buildDriveProvider(target.id);
+      const initialized = await provider.initializeBusiness({
+        businessId: target.id,
+        businessName: target.name,
+      });
+      await db.businesses.update(target.id, {
+        drive_folder_id: initialized.providerFolderId,
+        updated_at: new Date().toISOString(),
+      });
+      stopSyncWorker();
+      adoptConnectedProvider(provider, target.id);
+
+      const status = await provider.connectionStatus();
+      if (status.state !== 'CONNECTED') {
+        throw new Error(`Google Drive is not connected for '${target.name}'. Nothing was cleared.`);
+      }
+
+      const asOf = new Date().toISOString().replace(/:/g, '-');
+      const input = await buildSnapshotInput(db, target.id, target.name, 'ondemand', asOf);
+      const job = await enqueue({
+        businessId: target.id,
+        kind: 'snapshot',
+        payload: { input },
+      });
+      pokeSyncWorker();
+
+      const startedAt = Date.now();
+      while (true) {
+        const row = await db.sync_queue.get(job.id);
+        if (!row) throw new Error(`Backup job disappeared for '${target.name}'. Nothing was cleared.`);
+        if (row.status === 'done') break;
+        if (row.status === 'failed') {
+          throw new Error(`Final backup failed for '${target.name}': ${row.last_error ?? 'unknown error'}. Nothing was cleared.`);
+        }
+        if (Date.now() - startedAt > 10 * 60 * 1000) {
+          throw new Error(`Final backup timed out for '${target.name}'. Nothing was cleared.`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 750));
+      }
+
+      const integrity = await provider.verifyIntegrity();
+      if (!integrity.ok) {
+        throw new Error(
+          `Final backup failed integrity verification for '${target.name}' (${integrity.issues.length} issue${integrity.issues.length === 1 ? '' : 's'}). Nothing was cleared.`,
+        );
+      }
+    }
+  }, [businessId]);
 
   const onBackupNow = useCallback(async (): Promise<void> => {
     await runBackup();
@@ -478,7 +566,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
     clearMessages();
     const confirmed = window.confirm(
       'Start fresh on this device?\n\n' +
-        'BusinessVault will first create a fresh backup in Google Drive. Only after that succeeds will this browser be signed out and cleared. ' +
+      'BusinessVault will first create a fresh Google Drive backup for every business on this device. Only after all backups succeed will this browser be signed out and cleared. ' +
         'Your existing local folder and Google Drive files will not be deleted.\n\n' +
         'Continue?',
     );
@@ -486,49 +574,11 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
 
     setBusy('start-fresh');
     try {
-      let current = await db.businesses.get(businessId);
-      if (!current) throw new Error('Business is still loading.');
+       const current = await db.businesses.get(businessId);
+       if (!current) throw new Error('Business is still loading.');
 
-      const localBusinesses = await db.businesses.toArray();
-      if (localBusinesses.length !== 1 || localBusinesses[0]?.id !== businessId) {
-        throw new Error(
-          'Start Fresh is blocked because this device has multiple businesses. Back up each business before clearing the browser.',
-        );
-      }
-
-      if (!current.drive_folder_id) {
-        setMessage('Google Drive is required. Connect it to continue.');
-        await onSwitchToDrive();
-        current = await db.businesses.get(businessId);
-        if (!current?.drive_folder_id) {
-          throw new Error('Google Drive connection was not completed. Nothing was cleared.');
-        }
-      } else if (!getActiveProvider()) {
-        setMessage('Reconnecting to Google Drive…');
-        await onReconnect?.();
-      }
-
-      const provider = getActiveProvider();
-      if (!provider || !current?.drive_folder_id) {
-        throw new Error('Google Drive is not connected. Nothing was cleared.');
-      }
-      const status = await provider.connectionStatus();
-      if (status.state !== 'CONNECTED') {
-        throw new Error('Google Drive is not connected. Nothing was cleared.');
-      }
-
-      setMessage('Creating final Google Drive backup…');
-      const backedUp = await runBackup();
-      if (!backedUp) {
-        throw new Error('Final Google Drive backup did not complete. Nothing was cleared.');
-      }
-
-      const integrity = await provider.verifyIntegrity();
-      if (!integrity.ok) {
-        throw new Error(
-          `Final Google Drive backup failed integrity verification (${integrity.issues.length} issue${integrity.issues.length === 1 ? '' : 's'}). Nothing was cleared.`,
-        );
-      }
+       setMessage('Creating final Google Drive backups…');
+       await backupAllBusinessesBeforeReset();
 
       setMessage('Backup complete. Clearing this browser…');
       await onResetFresh();
@@ -536,7 +586,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
       setError((e as Error).message);
       setBusy(null);
     }
-  }, [businessId, onReconnect, onResetFresh, runBackup]);
+  }, [businessId, backupAllBusinessesBeforeReset, onResetFresh]);
 
   const onSwitchToLocal = useCallback(async (): Promise<void> => {
     clearMessages();

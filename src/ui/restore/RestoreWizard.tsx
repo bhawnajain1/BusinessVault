@@ -20,7 +20,7 @@ import { connectDrive } from '../../drive/connectDrive';
 import { createDriveApiClient } from '../../drive/google';
 import { log } from '../../lib/log';
 import { downloadDebugLogs } from '../../lib/downloadLogs';
-import { beginAppOperation } from '../../lib/operationLock';
+import { beginAppOperation, updateAppOperation } from '../../lib/operationLock';
 import { stopSyncWorkerAsync, tryBootProvider } from '../../sync/bootProvider';
 
 type Step =
@@ -167,7 +167,10 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         kind: 'restore',
         label: 'Restore',
         cancelable: true,
-        cancel: () => abortController.abort(),
+        cancel: () => {
+          updateAppOperation({ message: 'Cancelling restore…' });
+          abortController.abort();
+        },
       });
       setStep('connecting');
       setError(null);
@@ -210,14 +213,30 @@ export default function RestoreWizard(props: RestoreWizardProps) {
             setStatusMessage(msg);
             appendLog(`Progress: ${msg}${pct != null ? ` (${pct}%)` : ''}`);
             if (pct != null) setProgressPct(pct);
+            updateAppOperation({ message: msg, progress: pct });
           },
           signal: abortController.signal,
           pickBusiness: async (ctx) => {
             appendLog(`Found ${ctx.businesses.length} businesses: ${ctx.businesses.map((b) => b.businessName).join(', ')}`);
             setBusinesses(ctx.businesses);
             setStep('picking');
-            return await new Promise<DiscoveredBusiness>((resolve) => {
-              setPickerResolve(() => resolve);
+            return await new Promise<DiscoveredBusiness>((resolve, reject) => {
+              const onAbort = (): void => {
+                abortController.signal.removeEventListener('abort', onAbort);
+                setPickerResolve(null);
+                const error = new Error('Restore cancelled; local data was left unchanged.');
+                error.name = 'AbortError';
+                reject(error);
+              };
+              if (abortController.signal.aborted) {
+                onAbort();
+                return;
+              }
+              abortController.signal.addEventListener('abort', onAbort, { once: true });
+              setPickerResolve(() => (business: DiscoveredBusiness) => {
+                abortController.signal.removeEventListener('abort', onAbort);
+                resolve(business);
+              });
             });
           },
         });
@@ -227,6 +246,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         // Restore replaces IndexedDB rows underneath the mounted application.
         // Reload so list pages and cached live queries read the restored rows
         // instead of retaining the pre-restore in-memory view.
+        release();
         window.setTimeout(() => window.location.reload(), 0);
       } catch (err) {
         release();
@@ -259,7 +279,10 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         }
         const msg = (err as Error).message;
         appendLog(`Failed: ${msg}`);
-        setError(msg);
+        setError(
+          msg ||
+            'Restore failed during journal replay. Open the diagnostic log to identify the affected event.',
+        );
         setStep('error');
       }
     },

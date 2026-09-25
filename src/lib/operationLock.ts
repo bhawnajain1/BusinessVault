@@ -1,12 +1,14 @@
 import { useSyncExternalStore } from 'react';
 
-export type AppOperationKind = 'restore' | 'start-fresh';
+export type AppOperationKind = 'restore' | 'backup' | 'start-fresh';
 
 export interface AppOperation {
   kind: AppOperationKind;
   label: string;
   cancelable: boolean;
   cancel: () => void;
+  progress?: number;
+  message?: string;
 }
 
 let active: AppOperation | null = null;
@@ -33,6 +35,12 @@ export function beginAppOperation(operation: Omit<AppOperation, 'cancel'> & { ca
 
 export function getAppOperation(): AppOperation | null {
   return active;
+}
+
+export function updateAppOperation(patch: Partial<Pick<AppOperation, 'progress' | 'message'>>): void {
+  if (!active) return;
+  active = { ...active, ...patch };
+  notify();
 }
 
 export function subscribeAppOperation(listener: () => void): () => void {

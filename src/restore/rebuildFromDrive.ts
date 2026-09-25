@@ -482,7 +482,11 @@ export async function rebuildFromDrive(
       }
     }
     if (diagnostics.length > 0) {
-      throw new Error(`Restore replay failed for ${diagnostics.length} event(s)`);
+      throw new Error(
+        `Restore replay failed for ${diagnostics.length} event(s): ${diagnostics
+          .slice(0, 5)
+          .join(' | ')}`,
+      );
     }
     log.info('restore.replay.complete', 'restore: journal replay complete', {
       businessId: selected.businessId,
@@ -717,6 +721,7 @@ function tableNames(): string[] {
     'item_stock',
     'invoices',
     'invoice_lines',
+    'invoice_line_return_summary',
     'purchases',
     'purchase_lines',
     'payments',
