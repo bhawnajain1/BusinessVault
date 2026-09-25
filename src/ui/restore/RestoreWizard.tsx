@@ -9,6 +9,7 @@ import type {
 import {
   rebuildFromDrive,
   renderDiagnosticReport,
+  BackupIntegrityError,
   EmptyBackupError,
   UnshippedEventsError,
   type DiscoveredBusiness,
@@ -69,6 +70,8 @@ export default function RestoreWizard(props: RestoreWizardProps) {
   const [driveConnecting, setDriveConnecting] = useState(false);
   const [driveConnectedEmail, setDriveConnectedEmail] = useState<string | null>(null);
   const [driveError, setDriveError] = useState<string | null>(null);
+  const [connectedDriveProvider, setConnectedDriveProvider] =
+    useState<CustomerStorageProvider | null>(null);
 
   const [step, setStep] = useState<Step>('idle');
   const [statusMessage, setStatusMessage] = useState('');
@@ -154,8 +157,16 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       log.info('restore', 'connecting Google Drive (GIS popup)');
       const result = await connectDrive({
         businessId: RESTORE_BUSINESS_ID,
-        prompt: 'select_account',
+        prompt: 'consent',
       });
+      const api = createDriveApiClient({ businessId: RESTORE_BUSINESS_ID });
+      const provider = new GoogleDriveStorageProvider({ driveApi: api });
+      await provider.connect({
+        kind: 'google-drive',
+        clientId: env.googleClientId,
+        scope: 'drive.file',
+      });
+      setConnectedDriveProvider(provider);
       setDriveConnectedEmail(result.identity.email);
       appendLog(`Google Drive connected as ${result.identity.email}.`);
     } catch (err) {
@@ -206,7 +217,11 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       });
       appendLog(confirmDataLoss ? 'Restore restarted with data-loss confirmed.' : 'Restore started.');
 
-      let provider: CustomerStorageProvider | null = props.provider ?? null;
+      let provider: CustomerStorageProvider | null =
+        props.provider ?? (providerKind === 'google-drive' ? connectedDriveProvider : null);
+      const preConnectedProvider = provider === connectedDriveProvider && connectedDriveProvider
+        ? connectedDriveProvider
+        : undefined;
       if (!provider) {
         if (providerKind === 'local-folder') {
           provider = new LocalFolderStorageProvider();
@@ -239,6 +254,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         const result = await rebuildFromDrive(provider, {
           db,
           providerConfig,
+          preConnectedProvider,
           confirmDataLoss,
           onProgress: (msg, pct) => {
             setStatusMessage(msg);
@@ -336,6 +352,54 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           setStep('error');
           return;
         }
+        if (err instanceof BackupIntegrityError) {
+          const detail = err.detail as
+            | Array<{
+                code?: string;
+                message?: string;
+                path?: string;
+                detail?: unknown;
+              }>
+            | {
+                issues?: Array<{
+                  code?: string;
+                  message?: string;
+                  path?: string;
+                  detail?: unknown;
+                }>;
+              }
+            | null
+            | undefined;
+          // Initial integrity failures pass the provider's issue array
+          // directly; post-verification failures wrap issues in { issues }.
+          const issues = Array.isArray(detail)
+            ? detail
+            : Array.isArray(detail?.issues)
+              ? detail.issues
+              : [];
+          const issueText = issues
+            .slice(0, 5)
+            .map((issue) => {
+              const suffix =
+                typeof issue.detail === 'string'
+                  ? ` (${issue.detail})`
+                  : issue.detail && typeof issue.detail === 'object'
+                    ? ` (${Object.entries(issue.detail as Record<string, unknown>)
+                        .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+                        .join(', ')})`
+                    : '';
+              const path = issue.path ? ` [${issue.path}]` : '';
+              return `${issue.code ?? 'RESTORE_VALIDATION'}${path}: ${issue.message ?? 'validation failed'}${suffix}`;
+            })
+            .join('\n');
+          const msg = issueText
+            ? `${err.message}\n\n${issueText}`
+            : err.message;
+          appendLog(`Restore validation details:\n${issueText || 'No details returned.'}`);
+          setError(msg);
+          setStep('error');
+          return;
+        }
         const msg = (err as Error).message;
         log.error('restore-ui', 'restore error state scheduled', { message: msg });
         appendLog(`Failed: ${msg}`);
@@ -346,7 +410,16 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         setStep('error');
       }
     },
-    [db, providerConfig, providerKind, props.provider, pickedHandle, driveConnectedEmail, appendLog],
+    [
+      db,
+      providerConfig,
+      providerKind,
+      props.provider,
+      connectedDriveProvider,
+      pickedHandle,
+      driveConnectedEmail,
+      appendLog,
+    ],
   );
 
   const onStart = useCallback(() => runRestore(false), [runRestore]);

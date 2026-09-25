@@ -8,7 +8,11 @@ import { ulid } from 'ulid';
 
 import { BusinessVaultDB } from '../db/database';
 import { LocalFolderStorageProvider } from '../storage/LocalFolderStorageProvider';
-import { buildSnapshotInput, BACKUP_FORMAT_VERSION } from './buildSnapshotInput';
+import {
+  BackupSourceIntegrityError,
+  buildSnapshotInput,
+  BACKUP_FORMAT_VERSION,
+} from './buildSnapshotInput';
 import type {
   Business,
   Customer,
@@ -175,6 +179,30 @@ describe('buildSnapshotInput', () => {
     const input = await buildSnapshotInput(db, BID, BNAME, 'ondemand', '2026-08-26T10-01-00.000Z');
 
     expect(input.manifest.journalCheckpoint).toBe('01M0G4JP150NDHP8CP2RNTZZP9');
+  });
+
+  it('rejects a posted journal header without journal lines', async () => {
+    await db.journal_entries.add({
+      id: 'je-missing-lines',
+      business_id: BID,
+      entry_number: 'JE-1',
+      entry_date: '2026-08-26',
+      narration: 'Incomplete entry',
+      ref_type: 'manual',
+      ref_id: null,
+      reversed_by_id: null,
+      reverses_id: null,
+      total_debit_paise: 100,
+      total_credit_paise: 100,
+      posted: 1,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      entity_version: 1,
+    });
+
+    await expect(
+      buildSnapshotInput(db, BID, BNAME, 'ondemand', '2026-08-26'),
+    ).rejects.toBeInstanceOf(BackupSourceIntegrityError);
   });
 
   it('§20 emits CSVs for the new sales_returns / attachments / audit_log tables', async () => {

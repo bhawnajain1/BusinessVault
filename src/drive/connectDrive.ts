@@ -20,6 +20,7 @@ import {
   requestGisAccessToken,
   revokeGisToken,
   DRIVE_FILE_SCOPE,
+  hasRequiredDriveScopes,
 } from '../auth/gis';
 import { saveTokens, loadTokens, clearTokens } from './tokenStore';
 
@@ -99,6 +100,16 @@ export async function connectDrive(args: ConnectDriveArgs): Promise<ConnectDrive
     hint,
   });
 
+  if (!hasRequiredDriveScopes(token.scope)) {
+    log.warn('connectDrive', 'Google did not grant required Drive scopes', {
+      businessId: args.businessId,
+      grantedScope: token.scope,
+    });
+    throw new Error(
+      'Google account connected, but Drive permission was not granted. Choose Reconnect and approve the Google Drive access request.',
+    );
+  }
+
   const identity = await fetchUserInfo(token.accessToken);
   await saveTokens(
     args.businessId,
@@ -145,6 +156,15 @@ export async function silentRefreshDrive(businessId: string): Promise<string> {
         prompt: '',
         hint,
       });
+      if (!hasRequiredDriveScopes(token.scope)) {
+        log.warn('connectDrive', 'silent refresh returned insufficient Drive scopes', {
+          businessId,
+          grantedScope: token.scope,
+        });
+        throw new Error(
+          'Google account connected, but Drive permission was not granted. Choose Reconnect and approve the Google Drive access request.',
+        );
+      }
       await saveTokens(
         businessId,
         {

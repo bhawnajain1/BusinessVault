@@ -790,22 +790,29 @@ html:not(.dark) .text-slate-900 { color: #020617; }
 
 /* Data & Backup reference visual language. Keep this block last so the page
    matches the supplied design without changing any storage behavior. */
-.app-header { height: 72px; padding-left: 8px; }
-.app-header-brand { gap: 16px; font-size: 1rem; }
-.app-header-brand img { width: 42px; height: 42px; border-radius: 10px; }
-.app-sidebar { width: 284px; padding: 26px 8px; background: rgb(255 255 255 / 0.9); }
-.app-sidebar > ul { gap: 25px; }
+.app-header { height: 54px; padding-left: 8px; }
+.app-header-brand { gap: 12px; font-size: 0.95rem; }
+.app-header-brand img { width: 36px; height: 36px; border-radius: 9px; }
+.app-sidebar { width: 280px; padding: 18px 8px; background: rgb(255 255 255 / 0.9); }
+.app-sidebar > ul { gap: 18px; }
 
-.backup-settings-page { width: min(100%, 1240px); margin: 0; padding: 31px 34px 56px; }
-.backup-settings-header { margin-bottom: 28px; }
-.backup-settings-header h1 { color: #111b34; font-size: 2rem; line-height: 2.3rem; font-weight: 800; letter-spacing: -0.035em; }
-.backup-settings-intro { max-width: 700px; color: #64748b; font-size: 1rem; }
+.backup-settings-page { width: min(100%, 1320px); margin: 0; padding: 27px 36px 52px; }
+.backup-settings-header { margin-bottom: 20px; }
+.backup-settings-header h1 { color: #111b34; font-size: 2.35rem; line-height: 2.55rem; font-weight: 800; letter-spacing: -0.04em; }
+.backup-settings-intro { max-width: 700px; color: #64748b; font-size: 1.05rem; }
+.backup-settings-progress { display: flex; align-items: center; gap: 42px; margin-bottom: 18px; padding: 15px 34px; border: 1px solid #f2bd42; border-radius: 12px; background: linear-gradient(100deg, #fffdf5, #fff9e9); color: #111b34; }
+.backup-settings-progress strong, .backup-settings-progress span { display: block; }
+.backup-settings-progress strong { font-size: 1.15rem; }
+.backup-settings-progress span:not(.backup-settings-progress-spinner) { margin-top: 2px; color: #475569; font-size: 0.95rem; }
+.backup-settings-progress-spinner { width: 39px; height: 39px; border: 3px solid #dbeafe; border-right-color: #1473e6; border-bottom-color: #1473e6; border-radius: 50%; }
 .backup-settings-card { border-color: #dce4ef; border-radius: 12px; box-shadow: 0 9px 25px rgb(33 61 105 / 0.06); }
 .backup-settings-card-header { padding: 19px 24px; }
 .backup-settings-card-icon { width: 52px; height: 52px; flex-basis: 52px; border-radius: 0; background: transparent; }
 .backup-settings-card-icon img { width: 48px; height: 48px; object-fit: contain; }
 .backup-settings-card-header h2,
 .backup-settings-action-header h2 { color: #111b34; font-size: 1.35rem; font-weight: 800; letter-spacing: -0.025em; }
+.backup-settings-provider-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; margin-left: auto; }
+.backup-settings-provider-email { color: #334155; font-size: 0.9rem; }
 .backup-settings-detail-row { grid-template-columns: 280px minmax(0, 1fr); min-height: 68px; padding: 10px 28px; border-color: #e4eaf2; font-size: 1rem; }
 .backup-settings-detail-row dd { color: #111b34; }
 .backup-settings-drive-link { font-size: 1rem; }
@@ -828,6 +835,11 @@ html:not(.dark) .text-slate-900 { color: #020617; }
 .backup-settings-danger-zone > div { display: grid; grid-template-columns: 28px minmax(0, 1fr); column-gap: 12px; align-items: center; }
 .backup-settings-danger-zone > div > svg { grid-row: 1 / span 2; color: #dc2632; }
 .backup-settings-danger-zone > div > p { grid-column: 2; }
+.backup-settings-advanced { margin-top: 16px; padding: 10px 14px 14px; border: 1px solid #dce4ef; border-radius: 12px; background: #fff; box-shadow: 0 9px 25px rgb(33 61 105 / 0.04); }
+.backup-settings-advanced-header { display: flex; align-items: baseline; gap: 14px; padding: 0 2px 8px; }
+.backup-settings-advanced-header h2 { margin: 0; color: #111b34; font-size: 1.05rem; font-weight: 800; }
+.backup-settings-advanced-header p { margin: 0; color: #64748b; font-size: 0.85rem; }
+.backup-settings-advanced .backup-settings-danger-zone { margin-top: 8px; }
 
 /* Keep this page's action hierarchy ahead of the shared generic button palette. */
 .backup-settings-page .backup-settings-button-primary,
@@ -884,4 +896,6 @@ html:not(.dark) .text-slate-900 { color: #020617; }
   .backup-settings-page { padding: 20px 14px 32px; }
   .backup-settings-header h1 { font-size: 1.7rem; }
   .backup-settings-danger-zone > div { grid-template-columns: 28px minmax(0, 1fr); }
+  .backup-settings-provider-meta { width: 100%; margin-left: 52px; align-items: flex-start; }
+  .backup-settings-advanced-header { align-items: flex-start; flex-direction: column; gap: 3px; }
 }

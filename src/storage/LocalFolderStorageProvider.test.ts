@@ -72,21 +72,21 @@ describe('LocalFolderStorageProvider', () => {
     await connectAndInit(root);
 
     const expected = [
-      'BusinessVault/Acme Traders',
-      'BusinessVault/Acme Traders/README.txt',
-      'BusinessVault/Acme Traders/metadata/manifest.json',
-      'BusinessVault/Acme Traders/metadata/schema.json',
-      'BusinessVault/Acme Traders/metadata/sync-state.json',
-      'BusinessVault/Acme Traders/metadata/checksums.json',
-      'BusinessVault/Acme Traders/current',
-      'BusinessVault/Acme Traders/journal',
-      'BusinessVault/Acme Traders/invoices',
-      'BusinessVault/Acme Traders/attachments',
-      'BusinessVault/Acme Traders/reports',
-      'BusinessVault/Acme Traders/snapshots/daily',
-      'BusinessVault/Acme Traders/snapshots/monthly',
-      'BusinessVault/Acme Traders/snapshots/annual',
-      'BusinessVault/Acme Traders/snapshots/ondemand',
+      'BusinessVault - Acme Traders',
+      'BusinessVault - Acme Traders/README.txt',
+      'BusinessVault - Acme Traders/metadata/manifest.json',
+      'BusinessVault - Acme Traders/metadata/schema.json',
+      'BusinessVault - Acme Traders/metadata/sync-state.json',
+      'BusinessVault - Acme Traders/metadata/checksums.json',
+      'BusinessVault - Acme Traders/current',
+      'BusinessVault - Acme Traders/journal',
+      'BusinessVault - Acme Traders/invoices',
+      'BusinessVault - Acme Traders/attachments',
+      'BusinessVault - Acme Traders/reports',
+      'BusinessVault - Acme Traders/snapshots/daily',
+      'BusinessVault - Acme Traders/snapshots/monthly',
+      'BusinessVault - Acme Traders/snapshots/annual',
+      'BusinessVault - Acme Traders/snapshots/ondemand',
     ];
     for (const rel of expected) {
       expect(fss.existsSync(path.join(root, rel))).toBe(true);
@@ -94,7 +94,7 @@ describe('LocalFolderStorageProvider', () => {
 
     const manifest = JSON.parse(
       await fs.readFile(
-        path.join(root, 'BusinessVault/Acme Traders/metadata/manifest.json'),
+      path.join(root, 'BusinessVault - Acme Traders/metadata/manifest.json'),
         'utf8',
       ),
     );
@@ -116,9 +116,9 @@ describe('LocalFolderStorageProvider', () => {
   });
 
   it('rejects reuse of a folder owned by another business', async () => {
-    await fs.mkdir(path.join(root, 'BusinessVault', 'Acme Traders', 'metadata'), { recursive: true });
+    await fs.mkdir(path.join(root, 'BusinessVault - Acme Traders', 'metadata'), { recursive: true });
     await fs.writeFile(
-      path.join(root, 'BusinessVault', 'Acme Traders', 'metadata', 'manifest.json'),
+      path.join(root, 'BusinessVault - Acme Traders', 'metadata', 'manifest.json'),
       JSON.stringify({ businessId: 'biz_other' }),
     );
 
@@ -127,6 +127,22 @@ describe('LocalFolderStorageProvider', () => {
     await expect(
       provider.initializeBusiness({ businessId: 'biz_1', businessName: 'Acme Traders' }),
     ).rejects.toThrow(/different business/);
+  });
+
+  it('rebinds to an existing legacy BusinessVault/<name> folder during restore', async () => {
+    const legacyRoot = path.join(root, 'BusinessVault', 'Acme Traders');
+    await fs.mkdir(path.join(legacyRoot, 'metadata'), { recursive: true });
+    await fs.writeFile(
+      path.join(legacyRoot, 'metadata', 'manifest.json'),
+      JSON.stringify({ businessId: 'biz_1', businessName: 'Acme Traders', schemaVersion: 1 }),
+    );
+
+    const provider = new LocalFolderStorageProvider();
+    await provider.connect({ kind: 'local-folder', rootPath: root });
+    const result = await provider.initializeBusiness({ businessId: 'biz_1', businessName: 'Acme Traders' });
+
+    expect(result.folderPath).toBe('BusinessVault/Acme Traders');
+    expect((await provider.connectionStatus()).folderPath).toBe('BusinessVault/Acme Traders');
   });
 
   it('rejects path traversal through the node backend', async () => {
@@ -168,7 +184,7 @@ describe('LocalFolderStorageProvider', () => {
     const p = await connectAndInit(root);
     const snapshotDir = path.join(
       root,
-      'BusinessVault/Acme Traders/snapshots/ondemand/2026-09-24T09-26-06.407Z',
+      'BusinessVault - Acme Traders/snapshots/ondemand/2026-09-24T09-26-06.407Z',
     );
     await fs.mkdir(snapshotDir, { recursive: true });
     const csv = 'id,business_id\n1,biz_1\n';
@@ -208,11 +224,11 @@ describe('LocalFolderStorageProvider', () => {
 
     const augFile = path.join(
       root,
-      'BusinessVault/Acme Traders/journal/2026/2026-08.events.jsonl',
+      'BusinessVault - Acme Traders/journal/2026/2026-08.events.jsonl',
     );
     const sepFile = path.join(
       root,
-      'BusinessVault/Acme Traders/journal/2026/2026-09.events.jsonl',
+      'BusinessVault - Acme Traders/journal/2026/2026-09.events.jsonl',
     );
     const augLines = (await fs.readFile(augFile, 'utf8'))
       .split('\n')
@@ -275,7 +291,7 @@ describe('LocalFolderStorageProvider', () => {
     });
     expect(h1.path).toBe('snapshots/daily/2026-08-19');
 
-    const goodFile = path.join(root, 'BusinessVault/Acme Traders', h1.path, 'invoices.csv');
+    const goodFile = path.join(root, 'BusinessVault - Acme Traders', h1.path, 'invoices.csv');
     expect(fss.existsSync(goodFile)).toBe(true);
     expect(await fs.readFile(goodFile, 'utf8')).toBe('id,name\n1,alpha\n');
 
@@ -305,7 +321,7 @@ describe('LocalFolderStorageProvider', () => {
     expect(await fs.readFile(goodFile, 'utf8')).toBe('id,name\n1,alpha\n');
 
     // Staging area should be cleaned up.
-    const stagingRoot = path.join(root, 'BusinessVault/Acme Traders/.staging');
+    const stagingRoot = path.join(root, 'BusinessVault - Acme Traders/.staging');
     const stagingEntries = fss.existsSync(stagingRoot) ? await fs.readdir(stagingRoot) : [];
     expect(stagingEntries.filter((n) => !n.startsWith('.'))).toHaveLength(0);
 
@@ -347,7 +363,7 @@ describe('LocalFolderStorageProvider', () => {
     // Hand-corrupt the CSV directly on disk (simulate an external editor).
     const csvPath = path.join(
       root,
-      'BusinessVault/Acme Traders/snapshots/daily/2026-08-19/invoices.csv',
+      'BusinessVault - Acme Traders/snapshots/daily/2026-08-19/invoices.csv',
     );
     await fs.writeFile(csvPath, 'id,name\n1,alpha\n2,BETA_TAMPERED\n');
 
@@ -382,7 +398,7 @@ describe('LocalFolderStorageProvider', () => {
 
     const jp = path.join(
       root,
-      'BusinessVault/Acme Traders/journal/2026/2026-08.events.jsonl',
+      'BusinessVault - Acme Traders/journal/2026/2026-08.events.jsonl',
     );
     // Append a garbage line.
     await fs.appendFile(jp, 'this is not json\n');
@@ -405,7 +421,7 @@ describe('LocalFolderStorageProvider', () => {
 
     const journalPath = path.join(
       root,
-      'BusinessVault/Acme Traders/journal/2026/2026-08.events.jsonl',
+      'BusinessVault - Acme Traders/journal/2026/2026-08.events.jsonl',
     );
     const original = await fs.readFile(journalPath, 'utf8');
     await fs.writeFile(journalPath, original.replace('"amount":100', '"amount":101'));
@@ -413,6 +429,88 @@ describe('LocalFolderStorageProvider', () => {
     const tampered = await p.verifyIntegrity();
     expect(tampered.ok).toBe(false);
     expect(tampered.issues.some((i) => i.code === 'PAYLOAD_HASH_MISMATCH')).toBe(true);
+  });
+
+  it('allows an external predecessor at the beginning of a journal export', async () => {
+    const p = await connectAndInit(root);
+    const firstPayload = { amount: 100 };
+    const secondPayload = { amount: 200 };
+    const firstHash = await sha256Hex(canonicalJson(firstPayload));
+    const secondHash = await sha256Hex(canonicalJson(secondPayload));
+    await p.writeJournalEvents([
+      mkEvent({
+        event_id: 'evt_1',
+        timestamp: '2026-08-19T10:00:00.000Z',
+        payload: firstPayload,
+        payload_hash: firstHash,
+        previous_hash: 'f'.repeat(64),
+      }),
+      mkEvent({
+        event_id: 'evt_2',
+        timestamp: '2026-08-19T10:01:00.000Z',
+        payload: secondPayload,
+        payload_hash: secondHash,
+        previous_hash: firstHash,
+      }),
+    ]);
+
+    const report = await p.verifyIntegrity();
+    expect(report.ok).toBe(true);
+    expect(report.issues.some((i) => i.code === 'BROKEN_JOURNAL_CHAIN')).toBe(false);
+  });
+
+  it('uses journal order when legacy timestamps mix date-only and ISO formats', async () => {
+    const p = await connectAndInit(root);
+    const firstPayload = { amount: 100 };
+    const secondPayload = { amount: 200 };
+    const firstHash = await sha256Hex(canonicalJson(firstPayload));
+    const secondHash = await sha256Hex(canonicalJson(secondPayload));
+    await p.writeJournalEvents([
+      mkEvent({
+        event_id: 'evt_1',
+        timestamp: '2026-08-19T10:00:00.000Z',
+        payload: firstPayload,
+        payload_hash: firstHash,
+        previous_hash: 'f'.repeat(64),
+      }),
+      mkEvent({
+        event_id: 'evt_2',
+        timestamp: '2026-08-19',
+        payload: secondPayload,
+        payload_hash: secondHash,
+        previous_hash: firstHash,
+      }),
+    ]);
+
+    const report = await p.verifyIntegrity();
+    expect(report.ok).toBe(true);
+    expect(report.issues.some((i) => i.code === 'BROKEN_JOURNAL_CHAIN')).toBe(false);
+  });
+
+  it('still flags a missing predecessor after the journal boundary', async () => {
+    const p = await connectAndInit(root);
+    const payload = { amount: 100 };
+    const payloadHash = await sha256Hex(canonicalJson(payload));
+    await p.writeJournalEvents([
+      mkEvent({
+        event_id: 'evt_1',
+        timestamp: '2026-08-19T10:00:00.000Z',
+        payload,
+        payload_hash: payloadHash,
+        previous_hash: GENESIS_HASH,
+      }),
+      mkEvent({
+        event_id: 'evt_2',
+        timestamp: '2026-08-19T10:01:00.000Z',
+        payload: { amount: 200 },
+        payload_hash: await sha256Hex(canonicalJson({ amount: 200 })),
+        previous_hash: 'f'.repeat(64),
+      }),
+    ]);
+
+    const report = await p.verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(report.issues.some((i) => i.code === 'BROKEN_JOURNAL_CHAIN')).toBe(true);
   });
 
   it('readSnapshot round-trips CSVs and manifest', async () => {
@@ -497,7 +595,7 @@ describe('LocalFolderStorageProvider', () => {
     expect(s1.state).toBe('CONNECTED');
     await p.initializeBusiness({ businessId: 'biz_1', businessName: 'Acme Traders' });
     const s2 = await p.connectionStatus();
-    expect(s2.folderPath).toBe('BusinessVault/Acme Traders');
+    expect(s2.folderPath).toBe('BusinessVault - Acme Traders');
     await p.disconnect();
     expect((await p.connectionStatus()).state).toBe('DISCONNECTED');
   });
@@ -508,7 +606,7 @@ describe('LocalFolderStorageProvider', () => {
       mkEvent({ event_id: 'evt_1' }),
     ]);
 
-    const businessRoot = path.join(root, 'BusinessVault', 'Acme Traders');
+    const businessRoot = path.join(root, 'BusinessVault - Acme Traders');
     const direct = new LocalFolderStorageProvider();
     await direct.connect({ kind: 'local-folder', rootPath: businessRoot });
 

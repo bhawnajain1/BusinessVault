@@ -46,6 +46,12 @@ const CHECKS = [
     args: ['vitest', 'run', 'tests'],
   },
   {
+    name: 'Mandatory Backup Round Trip',
+    detail: 'vitest run tests/e2e/local-backup-roundtrip.spec.ts — reset/restore counts and balances',
+    cmd: 'npm',
+    args: ['run', 'test:mandatory-roundtrip'],
+  },
+  {
     name: 'Production Build',
     detail: 'vite build — bundle succeeds',
     cmd: 'npx',

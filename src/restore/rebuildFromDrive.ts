@@ -79,7 +79,7 @@ export interface RebuildOptions {
   db: BusinessVaultDB;
   providerConfig: ProviderConfig;
   /**
-   * Called when more than one business is found under BusinessVault/. Not
+   * Called when more than one business is found on the provider. Not
    * called when exactly one is present.
    */
   pickBusiness?: BusinessPicker;
@@ -214,7 +214,7 @@ export async function rebuildFromDrive(
     businessIds: businesses.map((business) => business.businessId),
   });
   if (businesses.length === 0) {
-    throw new Error('No BusinessVault/<business> folder found on the provider');
+    throw new Error('No BusinessVault business folder found on the provider');
   }
   let selected: DiscoveredBusiness;
   if (businesses.length === 1) {
@@ -562,6 +562,7 @@ export async function rebuildFromDrive(
   const acct = await accountingSelfCheck(selected.businessId, { db: opts.db });
   const accountingBalanced = acct.debitsEqCredits && acct.unbalancedEntries.length === 0;
   if (!accountingBalanced) {
+    const missingJournalLines = await findPostedEntriesWithoutLines(opts.db, selected.businessId);
     issues.push({
       severity: 'error',
       code: 'ACCOUNTING_UNBALANCED',
@@ -571,6 +572,7 @@ export async function rebuildFromDrive(
         totalDebits: acct.totalDebits,
         totalCredits: acct.totalCredits,
         unbalancedEntries: acct.unbalancedEntries.slice(0, 20),
+        missingJournalLines,
       },
     });
   }
@@ -635,6 +637,14 @@ export async function rebuildFromDrive(
     throw new BackupIntegrityError(
       'Restore count verification failed. Local data was left unchanged.',
       { sourceCounts, restoredCounts: counts, mismatches: countReconciliation.mismatches },
+    );
+  }
+  if (issues.some((issue) => issue.severity === 'error')) {
+    await restoreSelectedBusinessState(opts.db, selected.businessId, previousState);
+    const errors = issues.filter((issue) => issue.severity === 'error');
+    throw new BackupIntegrityError(
+      'Restore failed post-verification. Local data was left unchanged.',
+      { issues: errors },
     );
   }
   const report = makeDiagnosticReport({
@@ -1343,6 +1353,25 @@ async function countTables(
     }
   }
   return counts;
+}
+
+async function findPostedEntriesWithoutLines(
+  db: BusinessVaultDB,
+  businessId: string,
+): Promise<string[]> {
+  const entries = await db.journal_entries
+    .where('business_id')
+    .equals(businessId)
+    .filter((entry) => entry.posted === 1)
+    .toArray();
+  const lines = await db.journal_lines
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+  const entriesWithLines = new Set(lines.map((line) => line.entry_id));
+  return entries
+    .filter((entry) => !entriesWithLines.has(entry.id))
+    .map((entry) => entry.id);
 }
 
 function countSnapshotTables(

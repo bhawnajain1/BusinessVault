@@ -100,7 +100,7 @@ export interface ConnectionStatus {
   state: ConnectionState;
   /** Provider-side account identifier, e.g. Drive email. */
   account?: string;
-  /** e.g. 'BusinessVault/Acme Traders/' */
+  /** e.g. 'BusinessVault - Acme Traders/' */
   folderPath?: string;
   error?: string;
 }
@@ -116,7 +116,7 @@ export interface InitializeBusinessInput {
 
 export interface InitResult {
   businessId: string;
-  /** Absolute-ish path inside the provider, e.g. 'BusinessVault/Acme Traders'. */
+  /** Absolute-ish path inside the provider, e.g. 'BusinessVault - Acme Traders'. */
   folderPath: string;
   /** Provider-native id for the business folder (Drive fileId, etc.). */
   providerFolderId: string;
@@ -277,14 +277,14 @@ export interface RestoreDescriptor {
 // The interface itself
 // ---------------------------------------------------------------------------
 
-// One entry per business folder found under BusinessVault/. Populated by
+// One entry per business folder found on the provider. Populated by
 // listBusinesses() and consumed by the Restore flow to let the user pick
 // which business to restore (and to read journalCheckpoint / schemaVersion
 // off the manifest without a second round-trip).
 export interface DiscoveredBusinessOnProvider {
   businessId: string;
   businessName: string;
-  /** e.g. 'BusinessVault/Acme Traders'. */
+  /** e.g. 'BusinessVault - Acme Traders'. */
   folderPath: string;
   /** Parsed metadata/manifest.json — the ManifestShape restore expects. */
   manifest: Readonly<{
@@ -303,7 +303,7 @@ export interface CustomerStorageProvider {
 
   initializeBusiness(input: InitializeBusinessInput): Promise<InitResult>;
 
-  // Enumerate every business folder under BusinessVault/ on this provider.
+  // Enumerate every business folder on this provider.
   // Optional: FakeProviders in the test suite don't implement it. Real
   // providers (LocalFolder, GoogleDrive) do, and the Restore flow requires
   // it to work — without it, Restore has nothing to enumerate.

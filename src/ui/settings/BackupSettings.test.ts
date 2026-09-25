@@ -3,6 +3,7 @@ import {
   deriveDisplayStatus,
   shouldShowDisconnectedDuringBoot,
   shouldShowDriveFolderLink,
+  shouldDisableStartFresh,
 } from './BackupSettings';
 import type {
   ConnectionStatus,
@@ -113,5 +114,19 @@ describe('shouldShowDriveFolderLink', () => {
 
   it('does not show a link without a folder id', () => {
     expect(shouldShowDriveFolderLink('HEALTHY', null)).toBe(false);
+  });
+});
+
+describe('shouldDisableStartFresh', () => {
+  it('keeps Start fresh disabled while the business row is loading', () => {
+    expect(shouldDisableStartFresh(null, null)).toBe(true);
+  });
+
+  it('keeps Start fresh disabled while another operation is running', () => {
+    expect(shouldDisableStartFresh('backup', { id: 'biz1', name: 'Acme' } as never)).toBe(true);
+  });
+
+  it('enables Start fresh once the business is loaded and idle', () => {
+    expect(shouldDisableStartFresh(null, { id: 'biz1', name: 'Acme' } as never)).toBe(false);
   });
 });

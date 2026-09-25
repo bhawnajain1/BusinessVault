@@ -104,8 +104,8 @@ export default function Onboarding() {
         storage: choice,
         status:
           choice === 'google-drive'
-            ? `Creating BusinessVault/${folderName}/ in your Google Drive...`
-            : `Creating BusinessVault/${folderName}/ in your local folder...`,
+             ? `Creating BusinessVault - ${folderName}/ in your Google Drive...`
+             : `Creating BusinessVault - ${folderName}/ in your local folder...`,
         error: null,
         folderPath: null,
         providerFolderId: null,
@@ -312,7 +312,7 @@ export default function Onboarding() {
       {step === 'done' && connecting && (
         <StepDone
           businessName={form.name || 'your business'}
-          folderPath={connecting.folderPath ?? `BusinessVault/${form.name}`}
+          folderPath={connecting.folderPath ?? `BusinessVault - ${form.name}`}
           driveFolderId={connecting.providerFolderId}
           storage={connecting.storage}
           onFinish={handleFinish}

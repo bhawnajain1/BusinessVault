@@ -290,6 +290,11 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
           firstTimestamp: providerEvents[0]?.timestamp,
         });
         const res = await deps.provider.writeJournalEvents(providerEvents);
+        if (res.written + res.duplicates.length !== providerEvents.length) {
+          throw new Error(
+            `Journal provider acknowledged ${res.written + res.duplicates.length} of ${providerEvents.length} events`,
+          );
+        }
         // Mark synced. Duplicates are still SYNCED (idempotent replay).
         const nowIso = iso(clock());
         await db.sync_events

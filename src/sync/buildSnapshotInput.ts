@@ -16,6 +16,13 @@ import { log } from '../lib/log';
 // is a MAJOR bump).
 export const BACKUP_FORMAT_VERSION = 1;
 
+export class BackupSourceIntegrityError extends Error {
+  constructor(public readonly issues: string[]) {
+    super(`Backup source validation failed: ${issues.join('; ')}`);
+    this.name = 'BackupSourceIntegrityError';
+  }
+}
+
 declare const __APP_VERSION__: string;
 const APP_VERSION =
   typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0';
@@ -36,6 +43,7 @@ export async function buildSnapshotInput(
   kind: SnapshotKind,
   asOf: string,
 ): Promise<WriteSnapshotInput> {
+  await validateBackupSource(db, businessId);
   const files: SnapshotCsvFile[] = [];
   const counts: Record<string, number> = {};
 
@@ -163,4 +171,42 @@ export async function buildSnapshotInput(
       ...(journalCheckpoint ? { journalCheckpoint } : {}),
     },
   };
+}
+
+/**
+ * A snapshot must never advertise a database state that cannot be replayed.
+ * Older builds could leave a posted journal header without its line events;
+ * fail before queueing such a backup instead of publishing an unusable one.
+ */
+export async function validateBackupSource(
+  db: BusinessVaultDB,
+  businessId: string,
+): Promise<void> {
+  const entries = await db.journal_entries
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+  const lines = await db.journal_lines
+    .where('business_id')
+    .equals(businessId)
+    .toArray();
+  const lineCounts = new Map<string, number>();
+  for (const line of lines) {
+    lineCounts.set(line.entry_id, (lineCounts.get(line.entry_id) ?? 0) + 1);
+  }
+
+  const issues: string[] = [];
+  for (const entry of entries) {
+    if (entry.posted !== 1) continue;
+    const count = lineCounts.get(entry.id) ?? 0;
+    if (count === 0) {
+      issues.push(`posted journal entry ${entry.id} has no journal lines`);
+      continue;
+    }
+    if (entry.total_debit_paise !== entry.total_credit_paise) {
+      issues.push(`journal entry ${entry.id} has unequal header totals`);
+    }
+  }
+
+  if (issues.length > 0) throw new BackupSourceIntegrityError(issues);
 }

@@ -80,7 +80,7 @@ export default function StepConnectStorage({ onChoose, onBack, error }: Props) {
         {driveBusy ? 'Opening Google…' : 'Connect Google Drive'}
       </button>
       <p className="mt-2 text-xs text-slate-500">
-        We will create a normal, visible folder called BusinessVault/&lt;your
+         We will create a normal, visible folder called BusinessVault - &lt;your
         business&gt;/ in your Google Drive. You can open, download or copy it
         at any time.
       </p>

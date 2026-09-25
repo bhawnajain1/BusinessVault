@@ -23,6 +23,10 @@ import {
 } from '../../sync/bootProvider';
 import { connectDrive, disconnectDrive } from '../../drive/connectDrive';
 import { buildDriveProvider } from '../onboarding/driveGlue';
+import {
+  LocalFolderStorageProvider,
+  peekSavedHandle,
+} from '../../storage/LocalFolderStorageProvider';
 import { hasGoogleClientId } from '../../auth/gis';
 import { log } from '../../lib/log';
 import { beginAppOperation, updateAppOperation } from '../../lib/operationLock';
@@ -37,7 +41,7 @@ import DataExport from './DataExport';
 //
 //   Google Drive
 //   Connected as: <email>
-//   Business folder: BusinessVault/<name>  [Open My Google Drive Folder]
+//   Business folder: BusinessVault - <name>  [Open My Google Drive Folder]
 //   Last event sync:  <relative time>
 //   Last full backup: <relative time>
 //   Pending:          <count>
@@ -125,6 +129,13 @@ export function shouldShowDriveFolderLink(
   return driveFolderId !== null && status !== 'DISCONNECTED';
 }
 
+export function shouldDisableStartFresh(
+  busy: string | null,
+  business: Business | null,
+): boolean {
+  return busy !== null || business === null;
+}
+
 interface Props {
   businessId: string;
   onReconnect?: (selectedLocalHandle?: FileSystemDirectoryHandle) => void | Promise<void>;
@@ -209,6 +220,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
 
   const handleReconnect = useCallback(async (): Promise<void> => {
     if (!onReconnect) return;
+    clearMessages();
     setManuallyDisconnected(false);
     await onReconnect();
     await readConnectionStatus();
@@ -238,7 +250,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
 
   const email = conn?.account ?? business?.drive_connected_email ?? '(not connected)';
   const folderName = business?.name ?? '';
-  const folderPath = conn?.folderPath ?? `BusinessVault/${folderName}`;
+  const folderPath = conn?.folderPath ?? `BusinessVault - ${folderName}`;
   const driveFolderId = business?.drive_folder_id ?? null;
 
   const integrityLabel = integrity == null
@@ -311,8 +323,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
       // read — and terminate on done/failed/timeout.
        const startedAt = Date.now();
        const TIMEOUT_MS = 10 * 60 * 1000; // 10 min hard ceiling
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
+       while (true) {
         const row = await db.sync_queue.get(job.id);
         if (!row) {
           throw new Error('Backup job disappeared before successful completion. Nothing was cleared.');
@@ -363,13 +374,32 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
       const target = businesses[index];
       setMessage(`Backing up business ${index + 1} of ${businesses.length}: ${target.name}…`);
 
+      const asOf = new Date().toISOString().replace(/:/g, '-');
+      const input = await buildSnapshotInput(db, target.id, target.name, 'ondemand', asOf);
+
       if (!target.drive_folder_id) {
-        const identity = await connectDrive({ businessId: target.id, prompt: 'consent' });
-        await db.businesses.update(target.id, {
-          drive_connected_email: identity.identity.email,
-          updated_at: new Date().toISOString(),
+        // Start Fresh must preserve the configured backup destination. A
+        // local-folder business must not be forced through Google OAuth just
+        // because this operation creates one final snapshot.
+        const provider = new LocalFolderStorageProvider();
+        const handle = await peekSavedHandle();
+        if (handle) provider.setDirectoryHandle(handle);
+        await provider.connect({ kind: 'local-folder', rootPath: '' });
+        await provider.initializeBusiness({
+          businessId: target.id,
+          businessName: target.name,
         });
+        stopSyncWorker();
+        await provider.writeSnapshot(input);
+        const integrity = await provider.verifyIntegrity();
+        if (!integrity.ok) {
+          throw new Error(
+            `Final local backup failed integrity verification for '${target.name}' (${integrity.issues.length} issue${integrity.issues.length === 1 ? '' : 's'}). Nothing was cleared.`,
+          );
+        }
+        continue;
       }
+
       const provider = await buildDriveProvider(target.id);
       const initialized = await provider.initializeBusiness({
         businessId: target.id,
@@ -387,8 +417,6 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
         throw new Error(`Google Drive is not connected for '${target.name}'. Nothing was cleared.`);
       }
 
-      const asOf = new Date().toISOString().replace(/:/g, '-');
-      const input = await buildSnapshotInput(db, target.id, target.name, 'ondemand', asOf);
       const job = await enqueue({
         businessId: target.id,
         kind: 'snapshot',
@@ -459,7 +487,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
     const ok = window.confirm(
       `Switch this business's backups to Google Drive?\n\n` +
         `Your entire history for this business will be re-uploaded to Drive ` +
-        `under BusinessVault/${business.name} in the background. Files already ` +
+        `under BusinessVault - ${business.name} in the background. Files already ` +
         `in the local backup folder are not touched.`,
     );
     if (!ok) return;
@@ -566,7 +594,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
     clearMessages();
     const confirmed = window.confirm(
       'Start fresh on this device?\n\n' +
-      'BusinessVault will first create a fresh Google Drive backup for every business on this device. Only after all backups succeed will this browser be signed out and cleared. ' +
+      'BusinessVault will first create a fresh backup in each business\'s configured backup destination. Only after all backups succeed will this browser be signed out and cleared. ' +
         'Your existing local folder and Google Drive files will not be deleted.\n\n' +
         'Continue?',
     );
@@ -637,7 +665,7 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
           <p className="backup-settings-eyebrow">Settings</p>
           <h1>Data &amp; Backup</h1>
           <p className="backup-settings-intro">
-            Manage cloud backups, verify your data, and export a local copy.
+             Manage cloud backups and export your business data.
           </p>
         </div>
       </header>
@@ -667,6 +695,16 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
         </div>
       )}
 
+      {busy === 'backup' && (
+        <div className="backup-settings-progress" role="status" aria-live="polite">
+          <span className="backup-settings-progress-spinner" aria-hidden="true" />
+          <div>
+            <strong>Backup in progress</strong>
+            <span>Backing up {business?.name ?? 'your business'}</span>
+          </div>
+        </div>
+      )}
+
       <section className="backup-settings-card">
         <header className="backup-settings-card-header">
           <div className="backup-settings-card-icon" aria-hidden="true">
@@ -680,14 +718,16 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
              <h2>{providerLabel}</h2>
              <p>{usingLocalFolder ? 'Local backup storage' : 'Cloud backup storage'}</p>
           </div>
-          <span className={`backup-settings-connected-pill ${connected ? '' : 'backup-settings-connected-pill-offline'}`}>
-            <span className="backup-settings-status-dot" aria-hidden="true" />
-            {connected ? 'Connected' : 'Disconnected'}
-          </span>
+           <div className="backup-settings-provider-meta">
+             <span className={`backup-settings-connected-pill ${connected ? '' : 'backup-settings-connected-pill-offline'}`}>
+               <span className="backup-settings-status-dot" aria-hidden="true" />
+               {connected ? 'Connected' : 'Disconnected'}
+             </span>
+             {!usingLocalFolder && <span className="backup-settings-provider-email">{email}</span>}
+           </div>
         </header>
         <dl className="backup-settings-details">
-          <Row label="Connected as" value={email} />
-          <Row
+           <Row
             label="Business folder"
             value={
               <span className="inline-flex items-center gap-2">
@@ -788,42 +828,49 @@ export default function BackupSettings({ businessId, onReconnect, onResetFresh }
         </div>
       </section>
 
-       {driveFolderId != null && (
-         <section className="backup-settings-danger-zone">
-          <div>
-            <TriangleAlert size={24} strokeWidth={2} aria-hidden="true" />
-            <h2>Disconnect Google Drive</h2>
-            <p>Stops automatic Google Drive backups. Your existing Drive files will not be deleted.</p>
-          </div>
-          <button
-            type="button"
-            onClick={onDisconnect}
-            disabled={!!busy}
-            className="backup-settings-button backup-settings-button-danger"
-          >
-            <Unplug size={20} strokeWidth={2} aria-hidden="true" />
-            {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect Google Drive'}
-          </button>
-        </section>
-       )}
-
-       {onResetFresh && (
-         <section className="backup-settings-danger-zone">
-           <div>
-             <TriangleAlert size={24} strokeWidth={2} aria-hidden="true" />
-             <h2>Start fresh on this device</h2>
-             <p>Delete all local app data and sign out. Backup files are not deleted.</p>
-           </div>
-           <button
-             type="button"
-             onClick={() => void onStartFresh()}
-             disabled={!!busy}
-             className="backup-settings-button backup-settings-button-danger"
-           >
-             Start fresh
-           </button>
-         </section>
-       )}
+        {(driveFolderId != null || onResetFresh) && (
+          <section className="backup-settings-advanced">
+            <header className="backup-settings-advanced-header">
+              <h2>Advanced actions</h2>
+              <p>Use these options with caution. They are disabled while a backup is in progress.</p>
+            </header>
+            {driveFolderId != null && (
+              <div className="backup-settings-danger-zone">
+                <div>
+                  <Unplug size={24} strokeWidth={2} aria-hidden="true" />
+                  <h2>Disconnect Google Drive</h2>
+                  <p>Stops automatic Google Drive backups. Your existing Drive files will not be deleted.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={onDisconnect}
+                  disabled={!!busy}
+                  className="backup-settings-button backup-settings-button-danger"
+                >
+                  <Unplug size={20} strokeWidth={2} aria-hidden="true" />
+                  {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect Google Drive'}
+                </button>
+              </div>
+            )}
+            {onResetFresh && (
+              <div className="backup-settings-danger-zone">
+                <div>
+                  <TriangleAlert size={24} strokeWidth={2} aria-hidden="true" />
+                  <h2>Start fresh on this device</h2>
+                  <p>Delete all local app data and sign out. Backup files are not deleted.</p>
+                </div>
+                 <button
+                   type="button"
+                   onClick={() => void onStartFresh()}
+                   disabled={shouldDisableStartFresh(busy, business)}
+                   className="backup-settings-button backup-settings-button-danger"
+                 >
+                  Start fresh
+                </button>
+              </div>
+            )}
+          </section>
+        )}
 
        {disconnected && driveFolderId != null && (
          <section className="backup-settings-card backup-settings-action-card">

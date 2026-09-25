@@ -594,6 +594,120 @@ describe('rebuildFromDrive', () => {
     await testDb.delete();
   });
 
+  it('does not create a phantom journal entry from an orphaned legacy update', async () => {
+    const testDb = new BusinessVaultDB(`bv-orphan-journal-${Date.now()}-${Math.random()}`);
+    const diagnostics: string[] = [];
+    await applyEvent(
+      {
+        event_id: 'orphan-journal-update',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'journal_entry',
+        entity_id: 'missing-entry',
+        operation: 'update',
+        entity_version: 1,
+        timestamp: new Date().toISOString(),
+        payload: {
+          id: 'missing-entry',
+          business_id: BID,
+          total_debit_paise: 100,
+          total_credit_paise: 100,
+        },
+        payload_hash: 'hash',
+        previous_hash: null,
+        sync_status: 'SYNCED',
+      },
+      { db: testDb, businessId: BID, diagnostics },
+    );
+
+    expect(await testDb.journal_entries.get('missing-entry')).toBeUndefined();
+    expect(diagnostics).not.toContain('journal_entry:update missing-entry: existing row not found');
+    await testDb.delete();
+  });
+
+  it('replays a full legacy journal entry carried by an update event', async () => {
+    const testDb = new BusinessVaultDB(`bv-full-journal-update-${Date.now()}-${Math.random()}`);
+    const diagnostics: string[] = [];
+    const row = {
+      id: 'full-journal-update',
+      business_id: BID,
+      entry_number: 'JE-1',
+      entry_date: NOW.slice(0, 10),
+      narration: 'Legacy entry',
+      ref_type: 'manual',
+      ref_id: null,
+      reversed_by_id: null,
+      reverses_id: null,
+      total_debit_paise: 100,
+      total_credit_paise: 100,
+      posted: 1,
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    } satisfies JournalEntry;
+
+    await applyEvent(
+      {
+        event_id: 'full-journal-update-event',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'journal_entry',
+        entity_id: row.id,
+        operation: 'update',
+        entity_version: 1,
+        timestamp: NOW,
+        payload: row,
+        payload_hash: 'hash',
+        previous_hash: null,
+        sync_status: 'SYNCED',
+      },
+      { db: testDb, businessId: BID, diagnostics },
+    );
+
+    expect(await testDb.journal_entries.get(row.id)).toMatchObject(row);
+    expect(diagnostics).toEqual([]);
+    await testDb.delete();
+  });
+
+  it('replays a full legacy journal line carried by an update event', async () => {
+    const testDb = new BusinessVaultDB(`bv-full-journal-line-update-${Date.now()}-${Math.random()}`);
+    const diagnostics: string[] = [];
+    const line = {
+      ...je1_lines[0],
+      id: 'legacy-line-update',
+      entry_id: 'je_1',
+    };
+    await testDb.journal_entries.put({
+      ...je1,
+      id: 'je_1',
+      total_debit_paise: line.debit_paise,
+      total_credit_paise: line.credit_paise,
+    } as JournalEntry);
+
+    const result = await applyEvent(
+      {
+        event_id: 'full-journal-line-update-event',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'journal_line',
+        entity_id: line.id,
+        operation: 'update',
+        entity_version: 1,
+        timestamp: NOW,
+        payload: line,
+        payload_hash: 'hash',
+        previous_hash: null,
+        sync_status: 'SYNCED',
+      },
+      { db: testDb, businessId: BID, diagnostics },
+    );
+
+    expect(result).toBe('applied');
+    expect(await testDb.journal_lines.get(line.id)).toEqual(line);
+    expect(diagnostics).toEqual([]);
+    await testDb.delete();
+  });
+
   beforeEach(async () => {
     root = await mktmp();
     db = new BusinessVaultDB(`bv-restore-${Date.now()}-${Math.random()}`);
@@ -1722,7 +1836,7 @@ describe('rebuildFromDrive', () => {
   it('refuses a journal-only restore when the manifest declares a missing snapshot', async () => {
     const manifestPath = path.join(
       root,
-      'BusinessVault/Acme Traders/metadata/manifest.json',
+      'BusinessVault - Acme Traders/metadata/manifest.json',
     );
     const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as Record<string, unknown>;
     manifest.currentSnapshot = {
@@ -1732,7 +1846,7 @@ describe('rebuildFromDrive', () => {
     };
     await fs.writeFile(manifestPath, JSON.stringify(manifest));
     await fs.rm(
-      path.join(root, 'BusinessVault/Acme Traders/snapshots/daily/2026-08-19'),
+      path.join(root, 'BusinessVault - Acme Traders/snapshots/daily/2026-08-19'),
       { recursive: true, force: true },
     );
 
@@ -1749,7 +1863,7 @@ describe('rebuildFromDrive', () => {
     // Corrupt one CSV in the snapshot.
     const csvPath = path.join(
       root,
-      'BusinessVault/Acme Traders/snapshots/daily/2026-08-19/customers.csv',
+      'BusinessVault - Acme Traders/snapshots/daily/2026-08-19/customers.csv',
     );
     const original = await fs.readFile(csvPath, 'utf8');
     await fs.writeFile(csvPath, original + '\nid,business_id\ntamper,tamper\n');

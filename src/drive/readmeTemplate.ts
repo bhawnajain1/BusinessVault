@@ -233,7 +233,7 @@ rebuild the business from this folder alone:
        Use the same Google account that owns this folder.
     3. On the welcome screen choose "Restore from Google Drive".
     4. Pick the folder:
-           BusinessVault/${displayName}/
+            BusinessVault - ${displayName}/
     5. Wait for the restore to finish. The app will:
            - read metadata/manifest.json,
            - verify checksums in metadata/checksums.json,
