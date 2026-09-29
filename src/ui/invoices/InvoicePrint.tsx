@@ -269,7 +269,7 @@ export default function InvoicePrint() {
             </div>
             <div className="leading-5">
               {business?.gstin && <div><strong>GSTIN:</strong> {business.gstin}</div>}
-              {business?.udyamRegistrationNumber && <div><strong>MSME / Udyam Registration No.:</strong> {business.udyamRegistrationNumber}</div>}
+              {business?.udyamRegistrationNumber && <div><strong>Udyam Registration Number:</strong> {business.udyamRegistrationNumber}</div>}
               {business?.pan && <div><strong>PAN:</strong> {business.pan}</div>}
             </div>
           </div>

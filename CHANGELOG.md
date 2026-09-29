@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.68 — 2026-09-29
+
+### Fixed
+
+- Added the Udyam Registration Number to thermal/POS bill output and clarified the label on A4 invoices.
+
 ## 1.0.67 — 2026-09-29
 
 ### Changed

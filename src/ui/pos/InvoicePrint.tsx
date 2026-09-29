@@ -72,6 +72,9 @@ export default function InvoicePrint(props: InvoicePrintProps): JSX.Element {
           {business?.gstin ? (
             <div className="pos-print-line">GSTIN: {business.gstin}</div>
           ) : null}
+          {business?.udyamRegistrationNumber ? (
+            <div className="pos-print-line">Udyam Registration Number: {business.udyamRegistrationNumber}</div>
+          ) : null}
           {business?.phone ? (
             <div className="pos-print-line">Tel: {business.phone}</div>
           ) : null}
