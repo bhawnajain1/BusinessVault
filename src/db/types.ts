@@ -94,7 +94,8 @@ export type RefType =
   // invoices keep resolving to their historical signature. Business.signature_ref
   // points at the CURRENT generation; invoice.signature_attachment_id (set at
   // invoice creation) is the immutable historical reference.
-  | 'signature';
+  | 'signature'
+  | 'logo';
 
 export type SyncJobKind =
   | 'journal_flush'
@@ -124,6 +125,7 @@ export interface Business {
   current_financial_year: string;
   currency: string;
   logo_ref: string | null;
+  udyamRegistrationNumber?: string | null;
   // §2: id of the CURRENT signature Attachment (ref_type='signature',
   // ref_id=business.id). null when no signature has been uploaded yet, or
   // the user has removed it. Historical invoices resolve their signature

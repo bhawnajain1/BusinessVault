@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 export const DB_NAME = 'businessvault';
 
@@ -185,4 +185,9 @@ export const STORES_V12: Record<string, string> = {
   ...STORES_V11,
   customer_item_prices:
     'id, business_id, [business_id+customer_id], [business_id+item_id], [business_id+customer_id+item_id], updated_at',
+};
+
+// v13: optional MSME / Udyam registration number on business profiles.
+export const STORES_V13: Record<string, string> = {
+  ...STORES_V12,
 };

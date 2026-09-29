@@ -6,6 +6,7 @@ import type {
   SalesReturn,
   Supplier,
 } from '../db/types';
+import { db as defaultDb, type BusinessVaultDB } from '../db';
 import { log } from '../lib/log';
 
 // Party ledger — derived outstanding per the spec (payablesRec.md).
@@ -77,6 +78,107 @@ export interface CustomerReceivable {
   advance_paise: number;
   overdue_count: number;
   aging: AgingBuckets;
+}
+
+export interface CustomerInvoiceDue {
+  received_paise: number;
+  balance_paise: number;
+  previous_due_paise: number;
+  total_due_paise: number;
+}
+
+function transactionKey(value: { created_at?: string; invoice_date?: string; id: string }): string {
+  return `${value.created_at ?? value.invoice_date ?? ''}|${value.id}`;
+}
+
+/**
+ * Derives the customer due values for one invoice without allowing the target
+ * invoice or transactions created after it into Previous Due.
+ */
+export async function getCustomerDueForInvoice(
+  invoiceId: string,
+  db: BusinessVaultDB = defaultDb,
+): Promise<CustomerInvoiceDue> {
+  const invoice = await db.invoices.get(invoiceId);
+  if (!invoice) throw new Error(`Invoice not found: ${invoiceId}`);
+
+  const cutoff = transactionKey(invoice);
+  const allInvoices = await db.invoices.where('business_id').equals(invoice.business_id).toArray();
+  const priorInvoices = allInvoices.filter(
+    (candidate) =>
+      candidate.customer_id === invoice.customer_id &&
+      transactionKey(candidate) < cutoff,
+  );
+  const priorInvoiceIds = new Set(priorInvoices.map((candidate) => candidate.id));
+  const payments = await db.payments.where('business_id').equals(invoice.business_id).toArray();
+  const paidBefore = new Map<string, number>();
+  let receivedForInvoice = 0;
+
+  for (const payment of payments) {
+    if (payment.deleted_at || payment.party_type !== 'customer' || payment.party_id !== invoice.customer_id) continue;
+    for (const allocation of payment.allocations) {
+      if (allocation.invoice_id === invoiceId) receivedForInvoice += allocation.amount_paise;
+      if (transactionKey(payment) >= cutoff) continue;
+      if (!allocation.invoice_id || !priorInvoiceIds.has(allocation.invoice_id)) continue;
+      paidBefore.set(
+        allocation.invoice_id,
+        (paidBefore.get(allocation.invoice_id) ?? 0) + allocation.amount_paise,
+      );
+    }
+  }
+
+  const advances = await db.advances.where('business_id').equals(invoice.business_id).toArray();
+  for (const advance of advances) {
+    if (advance.deleted_at || advance.party_type !== 'customer' || advance.party_id !== invoice.customer_id) continue;
+    for (const application of advance.applications) {
+      if (application.invoice_id === invoiceId) receivedForInvoice += application.amount_paise;
+      if (!application.invoice_id || !priorInvoiceIds.has(application.invoice_id)) continue;
+      if (application.applied_at >= cutoff) continue;
+      paidBefore.set(
+        application.invoice_id,
+        (paidBefore.get(application.invoice_id) ?? 0) + application.amount_paise,
+      );
+    }
+  }
+
+  const historicalPriorInvoices = priorInvoices.map((candidate) => ({
+    ...candidate,
+    paid_paise: paidBefore.get(candidate.id) ?? 0,
+    balance_paise: Math.max(0, candidate.total_paise - (paidBefore.get(candidate.id) ?? 0)),
+  }));
+  const priorCreditNotes = historicalPriorInvoices.filter(
+    (candidate) => candidate.reverses_invoice_id !== null,
+  );
+  const priorOriginals = historicalPriorInvoices.filter(
+    (candidate) => candidate.reverses_invoice_id === null,
+  );
+  const priorReturns = await db.sales_returns
+    .where('business_id')
+    .equals(invoice.business_id)
+    .filter(
+      (salesReturn) =>
+        salesReturn.original_invoice_id !== invoiceId &&
+        priorInvoiceIds.has(salesReturn.original_invoice_id) &&
+        transactionKey(salesReturn) < cutoff,
+    )
+    .toArray();
+  const customer = await db.customers.get(invoice.customer_id);
+  const previousDue = computeReceivables(
+    [...priorOriginals, ...priorCreditNotes],
+    invoice.invoice_date,
+    [],
+    customer ? [customer] : [],
+    priorReturns,
+  ).perCustomer.find((row) => row.customer_id === invoice.customer_id)?.outstanding_paise ?? 0;
+
+  const received = Math.max(0, receivedForInvoice);
+  const balance = Math.max(0, invoice.total_paise - received);
+  return {
+    received_paise: received,
+    balance_paise: balance,
+    previous_due_paise: previousDue,
+    total_due_paise: previousDue + balance,
+  };
 }
 
 export interface SupplierPayable {

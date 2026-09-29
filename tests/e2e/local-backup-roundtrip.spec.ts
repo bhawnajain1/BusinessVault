@@ -84,7 +84,7 @@ function business(): Business {
     sales_return_next_seq: COUNT + 1,
     drive_folder_id: null,
     drive_connected_email: null,
-    schema_version: 12,
+    schema_version: 13,
     ...audit(),
   };
 }

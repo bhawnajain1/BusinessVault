@@ -50,6 +50,8 @@ export interface SignatureUploadResult {
   business: Business;
 }
 
+export type LogoUploadResult = SignatureUploadResult;
+
 async function sha256HexOfBytes(bytes: Uint8Array): Promise<string> {
   const subtle = (globalThis as unknown as { crypto?: { subtle?: SubtleCrypto } })
     .crypto?.subtle;
@@ -214,6 +216,57 @@ export class BusinessProfileService {
     return { attachment, business: patchedBusiness };
   }
 
+  async uploadLogo(businessId: string, file: File): Promise<LogoUploadResult> {
+    if (!ALLOWED_MIME_TYPES.has(file.type)) {
+      throw new SignatureValidationError(
+        `Unsupported file type ${file.type || 'unknown'}. Please upload PNG, JPG, or WebP.`,
+      );
+    }
+    if (file.size > MAX_BYTES) {
+      throw new SignatureValidationError(
+        `Logo is too large (${(file.size / 1024 / 1024).toFixed(2)} MB). Maximum is ${MAX_BYTES / 1024 / 1024} MB.`,
+      );
+    }
+    const dims = await decodeImageDimensions(file);
+    if (dims.width > MAX_DIMENSION_PX || dims.height > MAX_DIMENSION_PX) {
+      throw new SignatureValidationError(
+        `Logo dimensions ${dims.width}×${dims.height} exceed ${MAX_DIMENSION_PX}×${MAX_DIMENSION_PX}. Please downscale before uploading.`,
+      );
+    }
+
+    const business = await this.db.businesses.get(businessId);
+    if (!business) throw new Error(`Business not found: ${businessId}`);
+    const buffer = await new Response(file).arrayBuffer();
+    const now = new Date().toISOString();
+    const attachmentId = ulid();
+    const attachment: Attachment = {
+      id: attachmentId,
+      business_id: businessId,
+      ref_type: 'logo',
+      ref_id: businessId,
+      filename: file.name || `logo-${attachmentId}`,
+      mime_type: file.type,
+      size_bytes: file.size,
+      checksum: await sha256HexOfBytes(new Uint8Array(buffer)),
+      blob: new Blob([buffer], { type: file.type }),
+      drive_file_id: null,
+      logical_path: `attachments/logos/${attachmentId}`,
+      created_at: now,
+      updated_at: now,
+    };
+    const patchedBusiness: Business = {
+      ...business,
+      logo_ref: attachmentId,
+      updated_at: now,
+      entity_version: (business.entity_version ?? 0) + 1,
+    };
+    await this.db.transaction('rw', [this.db.attachments, this.db.businesses], async () => {
+      await this.db.attachments.add(attachment);
+      await this.db.businesses.put(patchedBusiness);
+    });
+    return { attachment, business: patchedBusiness };
+  }
+
   /**
    * Remove the current signature reference from the business.
    *
@@ -295,3 +348,5 @@ export async function loadSignatureBlob(
   }
   return att.blob;
 }
+
+export const loadLogoBlob = loadSignatureBlob;

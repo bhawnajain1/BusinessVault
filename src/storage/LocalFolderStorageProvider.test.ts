@@ -539,7 +539,7 @@ describe('LocalFolderStorageProvider', () => {
           path: 'snapshots/ondemand/2026-09-25T11-48-37.133Z',
         },
         userManifest: {
-          schemaVersion: 12,
+          schemaVersion: 13,
           applicationVersion: '1.0.62',
           businessId: '01M0YRYGJS1Z4YJC915311BYPX',
           businessName: 'Tiger Marketing',

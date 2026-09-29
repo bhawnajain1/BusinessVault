@@ -20,6 +20,7 @@ import { downloadDiagnosticReport } from '../../lib/diagnosticBundle';
 import {
   BusinessProfileService,
   SignatureValidationError,
+  loadLogoBlob,
 } from '../../domain/BusinessProfileService';
 import { log } from '../../lib/log';
 import {
@@ -98,6 +99,7 @@ export default function Settings() {
       const patched: Business = {
         ...business,
         ...form,
+        udyamRegistrationNumber: (form.udyamRegistrationNumber ?? '').trim() || null,
         updated_at: new Date().toISOString(),
         entity_version: (business.entity_version ?? 0) + 1,
       };
@@ -135,6 +137,10 @@ export default function Settings() {
   const [signatureError, setSignatureError] = useState<string | null>(null);
   const [signatureBusy, setSignatureBusy] = useState(false);
   const signatureInputRef = useRef<HTMLInputElement | null>(null);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
+  const [logoError, setLogoError] = useState<string | null>(null);
+  const [logoBusy, setLogoBusy] = useState(false);
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
 
   // §8 Low-Stock Alerts — device-local preferences (localStorage-backed).
   // Kept as local state so the toggles feel instant; the setters push to
@@ -209,6 +215,24 @@ export default function Settings() {
     };
   }, [business?.id, business?.signature_ref]);
 
+  useEffect(() => {
+    let url: string | null = null;
+    let cancelled = false;
+    (async () => {
+      const blob = await loadLogoBlob(business?.logo_ref, db);
+      if (cancelled) return;
+      url = blob ? URL.createObjectURL(blob) : null;
+      setLogoPreviewUrl((previous) => {
+        if (previous) URL.revokeObjectURL(previous);
+        return url;
+      });
+    })();
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [business?.id, business?.logo_ref]);
+
   async function handleSignatureUpload(file: File) {
     if (!business) return;
     setSignatureError(null);
@@ -252,6 +276,65 @@ export default function Settings() {
     } finally {
       setSignatureBusy(false);
       if (signatureInputRef.current) signatureInputRef.current.value = '';
+    }
+  }
+
+  async function handleLogoUpload(file: File) {
+    if (!business) return;
+    setLogoError(null);
+    setLogoBusy(true);
+    try {
+      const { business: patched } = await new BusinessProfileService(db).uploadLogo(business.id, file);
+      const deviceId = await getDeviceId();
+      await appendSyncEvent(db, {
+        businessId: patched.id,
+        deviceId,
+        entityType: 'business',
+        entityId: patched.id,
+        operation: 'updated',
+        payload: patched,
+        timestamp: patched.updated_at,
+      });
+      setBusiness(patched);
+      setForm((f) => ({ ...f, logo_ref: patched.logo_ref }));
+    } catch (e) {
+      setLogoError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLogoBusy(false);
+      if (logoInputRef.current) logoInputRef.current.value = '';
+    }
+  }
+
+  async function handleLogoRemove() {
+    if (!business) return;
+    setLogoError(null);
+    setLogoBusy(true);
+    try {
+      const patched: Business = {
+        ...business,
+        logo_ref: null,
+        updated_at: new Date().toISOString(),
+        entity_version: (business.entity_version ?? 0) + 1,
+      };
+      const deviceId = await getDeviceId();
+      await db.transaction('rw', [db.businesses, db.sync_events], async () => {
+        await db.businesses.put(patched);
+        await appendSyncEvent(db, {
+          businessId: patched.id,
+          deviceId,
+          entityType: 'business',
+          entityId: patched.id,
+          operation: 'updated',
+          payload: patched,
+          timestamp: patched.updated_at,
+        });
+      });
+      setBusiness(patched);
+      setForm((f) => ({ ...f, logo_ref: null }));
+    } catch (e) {
+      setLogoError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLogoBusy(false);
     }
   }
 
@@ -418,6 +501,22 @@ export default function Settings() {
       <h1 className="text-xl font-semibold">Settings</h1>
 
       <section className="border border-slate-200 rounded p-4 bg-white">
+        <h2 className="text-sm font-semibold text-slate-700 mb-1">Company Logo</h2>
+        <p className="text-xs text-slate-500 mb-3">Upload a PNG, JPG, or WebP logo (up to 2 MB). It will appear on printed invoices.</p>
+        <div className="flex flex-col sm:flex-row gap-4 sm:items-start">
+          <div className="border border-slate-200 rounded bg-slate-50 w-[220px] h-[110px] flex items-center justify-center overflow-hidden">
+            {logoPreviewUrl ? <img src={logoPreviewUrl} alt="Company logo" className="max-h-full max-w-full object-contain" /> : <span className="text-xs text-slate-400">No logo uploaded</span>}
+          </div>
+          <div className="flex gap-2">
+            <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleLogoUpload(f); }} />
+            <button type="button" onClick={() => logoInputRef.current?.click()} disabled={logoBusy} className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50">{business.logo_ref ? 'Replace logo' : 'Upload logo'}</button>
+            {business.logo_ref && <button type="button" onClick={() => void handleLogoRemove()} disabled={logoBusy} className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100 disabled:opacity-50">Remove</button>}
+          </div>
+        </div>
+        {logoError && <div className="mt-2 text-xs text-rose-600">{logoError}</div>}
+      </section>
+
+      <section className="border border-slate-200 rounded p-4 bg-white">
         <h2 className="text-sm font-semibold text-slate-700 mb-3">Business profile</h2>
         <div className="grid grid-cols-2 gap-3 text-sm">
           <label className="col-span-2">
@@ -460,6 +559,15 @@ export default function Settings() {
               className="w-full border border-slate-300 rounded px-2 py-1.5 uppercase"
             />
             <GstinStateBadge gstin={form.gstin ?? ''} stateCode={form.state_code ?? ''} />
+          </label>
+          <label className="col-span-2">
+            <span className="block text-slate-700 mb-1">MSME / Udyam Registration Number</span>
+            <input
+              value={form.udyamRegistrationNumber ?? ''}
+              onChange={(e) => set('udyamRegistrationNumber', e.target.value)}
+              placeholder="Optional"
+              className="w-full border border-slate-300 rounded px-2 py-1.5"
+            />
           </label>
           <label>
             <span className="block text-slate-700 mb-1">State</span>

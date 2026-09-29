@@ -4,6 +4,18 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.67 — 2026-09-29
+
+### Changed
+
+- Added historical customer due calculations to printed invoices, including received amount, current balance, previous due, and total due.
+- Added company logo and Udyam registration details to invoice and POS print output.
+- Hardened business-profile persistence, database migrations, restore table coverage, and backup round-trip test coverage.
+
+### Tests
+
+- Passed the release gate, including typecheck, lint, unit tests, integration tests, mandatory backup round trip, and production build.
+
 ## 1.0.28 — 2026-09-23
 
 ### Fixed

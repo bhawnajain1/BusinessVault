@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { db } from '../../db';
-import type { Business, Customer, Invoice, InvoiceLine, Item } from '../../db/types';
+import type { Business, Customer, Invoice, InvoiceLine, Item, Payment } from '../../db/types';
 import Money from '../components/Money';
 import Qty from '../components/Qty';
-import { loadSignatureBlob } from '../../domain/BusinessProfileService';
+import { loadLogoBlob, loadSignatureBlob } from '../../domain/BusinessProfileService';
+import { getCustomerDueForInvoice, type CustomerInvoiceDue } from '../../domain/partyLedger';
 import { log } from '../../lib/log';
 
 interface Loaded {
@@ -18,6 +19,18 @@ interface Loaded {
   // they were issued. Null if the invoice never captured a signature, or if
   // the blob is missing (Drive-only, not yet hydrated).
   signatureBlobUrl: string | null;
+  logoBlobUrl: string | null;
+  paymentMethods: string[];
+  due: CustomerInvoiceDue;
+}
+
+function paymentMethodLabel(method: Payment['method']): string {
+  return method === 'upi' ? 'UPI' : method === 'card' ? 'Card' : method === 'cash' ? 'Cash' : 'Credit';
+}
+
+function formatDate(value: string): string {
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('en-IN');
 }
 
 // Indian numbering system amount-to-words. Handles up to 99,99,99,999 (99 crore).
@@ -104,17 +117,18 @@ export default function InvoicePrint() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let createdBlobUrl: string | null = null;
+    const createdBlobUrls: string[] = [];
     let cancelled = false;
     (async () => {
       try {
         if (!id) return;
         const invoice = await db.invoices.get(id);
         if (!invoice) throw new Error(`Invoice not found: ${id}`);
-        const [lines, customer, business] = await Promise.all([
+        const [lines, customer, business, payments] = await Promise.all([
           db.invoice_lines.where('invoice_id').equals(id).sortBy('line_no'),
           db.customers.get(invoice.customer_id),
           db.businesses.get(invoice.business_id),
+          db.payments.where('business_id').equals(invoice.business_id).toArray(),
         ]);
         const items = new Map<string, Item>();
         for (const iid of Array.from(new Set(lines.map((l) => l.item_id)))) {
@@ -125,22 +139,31 @@ export default function InvoicePrint() {
         // to a specific Attachment at creation time. If that pin exists,
         // load it. If it's null (invoice pre-dates §2, or the business had
         // the toggle off), skip the image and render the plain block.
-        const sigBlob = await loadSignatureBlob(
-          invoice.signature_attachment_id ?? null,
-          db,
-        );
+        const [sigBlob, logoBlob] = await Promise.all([
+          loadSignatureBlob(invoice.signature_attachment_id ?? null, db),
+          loadLogoBlob(business?.logo_ref, db),
+        ]);
+        const due = await getCustomerDueForInvoice(id, db);
         let signatureBlobUrl: string | null = null;
         if (sigBlob) {
           signatureBlobUrl = URL.createObjectURL(sigBlob);
-          createdBlobUrl = signatureBlobUrl;
+          createdBlobUrls.push(signatureBlobUrl);
+        }
+        let logoBlobUrl: string | null = null;
+        if (logoBlob) {
+          logoBlobUrl = URL.createObjectURL(logoBlob);
+          createdBlobUrls.push(logoBlobUrl);
         }
         log.info('invoice-print', 'signature resolved', {
           invoiceId: invoice.id,
           signatureAttachmentId: invoice.signature_attachment_id ?? null,
           renderingImage: !!signatureBlobUrl,
         });
+        const paymentMethods = payments
+          .filter((payment) => payment.allocations.some((allocation) => allocation.invoice_id === id))
+          .map((payment) => paymentMethodLabel(payment.method));
         if (cancelled) {
-          if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl);
+          createdBlobUrls.forEach((url) => URL.revokeObjectURL(url));
           return;
         }
         setData({
@@ -150,6 +173,9 @@ export default function InvoicePrint() {
           customer,
           items,
           signatureBlobUrl,
+          logoBlobUrl,
+          paymentMethods: Array.from(new Set(paymentMethods)),
+          due,
         });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -157,18 +183,45 @@ export default function InvoicePrint() {
     })();
     return () => {
       cancelled = true;
-      if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl);
+       createdBlobUrls.forEach((url) => URL.revokeObjectURL(url));
     };
   }, [id]);
 
   if (error) return <div className="p-6 text-rose-600">{error}</div>;
   if (!data) return <div className="p-6 text-slate-500">Loading...</div>;
-  const { business, invoice, lines, customer, items, signatureBlobUrl } = data;
+  const { business, invoice, lines, customer, items, signatureBlobUrl, logoBlobUrl, paymentMethods, due } = data;
   const isIntrastate = invoice.is_interstate === 0;
+  const taxRows = Array.from(
+    lines.reduce((rows, line) => {
+      const key = `${line.hsn}|${line.tax_rate_bps}`;
+      const row = rows.get(key) ?? {
+        hsn: line.hsn || '—', taxable: 0, rate: line.tax_rate_bps,
+        cgst: 0, sgst: 0, igst: 0,
+      };
+      row.taxable += line.taxable_paise;
+      row.cgst += line.cgst_paise;
+      row.sgst += line.sgst_paise;
+      row.igst += line.igst_paise;
+      rows.set(key, row);
+      return rows;
+    }, new Map<string, { hsn: string; taxable: number; rate: number; cgst: number; sgst: number; igst: number }>()).values(),
+  );
+  const totalTax = invoice.cgst_paise + invoice.sgst_paise + invoice.igst_paise;
+  const totalQty = lines.reduce((sum, line) => sum + line.qty_micros, 0);
 
   return (
     <>
       <style>{`
+        .invoice-print-root { font-family: Arial, Helvetica, sans-serif; color: #303442; }
+        .invoice-print-root table { border-collapse: collapse; width: 100%; }
+        .invoice-print-root th, .invoice-print-root td { border: 1px solid #3d414d; padding: 4px 6px; vertical-align: top; }
+        .invoice-print-root th { background: #f3f4f6; font-weight: 700; }
+        .invoice-print-root .section-title { background: #f3f4f6; font-weight: 700; padding: 5px 7px; border-bottom: 1px solid #3d414d; }
+        .invoice-print-root .muted { color: #5f6470; }
+        .invoice-print-root .right { text-align: right; }
+        .invoice-print-root .center { text-align: center; }
+        .invoice-print-root .nowrap { white-space: nowrap; }
+        .invoice-print-root .keep-together { break-inside: avoid; page-break-inside: avoid; }
         @media print {
           .no-print { display: none !important; }
           @page { size: A4; margin: 10mm; }
@@ -178,12 +231,15 @@ export default function InvoicePrint() {
              inside the printable area on A4. Without these overrides the
              10-col grid overflows the right margin and gets clipped. */
           .invoice-print-root { max-width: none !important; margin: 0 !important; padding: 0 !important; font-size: 11px !important; }
-          .invoice-print-root table { font-size: 10px !important; }
+           .invoice-print-root { width: 100%; font-size: 10px !important; }
+           .invoice-print-root table { font-size: 9px !important; }
+           .invoice-print-root th, .invoice-print-root td { padding: 3px 4px; }
+           .invoice-print-root .screen-only { display: none !important; }
         }
       `}</style>
 
-      <div className="invoice-print-root max-w-4xl mx-auto p-6 bg-white text-slate-900">
-        <div className="no-print flex items-center justify-between mb-4">
+      <div className="invoice-print-root max-w-4xl mx-auto p-4 bg-white">
+        <div className="no-print screen-only flex items-center justify-between mb-4">
           <Link
             to={`/invoices/${invoice.id}`}
             className="text-sm text-blue-700 hover:underline"
@@ -199,332 +255,89 @@ export default function InvoicePrint() {
           </button>
         </div>
 
-        <div className="border border-slate-800 p-4">
-          <div className="text-center border-b border-slate-800 pb-2 mb-3">
-            <div className="text-lg font-bold uppercase tracking-wide">Tax Invoice</div>
-            <div className="text-xs text-slate-600">(ORIGINAL FOR RECIPIENT)</div>
-          </div>
-
-          {/* Seller + Invoice meta */}
-          <div className="grid grid-cols-2 gap-4 border-b border-slate-800 pb-3">
-            <div>
-              <div className="font-semibold text-base">
-                {business?.legal_name || business?.name || '(Business name not set)'}
-              </div>
-              {business?.address_line1 && (
-                <div className="text-sm">{business.address_line1}</div>
-              )}
-              {business?.address_line2 && (
-                <div className="text-sm">{business.address_line2}</div>
-              )}
-              {(business?.city || business?.pincode) && (
-                <div className="text-sm">
-                  {[business.city, business.pincode].filter(Boolean).join(' - ')}
-                </div>
-              )}
-              {business?.state && (
-                <div className="text-sm">
-                  {business.state}
-                  {business.state_code ? ` (${business.state_code})` : ''}
-                </div>
-              )}
-              {business?.gstin && (
-                <div className="text-sm font-mono">GSTIN: {business.gstin}</div>
-              )}
-              {business?.pan && <div className="text-sm font-mono">PAN: {business.pan}</div>}
-              {business?.phone && <div className="text-sm">Phone: {business.phone}</div>}
-              {business?.email && <div className="text-sm">Email: {business.email}</div>}
+        <div className="border border-[#3d414d]">
+          <div className="center border-b border-[#3d414d] py-2 text-lg font-bold">Tax Invoice</div>
+          <div className="grid grid-cols-[140px_1fr_260px] gap-3 border-b border-[#3d414d] p-2 keep-together">
+            <div className="flex items-center justify-center">
+              {logoBlobUrl ? <img src={logoBlobUrl} alt="Company logo" className="max-h-28 max-w-32 object-contain" /> : <div className="h-24 w-28" aria-hidden="true" />}
             </div>
-            <div className="text-sm">
-              <table className="w-full">
-                <tbody>
-                  <tr>
-                    <td className="text-slate-600">Invoice #</td>
-                    <td className="text-right font-semibold">{invoice.invoice_number}</td>
-                  </tr>
-                  <tr>
-                    <td className="text-slate-600">Invoice Date</td>
-                    <td className="text-right">{formatBillDateTime(invoice.invoice_date, invoice.created_at)}</td>
-                  </tr>
-                  {invoice.due_date && (
-                    <tr>
-                      <td className="text-slate-600">Due Date</td>
-                      <td className="text-right">{invoice.due_date}</td>
-                    </tr>
-                  )}
-                  <tr>
-                    <td className="text-slate-600">Financial Year</td>
-                    <td className="text-right">{invoice.financial_year}</td>
-                  </tr>
-                  <tr>
-                    <td className="text-slate-600">Place of Supply</td>
-                    <td className="text-right">
-                      {invoice.place_of_supply} ({invoice.customer_state_code})
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="text-slate-600">Supply Type</td>
-                    <td className="text-right">
-                      {isIntrastate ? 'Intrastate' : 'Interstate'}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <div className="leading-5">
+              <div className="text-xl font-bold uppercase">{business?.legal_name || business?.name || 'Business'}</div>
+              <div>{[business?.address_line1, business?.address_line2, business?.city, business?.pincode].filter(Boolean).join(', ')}</div>
+              {business?.phone && <div>Phone: {business.phone}</div>}
+              {business?.state && <div>State: {business.state_code ? `${business.state_code}-` : ''}{business.state}</div>}
+            </div>
+            <div className="leading-5">
+              {business?.gstin && <div><strong>GSTIN:</strong> {business.gstin}</div>}
+              {business?.udyamRegistrationNumber && <div><strong>MSME / Udyam Registration No.:</strong> {business.udyamRegistrationNumber}</div>}
+              {business?.pan && <div><strong>PAN:</strong> {business.pan}</div>}
             </div>
           </div>
 
-          {/* Buyer block */}
-          <div className="grid grid-cols-2 gap-4 border-b border-slate-800 py-3">
-            <div>
-              <div className="text-xs uppercase text-slate-500 mb-1">Bill To</div>
-              <div className="font-semibold">
-                {customer?.name || 'Walk-in Customer'}
-              </div>
-              {customer?.billing_address && (
-                <div className="text-sm whitespace-pre-wrap">{customer.billing_address}</div>
-              )}
-              {customer?.state && (
-                <div className="text-sm">
-                  {customer.state}
-                  {customer.state_code ? ` (${customer.state_code})` : ''}
-                </div>
-              )}
-              {customer?.gstin && (
-                <div className="text-sm font-mono">GSTIN: {customer.gstin}</div>
-              )}
-              {customer?.phone && <div className="text-sm">Phone: {customer.phone}</div>}
-            </div>
-            <div>
-              <div className="text-xs uppercase text-slate-500 mb-1">Ship To</div>
-              {customer?.shipping_address ? (
-                <div className="text-sm whitespace-pre-wrap">{customer.shipping_address}</div>
-              ) : (
-                <div className="text-sm text-slate-500">(same as billing)</div>
-              )}
-            </div>
-          </div>
+          <table className="keep-together">
+            <thead><tr><th colSpan={2} className="text-left">Bill To:</th><th colSpan={2} className="text-left">Invoice Details:</th></tr></thead>
+            <tbody><tr>
+              <td colSpan={2} className="leading-5">
+                <strong>{customer?.name || 'Walk-in Customer'}</strong><br />
+                {customer?.billing_address && <>{customer.billing_address}<br /></>}
+                {customer?.phone && <>Contact No: {customer.phone}<br /></>}
+                {customer?.gstin && <>GSTIN: {customer.gstin}<br /></>}
+                {customer?.state && <>State: {customer.state_code ? `${customer.state_code}-` : ''}{customer.state}</>}
+              </td>
+              <td colSpan={2} className="leading-5">
+                <div><strong>Invoice No.:</strong> {invoice.invoice_number}</div>
+                <div><strong>Date:</strong> {formatDate(invoice.invoice_date)}</div>
+                <div><strong>Time:</strong> {formatBillDateTime('', invoice.created_at).replace(' · ', '')}</div>
+                {invoice.due_date && <div><strong>Due Date:</strong> {formatDate(invoice.due_date)}</div>}
+                <div><strong>Place of Supply:</strong> {invoice.place_of_supply}{invoice.customer_state_code ? ` (${invoice.customer_state_code})` : ''}</div>
+              </td>
+            </tr></tbody>
+          </table>
 
-          {/* Line items */}
-          <table className="w-full text-sm border-b border-slate-800 mt-3">
-            <thead>
-              <tr className="border-b border-slate-800 text-xs uppercase text-slate-600">
-                <th className="text-left py-1">#</th>
-                <th className="text-left py-1">Description</th>
-                <th className="text-left py-1">HSN</th>
-                <th className="text-right py-1">Qty</th>
-                <th className="text-right py-1">Rate</th>
-                <th className="text-right py-1">Taxable</th>
-                {isIntrastate ? (
-                  <>
-                    <th className="text-right py-1">
-                      CGST
-                      <br />
-                      <span className="text-[10px]">%/Amt</span>
-                    </th>
-                    <th className="text-right py-1">
-                      SGST
-                      <br />
-                      <span className="text-[10px]">%/Amt</span>
-                    </th>
-                  </>
-                ) : (
-                  <th className="text-right py-1">
-                    IGST
-                    <br />
-                    <span className="text-[10px]">%/Amt</span>
-                  </th>
-                )}
-                <th className="text-right py-1">Total</th>
-              </tr>
-            </thead>
+          <table className="mt-3">
+            <thead><tr><th>#</th><th className="text-left">Item name</th><th className="text-left">HSN / SAC</th><th className="right">Quantity</th><th>Unit</th><th className="right">Price / Unit (₹)</th><th className="right">GST (₹)</th><th className="right">Amount (₹)</th></tr></thead>
             <tbody>
-              {lines.map((l) => {
-                const gstPct = (l.tax_rate_bps / 100).toFixed(l.tax_rate_bps % 100 ? 2 : 0);
-                const halfPct = (l.tax_rate_bps / 200).toFixed(l.tax_rate_bps % 200 ? 2 : 0);
-                return (
-                  <tr key={l.id} className="border-b border-slate-200 align-top">
-                    <td className="py-1">{l.line_no}</td>
-                    <td className="py-1">
-                      <div>{items.get(l.item_id)?.name ?? l.item_id}</div>
-                      {l.description && (
-                        <div className="text-xs text-slate-500">{l.description}</div>
-                      )}
-                    </td>
-                    <td className="py-1">{l.hsn}</td>
-                    <td className="py-1 text-right">
-                      <Qty micros={l.qty_micros} />
-                    </td>
-                    <td className="py-1 text-right">
-                      <Money paise={l.unit_price_paise} />
-                    </td>
-                    <td className="py-1 text-right">
-                      <Money paise={l.taxable_paise} />
-                    </td>
-                    {isIntrastate ? (
-                      <>
-                        <td className="py-1 text-right">
-                          <div className="text-[10px]">{halfPct}%</div>
-                          <Money paise={l.cgst_paise} />
-                        </td>
-                        <td className="py-1 text-right">
-                          <div className="text-[10px]">{halfPct}%</div>
-                          <Money paise={l.sgst_paise} />
-                        </td>
-                      </>
-                    ) : (
-                      <td className="py-1 text-right">
-                        <div className="text-[10px]">{gstPct}%</div>
-                        <Money paise={l.igst_paise} />
-                      </td>
-                    )}
-                    <td className="py-1 text-right">
-                      <Money paise={l.line_total_paise} />
-                    </td>
-                  </tr>
-                );
-              })}
+              {lines.map((line) => <tr key={line.id}>
+                <td className="center">{line.line_no}</td>
+                <td><strong>{items.get(line.item_id)?.name ?? line.item_id}</strong>{line.description && <div className="muted">{line.description}</div>}</td>
+                <td>{line.hsn || '—'}</td>
+                <td className="right"><Qty micros={line.qty_micros} /></td>
+                <td className="center">{items.get(line.item_id)?.unit_id || '—'}</td>
+                <td className="right"><Money paise={line.unit_price_paise} /></td>
+                <td className="right"><Money paise={line.cgst_paise + line.sgst_paise + line.igst_paise + line.cess_paise} /></td>
+                <td className="right"><Money paise={line.line_total_paise} /></td>
+              </tr>)}
+              <tr><td /><td><strong>Total</strong></td><td /><td className="right"><strong><Qty micros={totalQty} /></strong></td><td /><td /><td className="right"><strong><Money paise={totalTax + invoice.cess_paise} /></strong></td><td className="right"><strong><Money paise={invoice.pre_round_total_paise} /></strong></td></tr>
             </tbody>
           </table>
 
-          {/* Totals */}
-          <div className="grid grid-cols-2 gap-4 mt-3">
-            <div className="text-sm">
-              <div className="text-xs uppercase text-slate-500 mb-1">Amount in words</div>
-              <div className="italic">{amountInWords(invoice.total_paise)}</div>
-              {invoice.notes && (
-                <div className="mt-3">
-                  <div className="text-xs uppercase text-slate-500 mb-1">Notes</div>
-                  <div className="whitespace-pre-wrap">{invoice.notes}</div>
-                </div>
-              )}
-              {invoice.terms && (
-                <div className="mt-4">
-                  <br />
-                  <div className="text-xs uppercase text-slate-500 mb-1">Terms</div>
-                  <div
-                    className={`whitespace-pre-wrap break-words ${
-                      invoice.terms.length > 180 ? 'text-xs leading-5' : ''
-                    }`}
-                  >
-                    {invoice.terms}
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="text-sm">
-              <table className="w-full">
-                <tbody>
-                  <tr>
-                    <td className="text-slate-600">Subtotal</td>
-                    <td className="text-right">
-                      <Money paise={invoice.subtotal_paise} />
-                    </td>
-                  </tr>
-                  {invoice.discount_paise !== 0 && (
-                    <tr>
-                      <td className="text-slate-600">Discount</td>
-                      <td className="text-right">
-                        - <Money paise={invoice.discount_paise} />
-                      </td>
-                    </tr>
-                  )}
-                  <tr>
-                    <td className="text-slate-600">Taxable Value</td>
-                    <td className="text-right">
-                      <Money paise={invoice.taxable_paise} />
-                    </td>
-                  </tr>
-                  {invoice.cgst_paise !== 0 && (
-                    <tr>
-                      <td className="text-slate-600">CGST</td>
-                      <td className="text-right">
-                        <Money paise={invoice.cgst_paise} />
-                      </td>
-                    </tr>
-                  )}
-                  {invoice.sgst_paise !== 0 && (
-                    <tr>
-                      <td className="text-slate-600">SGST</td>
-                      <td className="text-right">
-                        <Money paise={invoice.sgst_paise} />
-                      </td>
-                    </tr>
-                  )}
-                  {invoice.igst_paise !== 0 && (
-                    <tr>
-                      <td className="text-slate-600">IGST</td>
-                      <td className="text-right">
-                        <Money paise={invoice.igst_paise} />
-                      </td>
-                    </tr>
-                  )}
-                  {invoice.cess_paise !== 0 && (
-                    <tr>
-                      <td className="text-slate-600">Cess</td>
-                      <td className="text-right">
-                        <Money paise={invoice.cess_paise} />
-                      </td>
-                    </tr>
-                  )}
-                  {invoice.round_off_paise !== 0 && (
-                    <tr>
-                      <td className="text-slate-600">Round Off</td>
-                      <td className="text-right">
-                        <Money paise={invoice.round_off_paise} />
-                      </td>
-                    </tr>
-                  )}
-                  <tr className="border-t border-slate-800 font-semibold">
-                    <td className="pt-1">Grand Total</td>
-                    <td className="text-right pt-1">
-                      <Money paise={invoice.total_paise} />
-                    </td>
-                  </tr>
-                  {invoice.paid_paise !== 0 && (
-                    <tr>
-                      <td className="text-slate-600">Paid</td>
-                      <td className="text-right">
-                        <Money paise={invoice.paid_paise} />
-                      </td>
-                    </tr>
-                  )}
-                  {invoice.balance_paise !== 0 && (
-                    <tr className="font-semibold">
-                      <td>Balance Due</td>
-                      <td className="text-right">
-                        <Money paise={invoice.balance_paise} />
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
+          <div className="grid grid-cols-[1.6fr_1fr] mt-3 keep-together">
+            <div>
+              <div className="section-title">Tax Summary:</div>
+              <table><thead><tr><th>HSN / SAC</th><th>Taxable Amount (₹)</th>{isIntrastate ? <><th>CGST Rate (%)</th><th>CGST Amount (₹)</th><th>SGST Rate (%)</th><th>SGST Amount (₹)</th></> : <><th>IGST Rate (%)</th><th>IGST Amount (₹)</th></>}<th>Total Tax (₹)</th></tr></thead>
+                <tbody>{taxRows.map((row) => <tr key={`${row.hsn}-${row.rate}`}><td>{row.hsn}</td><td className="right"><Money paise={row.taxable} /></td>{isIntrastate ? <><td className="right">{(row.rate / 200).toFixed(2)}</td><td className="right"><Money paise={row.cgst} /></td><td className="right">{(row.rate / 200).toFixed(2)}</td><td className="right"><Money paise={row.sgst} /></td></> : <><td className="right">{(row.rate / 100).toFixed(2)}</td><td className="right"><Money paise={row.igst} /></td></>}<td className="right"><Money paise={row.cgst + row.sgst + row.igst} /></td></tr>)}<tr><td><strong>TOTAL</strong></td><td className="right"><strong><Money paise={invoice.taxable_paise} /></strong></td>{isIntrastate ? <><td /><td className="right"><strong><Money paise={invoice.cgst_paise} /></strong></td><td /><td className="right"><strong><Money paise={invoice.sgst_paise} /></strong></td></> : <><td /><td className="right"><strong><Money paise={invoice.igst_paise} /></strong></td></>}<td className="right"><strong><Money paise={totalTax} /></strong></td></tr></tbody>
               </table>
+              {paymentMethods.length > 0 && <><div className="section-title mt-3">Payment Mode:</div><div className="border border-t-0 border-[#3d414d] p-2">{paymentMethods.join(', ')}</div></>}
+            </div>
+            <div>
+              <table><tbody>
+                <tr><td>Sub Total</td><td className="right"><Money paise={invoice.subtotal_paise} /></td></tr>
+                {invoice.discount_paise !== 0 && <tr><td>Discount</td><td className="right"><Money paise={-invoice.discount_paise} /></td></tr>}
+                <tr><td>Round Off</td><td className="right"><Money paise={invoice.round_off_paise} /></td></tr>
+                <tr><td><strong>Total</strong></td><td className="right"><strong><Money paise={invoice.total_paise} /></strong></td></tr>
+              </tbody></table>
+              <div className="section-title">Invoice Amount in Words:</div><div className="border border-t-0 p-2 break-words">{amountInWords(invoice.total_paise)}</div>
+              <div className="flex justify-between border-x border-b border-[#3d414d] p-2"><span>Received</span><Money paise={due.received_paise} /></div>
+              <div className="flex justify-between border-x border-b border-[#3d414d] p-2"><span>Balance</span><Money paise={due.balance_paise} /></div>
+              <div className="flex justify-between border-x border-b border-[#3d414d] p-2"><span>Previous Due</span><Money paise={due.previous_due_paise} /></div>
+              <div className="flex justify-between border-x border-b border-[#3d414d] p-2 font-bold"><span>Total Due</span><Money paise={due.total_due_paise} /></div>
             </div>
           </div>
 
-          {/* Signature block — image resolved from invoice.signature_attachment_id */}
-          <div className="grid grid-cols-2 gap-4 mt-8 pt-3 border-t border-slate-800">
-            <div className="text-xs text-slate-600">
-              This is a computer-generated invoice and does not require a physical signature.
-            </div>
-            <div className="text-right text-sm">
-              <div className="mb-2">
-                For <strong>{business?.legal_name || business?.name || '—'}</strong>
-              </div>
-              {signatureBlobUrl ? (
-                <div className="flex justify-end">
-                  <img
-                    src={signatureBlobUrl}
-                    alt="Authorised signature"
-                    className="max-h-16 max-w-[200px] object-contain"
-                  />
-                </div>
-              ) : (
-                <div className="h-16" />
-              )}
-              <div className="border-t border-slate-400 pt-1 inline-block min-w-[180px]">
-                Authorised Signatory
-              </div>
-            </div>
+          {(invoice.terms || invoice.notes) && <div className="mt-3 keep-together"><div className="section-title">Terms &amp; Conditions</div><div className="border border-t-0 p-2 whitespace-pre-wrap break-words">{invoice.terms || invoice.notes}</div></div>}
+          <div className="grid grid-cols-2 mt-3 keep-together">
+            <div />
+            <div className="border border-[#3d414d] min-h-32 p-2 text-center"><strong>For {business?.legal_name || business?.name || 'Business'}:</strong><div className="h-20 flex items-center justify-center">{signatureBlobUrl && <img src={signatureBlobUrl} alt="Authorised signature" className="max-h-16 max-w-48 object-contain" />}</div><div className="border-t border-[#3d414d] pt-1">Authorized Signatory</div></div>
           </div>
         </div>
       </div>

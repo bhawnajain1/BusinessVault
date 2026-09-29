@@ -62,6 +62,7 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'current_financial_year', type: 'string' },
       { name: 'currency', type: 'string' },
       { name: 'logo_ref', type: 'string_or_null' },
+      { name: 'udyamRegistrationNumber', type: 'string_or_null' },
       { name: 'invoice_prefix', type: 'string' },
       { name: 'invoice_next_seq', type: 'number' },
       { name: 'default_invoice_terms', type: 'string' },
