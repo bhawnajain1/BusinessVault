@@ -247,6 +247,13 @@ const HANDLERS: Record<string, EventHandler> = {
   // journals written by shipped installs. Same table, same put — restore is
   // idempotent so the operation name doesn't affect the write.
   'invoice_line:update': put<InvoiceLine>((db) => db.invoice_lines),
+  'invoice_line:delete': async (evt, ctx) => {
+    const payload = asRecord(evt.payload, evt.event_id);
+    const id = String(payload.id ?? evt.entity_id ?? '');
+    if (id && (await ctx.db.invoice_lines.get(id))) {
+      await ctx.db.invoice_lines.delete(id);
+    }
+  },
 
   'purchase:create': put<Purchase>((db) => db.purchases),
   'purchase:created': put<Purchase>((db) => db.purchases),

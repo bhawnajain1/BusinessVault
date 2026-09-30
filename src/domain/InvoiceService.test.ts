@@ -596,7 +596,7 @@ describe('InvoiceService — cess and round-off posting (regression)', () => {
 });
 
 describe('InvoiceService.updateInvoice', () => {
-  it('reverses the original and reissues under the same invoice_number', async () => {
+  it('edits the existing invoice row under the same invoice_number', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -620,13 +620,14 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    expect(reissued.id).not.toBe(inv.id);
+    expect(reissued.id).toBe(inv.id);
     expect(reissued.invoice_number).toBe('INV-EDIT-1');
     const original = await db.invoices.get(inv.id);
-    expect(original?.reversed_by_invoice_id).not.toBeNull();
+    expect(original?.reversed_by_invoice_id).toBeNull();
+    expect(await db.invoices.count()).toBe(1);
   });
 
-  it('refuses to edit an already-superseded invoice', async () => {
+  it('can edit the same invoice more than once', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -639,9 +640,8 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    // First edit reverses the original and creates a reissue. The original's
-    // reversed_by_invoice_id is now set — a second edit against the original
-    // id must be refused (caller should target the reissued id instead).
+    // The original primary key remains stable, so a second edit updates the
+    // same row again.
     await service.updateInvoice(inv.id, {
       business_id: businessId,
       device_id: deviceId,
@@ -653,8 +653,7 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    await expect(
-      service.updateInvoice(inv.id, {
+    await expect(service.updateInvoice(inv.id, {
         business_id: businessId,
         device_id: deviceId,
         invoice_date: '2026-08-19',
@@ -664,8 +663,7 @@ describe('InvoiceService.updateInvoice', () => {
         is_interstate: false,
         financial_year: '2026-27',
         lines: [intrastateLine()],
-      }),
-    ).rejects.toThrow(/already-superseded/);
+      })).resolves.toMatchObject({ id: inv.id });
   });
 });
 
@@ -1735,12 +1733,11 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     });
 
     expect(updated.invoice_number).toBe('INV-000042');
-    // Original still exists and is marked as superseded (by its credit note).
+    // The original row is updated in place.
     const original = await db.invoices.get(inv.id);
-    expect(original?.reversed_by_invoice_id).toBeTruthy();
-    expect(original?.invoice_number).toBe('INV-000001');
-    // The reissue is a fresh invoice with the new number.
-    expect(updated.id).not.toBe(inv.id);
+    expect(original?.reversed_by_invoice_id).toBeNull();
+    expect(original?.invoice_number).toBe('INV-000042');
+    expect(updated.id).toBe(inv.id);
     // Audit row was written.
     const audit = await db.audit_log
       .where('[business_id+entity_type+entity_id]')

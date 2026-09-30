@@ -98,11 +98,13 @@ export interface CreateInvoiceInput {
   notes?: string;
   terms?: string;
   idempotencyKey?: string;
+  /** Internal edit path: reuse the existing invoice primary key. */
+  replaceInvoiceId?: string;
 }
 
 export interface ReversalResult {
   originalInvoice: Invoice;
-  creditNote: Invoice;
+  creditNote: Invoice | null;
   reversingJournalEntryId: string;
 }
 
@@ -193,7 +195,16 @@ export class InvoiceService {
     }
 
     const now = new Date().toISOString();
-    const invoiceId = ulid();
+    const existingInvoice = input.replaceInvoiceId
+      ? await this.db.invoices.get(input.replaceInvoiceId)
+      : undefined;
+    if (input.replaceInvoiceId && !existingInvoice) {
+      throw new Error(`Invoice not found: ${input.replaceInvoiceId}`);
+    }
+    const invoiceId = input.replaceInvoiceId ?? ulid();
+    const existingInvoiceLines = input.replaceInvoiceId
+      ? await this.db.invoice_lines.where('invoice_id').equals(input.replaceInvoiceId).toArray()
+      : [];
     const journalEntryId = ulid();
 
     // Compute totals from lines (defense in depth — caller supplied but we recompute).
@@ -298,13 +309,13 @@ export class InvoiceService {
       e_invoice_ack_date: null,
       e_invoice_qr_reference: null,
       e_invoice_note: null,
-      created_at: now,
+      created_at: existingInvoice?.created_at ?? now,
       updated_at: now,
-      entity_version: 1,
+      entity_version: (existingInvoice?.entity_version ?? 0) + 1,
     };
 
     const invoiceLines: InvoiceLine[] = input.lines.map((l, idx) => ({
-      id: ulid(),
+      id: existingInvoiceLines[idx]?.id ?? ulid(),
       business_id: input.business_id,
       invoice_id: invoiceId,
       line_no: idx + 1,
@@ -410,14 +421,38 @@ export class InvoiceService {
         const dupe = await this.db.invoices
           .where('[business_id+invoice_number]')
           .equals([input.business_id, input.invoice_number])
-          .filter((row) => !row.reversed_by_invoice_id && !row.deleted_at)
+          .filter(
+            (row) =>
+              row.id !== input.replaceInvoiceId &&
+              !row.reversed_by_invoice_id &&
+              !row.deleted_at,
+          )
           .first();
         if (dupe) {
           throw new Error(
             `Invoice number "${input.invoice_number}" already exists and is already in use by this business. Choose a different invoice number.`,
           );
         }
-        await this.db.invoices.add(invoice);
+        if (input.replaceInvoiceId) {
+          const retainedLineIds = new Set(invoiceLines.map((line) => line.id));
+          for (const oldLine of existingInvoiceLines) {
+            if (retainedLineIds.has(oldLine.id)) continue;
+            await this.db.invoice_lines.delete(oldLine.id);
+            await writeEventInTx(this.db, {
+              business_id: input.business_id,
+              device_id: input.device_id,
+              entity_type: 'invoice_line',
+              entity_id: oldLine.id,
+              operation: 'deleted' as SyncEvent['operation'],
+              entity_version: 1,
+              timestamp: now,
+              payload: { id: oldLine.id, invoice_id: invoiceId },
+            });
+          }
+          await this.db.invoices.put(invoice);
+        } else {
+          await this.db.invoices.add(invoice);
+        }
 
         const parsedNumber = parseInvoiceNumber(input.invoice_number);
         if (parsedNumber) {
@@ -442,7 +477,11 @@ export class InvoiceService {
 
         // 2. invoice_lines rows + one sync event per line so restore can
         //    rehydrate the ledger. Handlers live at eventHandlers.ts.
-        await this.db.invoice_lines.bulkAdd(invoiceLines);
+        if (input.replaceInvoiceId) {
+          await this.db.invoice_lines.bulkPut(invoiceLines);
+        } else {
+          await this.db.invoice_lines.bulkAdd(invoiceLines);
+        }
         for (const line of invoiceLines) {
           await writeEventInTx(this.db, {
             business_id: input.business_id,
@@ -582,8 +621,8 @@ export class InvoiceService {
           device_id: input.device_id,
           entity_type: 'invoice',
           entity_id: invoiceId,
-          operation: 'created',
-          entity_version: 1,
+           operation: input.replaceInvoiceId ? 'updated' : 'created',
+           entity_version: invoice.entity_version,
           timestamp: now,
           payload: invoiceEventPayload,
           payload_hash: invoicePayloadHash,
@@ -609,6 +648,7 @@ export class InvoiceService {
   private async reverseInvoicePosting(
     invoiceId: string,
     reason: string,
+    createCreditNote = true,
   ): Promise<ReversalResult> {
     if (!reason || reason.trim().length === 0) {
       throw new Error('reversal reason required');
@@ -621,7 +661,7 @@ export class InvoiceService {
     }
 
     const now = new Date().toISOString();
-    const creditNoteId = ulid();
+    const creditNoteId = createCreditNote ? ulid() : null;
     const reversalJournalId = ulid();
 
     // Fetch original journal lines to reverse them exactly (defensive).
@@ -653,11 +693,11 @@ export class InvoiceService {
     const reversalJournal: JournalEntry = {
       id: reversalJournalId,
       business_id: original.business_id,
-      entry_number: `JE-REV-${creditNoteId}`,
+      entry_number: `JE-REV-${invoiceId}`,
       entry_date: original.invoice_date,
       narration: `Reversal of ${original.invoice_number}: ${reason}`,
       ref_type: 'reversal',
-      ref_id: creditNoteId,
+      ref_id: invoiceId,
       reversed_by_id: null,
       reverses_id: original.journal_entry_id,
       total_debit_paise: originalJournal.total_credit_paise,
@@ -669,9 +709,9 @@ export class InvoiceService {
     };
 
     // Credit note = a negative-mirror invoice pointing back at the original.
-    const creditNote: Invoice = {
+    const creditNote: Invoice | null = createCreditNote ? {
       ...original,
-      id: creditNoteId,
+      id: creditNoteId!,
       invoice_number: `${original.invoice_number}-CN`,
       subtotal_paise: -original.subtotal_paise,
       discount_paise: -original.discount_paise,
@@ -694,7 +734,7 @@ export class InvoiceService {
       created_at: now,
       updated_at: now,
       entity_version: 1,
-    };
+    } : null;
 
     // Pre-compute hashes outside tx (SubtleCrypto).
     // NOTE: payload field `voided_at` is retained for backwards wire compatibility
@@ -707,7 +747,9 @@ export class InvoiceService {
     };
     const reversalHash = await sha256Hex(canonicalJson(reversalPayload));
     const creditNotePayload = creditNote;
-    const creditNoteHash = await sha256Hex(canonicalJson(creditNotePayload));
+    const creditNoteHash = creditNote
+      ? await sha256Hex(canonicalJson(creditNotePayload))
+      : null;
 
     return await this.db.transaction(
       'rw',
@@ -723,18 +765,19 @@ export class InvoiceService {
       ],
       async () => {
         // Mark original as reversed (append-only: we do NOT delete rows).
-        await this.db.invoices.update(invoiceId, {
-          reversed_by_invoice_id: creditNoteId,
-          updated_at: now,
-          entity_version: original.entity_version + 1,
-        });
+        if (createCreditNote) {
+          await this.db.invoices.update(invoiceId, {
+            reversed_by_invoice_id: creditNoteId,
+            updated_at: now,
+            entity_version: original.entity_version + 1,
+          });
+        }
 
         // Insert credit note invoice + mirror lines.
-        await this.db.invoices.add(creditNote);
         const creditNoteLines: InvoiceLine[] = originalInvoiceLines.map((l) => ({
           ...l,
           id: ulid(),
-          invoice_id: creditNoteId,
+          invoice_id: creditNoteId!,
           qty_micros: -l.qty_micros,
           discount_paise: -l.discount_paise,
           taxable_paise: -l.taxable_paise,
@@ -744,8 +787,12 @@ export class InvoiceService {
           cess_paise: -l.cess_paise,
           line_total_paise: -l.line_total_paise,
         }));
-        await this.db.invoice_lines.bulkAdd(creditNoteLines);
+        if (creditNote) {
+          await this.db.invoices.add(creditNote);
+          await this.db.invoice_lines.bulkAdd(creditNoteLines);
+        }
         for (const cnl of creditNoteLines) {
+          if (!creditNote) continue;
           await writeEventInTx(this.db, {
             business_id: original.business_id,
             device_id: 'system',
@@ -769,7 +816,7 @@ export class InvoiceService {
               line.item_id,
               line.warehouse_id,
               line.qty_micros,
-              creditNoteId,
+              reversalJournalId,
               original.invoice_date,
             );
           }
@@ -803,28 +850,30 @@ export class InvoiceService {
         }
 
         // Sync events for the reversal + the credit note.
-        await writeEventInTx(this.db, {
-          business_id: original.business_id,
-          device_id: 'system',
-          entity_type: 'invoice',
-          entity_id: invoiceId,
-          operation: 'reversed',
-          entity_version: original.entity_version + 1,
-          timestamp: now,
-          payload: reversalPayload,
-          payload_hash: reversalHash,
-        });
-        await writeEventInTx(this.db, {
-          business_id: original.business_id,
-          device_id: 'system',
-          entity_type: 'invoice',
-          entity_id: creditNoteId,
-          operation: 'created',
-          entity_version: 1,
-          timestamp: now,
-          payload: creditNotePayload,
-          payload_hash: creditNoteHash,
-        });
+        if (creditNote) {
+          await writeEventInTx(this.db, {
+            business_id: original.business_id,
+            device_id: 'system',
+            entity_type: 'invoice',
+            entity_id: invoiceId,
+            operation: 'reversed',
+            entity_version: original.entity_version + 1,
+            timestamp: now,
+            payload: reversalPayload,
+            payload_hash: reversalHash,
+          });
+          await writeEventInTx(this.db, {
+            business_id: original.business_id,
+            device_id: 'system',
+            entity_type: 'invoice',
+            entity_id: creditNote.id,
+            operation: 'created',
+            entity_version: 1,
+            timestamp: now,
+            payload: creditNotePayload,
+            payload_hash: creditNoteHash!,
+          });
+        }
 
         const updatedOriginal = await this.db.invoices.get(invoiceId);
         return {
@@ -1530,7 +1579,7 @@ export class InvoiceService {
       proposedNumber: isRename ? proposedNumber : original.invoice_number,
       lineCount: input.lines.length,
     });
-    await this.reverseInvoicePosting(invoiceId, 'edit');
+    await this.reverseInvoicePosting(invoiceId, 'edit', false);
     const nextNumber = isRename ? proposedNumber : original.invoice_number;
 
     // Emit the rename audit row BEFORE reissuing, so an interrupted reissue
@@ -1558,9 +1607,7 @@ export class InvoiceService {
       });
     }
 
-    // Strip our extra invoice_number key so we don't pass it through as the
-    // "id" for the reissue — createInvoice takes it via its own invoice_number
-    // field which we set explicitly here.
+    // Strip our extra invoice_number key and reuse the existing invoice ID.
     const { invoice_number: _ignored, ...rest } = input;
     void _ignored;
     let reissued: Invoice;
@@ -1568,6 +1615,7 @@ export class InvoiceService {
       reissued = await this.createInvoice({
         ...rest,
         invoice_number: nextNumber,
+        replaceInvoiceId: invoiceId,
       });
     } catch (error) {
       log.error('invoice', 'updateInvoice reissue failed after reversal', {

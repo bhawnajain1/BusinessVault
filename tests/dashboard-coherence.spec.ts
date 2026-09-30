@@ -211,7 +211,7 @@ beforeEach(async () => {
 describe('Dashboard/InvoicesPage/Receivables coherence', () => {
   it('after 4 creates + 2 renames + 1 more, all three surfaces agree', async () => {
     // Reproduces the exact sequence from the user's debug log:
-    // 4 invoices created, 2 renamed (rename-edit produces original + CN + reissue),
+    // 4 invoices created, 2 renamed in place,
     // then 1 more invoice created.
     const inv1 = await createSimpleInvoice('INV-000001', 100000);
     const inv2 = await createSimpleInvoice('INV-000002', 200000);
@@ -287,11 +287,8 @@ describe('Dashboard/InvoicesPage/Receivables coherence', () => {
         db.advances.where('business_id').equals(businessId).toArray(),
       ]);
 
-    // Sanity: 4 originals + 2 CNs + 2 reissues + 1 fresh = 9 raw rows.
-    // If InvoiceService ever changes the reissue mechanic (e.g. mutates
-    // in place instead of appending), this number drops — but every
-    // downstream surface should still agree.
-    expect(invoiceRows.length).toBe(9);
+    // In-place edits do not add credit-note invoice rows.
+    expect(invoiceRows.length).toBe(5);
 
     // Surface 1: Dashboard KPI (via extracted pure fn).
     const stats = computeDashboardStats({
@@ -365,8 +362,8 @@ describe('Dashboard/InvoicesPage/Receivables coherence', () => {
     void receivablesInvoiceIds;
 
     // Diagnostics: the hidden-row gap matches what actually happened.
-    expect(stats.diagnostics.supersededInvoices).toBe(2);
-    expect(stats.diagnostics.creditNotes).toBe(2);
+    expect(stats.diagnostics.supersededInvoices).toBe(0);
+    expect(stats.diagnostics.creditNotes).toBe(0);
     expect(stats.diagnostics.recycledInvoices).toBe(0);
   });
 
