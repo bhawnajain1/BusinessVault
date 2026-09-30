@@ -116,8 +116,8 @@ export default function CustomersPage() {
       const [invs, pays, advs, customers] = await Promise.all([
         db.invoices.where('business_id').equals(businessId).toArray(),
         db.payments
-          .where('[business_id+direction]')
-          .equals([businessId, 'in'])
+          .where('business_id')
+          .equals(businessId)
           .toArray(),
         db.advances
           .where('business_id')
@@ -143,9 +143,11 @@ export default function CustomersPage() {
       const lastPaymentByCustomer = new Map<string, string>();
       for (const p of pays) {
         if (p.party_type !== 'customer') continue;
-        const prev = lastPaymentByCustomer.get(p.party_id);
-        if (!prev || p.payment_date > prev) {
-          lastPaymentByCustomer.set(p.party_id, p.payment_date);
+        if (p.direction === 'in') {
+          const prev = lastPaymentByCustomer.get(p.party_id);
+          if (!prev || p.payment_date > prev) {
+            lastPaymentByCustomer.set(p.party_id, p.payment_date);
+          }
         }
         for (const a of p.allocations) {
           if (!a.invoice_id) continue;

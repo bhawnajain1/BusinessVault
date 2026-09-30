@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.78 — 2026-09-30
+
+### Fixed
+
+- Customer detail, customer ledgers, and customer rollups now include outgoing refund payments, so fully returned paid invoices show net paid and closing balances of zero while incoming receipt dates remain accurate.
+
 ## 1.0.77 — 2026-09-30
 
 ### Fixed

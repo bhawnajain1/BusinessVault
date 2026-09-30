@@ -97,7 +97,7 @@ interface StatementRow {
   credit_paise: number;
 }
 
-function buildStatement(
+export function buildStatement(
   invoices: Invoice[],
   salesReturns: SalesReturn[],
   payments: Payment[],
@@ -107,7 +107,6 @@ function buildStatement(
   const paymentJournalIds = new Set(payments.map((pay) => pay.journal_entry_id));
   for (const inv of invoices) {
     if (
-      inv.status === 'cancelled' ||
       inv.status === 'draft' ||
       inv.deleted_at ||
       inv.reversed_by_invoice_id
@@ -166,6 +165,16 @@ function buildStatement(
   return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
+function signedCustomerPaymentAmount(payment: Payment): number {
+  return payment.direction === 'out' ? -Math.abs(payment.amount_paise) : Math.abs(payment.amount_paise);
+}
+
+export function calculateNetPaid(payments: Payment[]): number {
+  return payments
+    .filter((p) => !p.deleted_at)
+    .reduce((sum, payment) => sum + signedCustomerPaymentAmount(payment), 0);
+}
+
 export default function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -214,8 +223,8 @@ export default function CustomerDetailPage() {
             .equals([businessId, id])
             .toArray(),
           db.payments
-            .where('[business_id+direction]')
-            .equals([businessId, 'in'])
+            .where('business_id')
+            .equals(businessId)
             .filter((p) => p.party_id === id && p.party_type === 'customer')
             .toArray(),
           db.advances
@@ -368,9 +377,7 @@ export default function CustomerDetailPage() {
     );
     // Total cash received includes on-account payments. Invoice paid totals
     // remain allocation-only and are shown in the invoice table.
-    const totalPaid = payments
-      .filter((p) => !p.deleted_at)
-      .reduce((s, p) => s + p.amount_paise, 0);
+    const totalPaid = calculateNetPaid(payments);
     const unallocatedPaid = payments
       .filter((p) => !p.deleted_at)
       .reduce(
