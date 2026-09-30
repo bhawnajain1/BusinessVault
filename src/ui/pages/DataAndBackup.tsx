@@ -101,7 +101,9 @@ export default function DataAndBackup() {
       window.location.assign(`${import.meta.env.BASE_URL}onboarding`);
     } catch (err) {
       release();
-      setReconnectError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setReconnectError(message);
+      throw err;
     }
   }, []);
 

@@ -37,6 +37,10 @@ let workerHandle: StopHandle | null = null;
 let bootGeneration = 0;
 let autoBootSuppressed = false;
 
+export function suppressProviderBoot(): void {
+  autoBootSuppressed = true;
+}
+
 function bootIsCurrent(generation: number): boolean {
   return generation === bootGeneration;
 }

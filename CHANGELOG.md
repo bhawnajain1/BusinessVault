@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.74 — 2026-09-30
+
+### Fixed
+
+- Start Fresh now disconnects active storage, revokes saved Drive sessions, removes saved local-folder access, and reports reset failures instead of redirecting as though the reset succeeded.
+
 ## 1.0.73 — 2026-09-30
 
 ### Fixed
