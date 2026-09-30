@@ -4,6 +4,18 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.70 — 2026-09-30
+
+### Fixed
+
+- Fixed Trial Balance and Profit & Loss reporting for reduced-value invoice edits so obsolete edit-reversal credit entries are not shown; reports now reflect the final edited bill amount.
+- Updated the legacy invoice-edit CN repair tool to preserve audit journals and stock movements while excluding obsolete edit postings from financial reports.
+- Hardened invoice creation transactions against browser IndexedDB premature-commit errors.
+
+### Tests
+
+- Added regression coverage for reduced-value invoice edits and legacy invoice-edit CN repair.
+
 ## 1.0.69 — 2026-09-30
 
 ### Added
