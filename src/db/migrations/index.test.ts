@@ -139,3 +139,23 @@ describe('customer-specific item price migration', () => {
     expect(second).toEqual(first);
   });
 });
+
+describe('business profile migration', () => {
+  it('adds an optional Udyam registration number without changing existing values', () => {
+    const result = migrateSnapshot(
+      {
+        businesses: [
+          { id: 'legacy', name: 'Legacy Shop' },
+          { id: 'configured', name: 'Configured Shop', udyamRegistrationNumber: 'UDYAM-RJ-17-0075837' },
+        ],
+      },
+      12,
+      13,
+    );
+
+    expect(result.tables.businesses).toEqual([
+      { id: 'legacy', name: 'Legacy Shop', udyamRegistrationNumber: null },
+      { id: 'configured', name: 'Configured Shop', udyamRegistrationNumber: 'UDYAM-RJ-17-0075837' },
+    ]);
+  });
+});

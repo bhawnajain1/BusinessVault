@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { computePayables, computeReceivables } from './partyLedger';
+import { beforeEach, describe, expect, it } from 'vitest';
+import 'fake-indexeddb/auto';
+import { BusinessVaultDB } from '../db/database';
+import { computePayables, computeReceivables, getCustomerDueForInvoice } from './partyLedger';
 import type {
   Advance,
   Customer,
@@ -8,6 +10,13 @@ import type {
   SalesReturn,
   Supplier,
 } from '../db/types';
+
+let dueDb: BusinessVaultDB;
+
+beforeEach(async () => {
+  dueDb = new BusinessVaultDB(`bv-due-${Math.random().toString(36).slice(2)}`);
+  await dueDb.open();
+});
 
 function mkCust(o: { id: string; opening_balance_paise?: number }): Customer {
   return {
@@ -358,6 +367,62 @@ describe('computeReceivables', () => {
     expect(ar.perCustomer).toHaveLength(1);
     expect(ar.perCustomer[0].customer_id).toBe('Cnew');
     expect(ar.perCustomer[0].outstanding_paise).toBe(50_00);
+  });
+});
+
+describe('getCustomerDueForInvoice', () => {
+  it('excludes the current invoice and uses payment allocation time for historical due', async () => {
+    const customer = mkCust({ id: 'C1' });
+    await dueDb.customers.add(customer);
+    const prior = mkInv({ id: 'A', total_paise: 100_000 });
+    prior.created_at = '2026-08-01T09:00:00.000Z';
+    const current = mkInv({ id: 'B', total_paise: 200_000 });
+    current.created_at = '2026-08-02T09:00:00.000Z';
+    await dueDb.invoices.bulkAdd([prior, current]);
+    await dueDb.payments.add({
+      id: 'PAY-A', business_id: 'B', payment_number: 'PAY-A', payment_date: '2026-08-01',
+      direction: 'in', party_type: 'customer', party_id: 'C1', method: 'cash',
+      bank_name: null, account_id: 'cash', amount_paise: 60_000, reference: '', notes: '',
+      allocations: [{ invoice_id: 'A', amount_paise: 60_000 }], journal_entry_id: 'JE-A',
+      created_at: '2026-08-01T12:00:00.000Z', updated_at: '2026-08-01T12:00:00.000Z', entity_version: 1,
+    });
+    await dueDb.payments.add({
+      id: 'PAY-B', business_id: 'B', payment_number: 'PAY-B', payment_date: '2026-08-02',
+      direction: 'in', party_type: 'customer', party_id: 'C1', method: 'upi',
+      bank_name: null, account_id: 'cash', amount_paise: 50_000, reference: '', notes: '',
+      allocations: [{ invoice_id: 'B', amount_paise: 50_000 }], journal_entry_id: 'JE-B',
+      created_at: '2026-08-02T12:00:00.000Z', updated_at: '2026-08-02T12:00:00.000Z', entity_version: 1,
+    });
+
+    await expect(getCustomerDueForInvoice('B', dueDb)).resolves.toEqual({
+      received_paise: 50_000,
+      balance_paise: 150_000,
+      previous_due_paise: 40_000,
+      total_due_paise: 190_000,
+    });
+  });
+
+  it('orders same-day invoices by created time and remains stable when later payments are added', async () => {
+    await dueDb.customers.add(mkCust({ id: 'C1' }));
+    const first = mkInv({ id: 'A', total_paise: 100_000 });
+    first.created_at = '2026-08-01T09:00:00.000Z';
+    const second = mkInv({ id: 'B', total_paise: 50_000 });
+    second.created_at = '2026-08-01T10:00:00.000Z';
+    await dueDb.invoices.bulkAdd([first, second]);
+    const before = await getCustomerDueForInvoice('B', dueDb);
+    expect(before.previous_due_paise).toBe(100_000);
+
+    await dueDb.payments.add({
+      id: 'PAY-LATE', business_id: 'B', payment_number: 'PAY-LATE', payment_date: '2026-08-03',
+      direction: 'in', party_type: 'customer', party_id: 'C1', method: 'cash',
+      bank_name: null, account_id: 'cash', amount_paise: 100_000, reference: '', notes: '',
+      allocations: [{ invoice_id: 'A', amount_paise: 100_000 }], journal_entry_id: 'JE-LATE',
+      created_at: '2026-08-03T09:00:00.000Z', updated_at: '2026-08-03T09:00:00.000Z', entity_version: 1,
+    });
+    await expect(getCustomerDueForInvoice('B', dueDb)).resolves.toMatchObject({
+      previous_due_paise: 100_000,
+      total_due_paise: 150_000,
+    });
   });
 });
 

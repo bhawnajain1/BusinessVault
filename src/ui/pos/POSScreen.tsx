@@ -10,6 +10,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useParams } from 'react-router-dom';
 import { ulid } from 'ulid';
 import { db } from '../../db';
+import { loadLogoBlob } from '../../domain/BusinessProfileService';
 import { currentBusinessId } from '../../lib/business';
 import type {
   Business,
@@ -130,6 +131,7 @@ export default function POSScreen(): JSX.Element {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedFlashKey, setSavedFlashKey] = useState<number>(0);
   const [receipt, setReceipt] = useState<SavedReceipt | null>(null);
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const paymentInputRef = useRef<HTMLInputElement | null>(null);
@@ -138,6 +140,24 @@ export default function POSScreen(): JSX.Element {
   useEffect(() => {
     searchInputRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    let url: string | null = null;
+    let cancelled = false;
+    (async () => {
+      const blob = await loadLogoBlob(business?.logo_ref, db);
+      if (cancelled) return;
+      url = blob ? URL.createObjectURL(blob) : null;
+      setLogoUrl((previous) => {
+        if (previous) URL.revokeObjectURL(previous);
+        return url;
+      });
+    })();
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [business?.id, business?.logo_ref]);
 
   const searchResults = useLiveQuery<Item[], Item[]>(
     async () => {
@@ -846,6 +866,7 @@ export default function POSScreen(): JSX.Element {
           lines={receipt.lines}
           itemsById={receipt.itemsById}
           payments={receipt.payments}
+          logoUrl={logoUrl}
           autoPrint
           onAfterPrint={() => setReceipt(null)}
         />

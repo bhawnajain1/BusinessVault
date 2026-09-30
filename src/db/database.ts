@@ -13,6 +13,7 @@ import {
   STORES_V10,
   STORES_V11,
   STORES_V12,
+  STORES_V13,
 } from './schema';
 import { ulid } from 'ulid';
 import { pokeSyncWorker } from '../sync/pokeChannel';
@@ -336,6 +337,15 @@ export class BusinessVaultDB extends Dexie {
         void updated;
       });
     this.version(12).stores(STORES_V12);
+    this.version(13)
+      .stores(STORES_V13)
+      .upgrade(async (tx) => {
+        await tx.table('businesses').toCollection().modify((row: {
+          udyamRegistrationNumber?: string | null;
+        }) => {
+          if (row.udyamRegistrationNumber === undefined) row.udyamRegistrationNumber = null;
+        });
+      });
 
     // After any sync_event insert commits, kick the sync worker so the write
     // lands in the local backup folder within a few hundred ms instead of

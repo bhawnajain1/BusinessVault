@@ -352,6 +352,21 @@ const migration_v11_to_v12: Migration = {
   },
 };
 
+const migration_v12_to_v13: Migration = {
+  from: 12,
+  to: 13,
+  describe: 'v12 → v13: adds optional MSME / Udyam registration number',
+  apply(tables) {
+    return {
+      ...tables,
+      businesses: (tables.businesses ?? []).map((row) => ({
+        ...row,
+        udyamRegistrationNumber: row.udyamRegistrationNumber ?? null,
+      })),
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
@@ -365,6 +380,7 @@ export const MIGRATIONS: Migration[] = [
   migration_v9_to_v10,
   migration_v10_to_v11,
   migration_v11_to_v12,
+  migration_v12_to_v13,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

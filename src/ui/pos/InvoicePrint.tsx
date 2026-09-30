@@ -28,6 +28,7 @@ export interface InvoicePrintProps {
   payments: PrintablePayment[];
   autoPrint?: boolean;
   onAfterPrint?: () => void;
+  logoUrl?: string | null;
 }
 
 // Thermal 58mm receipt. Printable area is ~48mm wide (32 monospace cols).
@@ -57,7 +58,8 @@ export default function InvoicePrint(props: InvoicePrintProps): JSX.Element {
     <>
       <style>{PRINT_CSS}</style>
       <div className="pos-print-root" role="document" aria-label="Invoice receipt">
-        <div className="pos-print-header">
+         <div className="pos-print-header">
+          {props.logoUrl ? <img src={props.logoUrl} alt="Company logo" className="pos-print-logo" /> : null}
           <div className="pos-print-biz-name">{business?.name ?? 'BusinessVault'}</div>
           {business?.address_line1 ? (
             <div className="pos-print-line">{business.address_line1}</div>
@@ -69,6 +71,9 @@ export default function InvoicePrint(props: InvoicePrintProps): JSX.Element {
           ) : null}
           {business?.gstin ? (
             <div className="pos-print-line">GSTIN: {business.gstin}</div>
+          ) : null}
+          {business?.udyamRegistrationNumber ? (
+            <div className="pos-print-line">Udyam Registration Number: {business.udyamRegistrationNumber}</div>
           ) : null}
           {business?.phone ? (
             <div className="pos-print-line">Tel: {business.phone}</div>
@@ -227,6 +232,7 @@ const PRINT_CSS = `
     print-color-adjust: exact;
   }
   .pos-print-header { text-align: center; }
+  .pos-print-logo { display: block; max-width: 42mm; max-height: 18mm; margin: 0 auto 1mm; object-fit: contain; }
   .pos-print-biz-name { font-weight: 700; font-size: 13px; }
   .pos-print-line { text-align: left; word-wrap: break-word; }
   .pos-print-header .pos-print-line { text-align: center; }

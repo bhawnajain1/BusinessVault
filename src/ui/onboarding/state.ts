@@ -97,6 +97,7 @@ export function formToBusiness(
     current_financial_year: computeFinancialYear(new Date(), form.financial_year_start_month),
     currency: 'INR',
     logo_ref: null,
+    udyamRegistrationNumber: null,
     invoice_prefix: 'INV',
     default_invoice_terms: DEFAULT_INVOICE_TERMS,
     invoice_next_seq: 1,
