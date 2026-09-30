@@ -151,11 +151,23 @@ const HANDLERS: Record<string, EventHandler> = {
   'customer:update': merge<Customer>('customer', (db) => db.customers),
   'customer:created': put<Customer>((db) => db.customers),
   'customer:updated': merge<Customer>('customer', (db) => db.customers),
+  'customer:delete': async (evt, ctx) => {
+    await ctx.db.customers.delete(String(evt.entity_id));
+  },
+  'customer:deleted': async (evt, ctx) => {
+    await ctx.db.customers.delete(String(evt.entity_id));
+  },
 
   'customer_item_price:create': put<CustomerItemPrice>((db) => db.customer_item_prices),
   'customer_item_price:created': put<CustomerItemPrice>((db) => db.customer_item_prices),
   'customer_item_price:update': merge<CustomerItemPrice>('customer_item_price', (db) => db.customer_item_prices),
   'customer_item_price:updated': merge<CustomerItemPrice>('customer_item_price', (db) => db.customer_item_prices),
+  'customer_item_price:delete': async (evt, ctx) => {
+    await ctx.db.customer_item_prices.delete(String(evt.entity_id));
+  },
+  'customer_item_price:deleted': async (evt, ctx) => {
+    await ctx.db.customer_item_prices.delete(String(evt.entity_id));
+  },
 
   'supplier:create': put<Supplier>((db) => db.suppliers),
   'supplier:created': put<Supplier>((db) => db.suppliers),
