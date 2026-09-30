@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.83 — 2026-09-30
+
+### Fixed
+
+- GSTR-1 credit-note exports now include CGST, SGST, IGST, cess, and explicit round-off amounts, with reconciliation warnings when components do not equal the credit-note value.
+
 ## 1.0.80 — 2026-09-30
 
 ### Fixed
