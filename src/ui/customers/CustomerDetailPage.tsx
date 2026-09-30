@@ -142,8 +142,8 @@ function buildStatement(
     out.push({
       date: pay.payment_date,
       transaction: `Payment ${pay.payment_number}${pay.method ? ` (${pay.method})` : ''}`,
-      debit_paise: 0,
-      credit_paise: pay.amount_paise,
+      debit_paise: pay.direction === 'out' ? Math.abs(pay.amount_paise) : 0,
+      credit_paise: pay.direction === 'out' ? 0 : pay.amount_paise,
     });
   }
   for (const adv of advances) {

@@ -4,6 +4,18 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.77 — 2026-09-30
+
+### Fixed
+
+- Sales returns now refund paid customer amounts through auditable refund payments instead of creating customer advances; customer statements show the refund as a debit and return the balance to zero.
+
+## 1.0.76 — 2026-09-30
+
+### Fixed
+
+- A sales return covering every line on an invoice now marks that invoice as cancelled and clears its receivable balance for audit-only retention.
+
 ## 1.0.75 — 2026-09-30
 
 ### Fixed
