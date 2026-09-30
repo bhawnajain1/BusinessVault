@@ -4,6 +4,17 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.69 — 2026-09-30
+
+### Added
+
+- Added business-scoped duplicate GSTIN validation for customer creation and updates.
+- Added a Customers-page tool to find and merge existing duplicate-GSTIN customer records while preserving linked invoices, returns, payments, advances, journal references, and customer prices.
+
+### Tests
+
+- Passed the release gate, including typecheck, lint, unit tests, integration tests, mandatory backup round trip, and production build.
+
 ## 1.0.68 — 2026-09-29
 
 ### Fixed
