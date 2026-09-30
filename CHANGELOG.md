@@ -10,6 +10,18 @@ per-PR-version-bump policy.
 
 - Fixed the round-off repair migration so it writes valid `sync_events` primary keys and can complete on existing local databases.
 
+## 1.0.82 — 2026-09-30
+
+### Fixed
+
+- Corrected the signed refund adjustment in the historical full-return repair and reran it as a v16 migration for browsers that already opened v15.
+
+## 1.0.81 — 2026-09-30
+
+### Fixed
+
+- Reconciled full paid sales-return refunds in both directions so historical prorating and tax rounding cannot leave an invoice over-refunded or under-refunded.
+
 ## 1.0.79 — 2026-09-30
 
 ### Fixed

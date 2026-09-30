@@ -461,6 +461,155 @@ export class BusinessVaultDB extends Dexie {
         }
       });
 
+    // v16: reconcile full paid returns in both directions. v14 repaired only
+    // under-refunds; older prorated tax values can also over-refund after
+    // component-level rounding (for example, ₹9.45 against a ₹9.00 invoice).
+    this.version(16)
+      .stores(STORES_V13)
+      .upgrade(async (tx) => {
+        const returnsTable = tx.table('sales_returns');
+        const invoicesTable = tx.table('invoices');
+        const paymentsTable = tx.table('payments');
+        const journalsTable = tx.table('journal_entries');
+        const linesTable = tx.table('journal_lines');
+        const auditTable = tx.table('audit_log');
+        const eventsTable = tx.table('sync_events');
+        const accountsTable = tx.table('accounts');
+        const now = new Date().toISOString();
+        const returns = await returnsTable.toCollection().toArray() as Array<Record<string, any>>;
+        const payments = await paymentsTable.toCollection().toArray() as Array<Record<string, any>>;
+
+        for (const salesReturn of returns) {
+          if (salesReturn.status !== 'posted' || salesReturn.deleted_at) continue;
+          if (salesReturn.apply_to_balance_paise !== 0) continue;
+          const invoice = await invoicesTable.get(salesReturn.original_invoice_id) as Record<string, any> | undefined;
+          if (!invoice || invoice.status !== 'cancelled') continue;
+
+          const refunds = payments.filter((payment) =>
+            payment.direction === 'out' &&
+            payment.party_type === 'customer' &&
+            payment.party_id === invoice.customer_id &&
+            !payment.deleted_at &&
+            (payment.payment_number?.includes(salesReturn.return_number) ||
+              payment.notes?.includes(salesReturn.return_number) ||
+              payment.reference?.includes(salesReturn.return_number)) &&
+            payment.allocations?.some((allocation: Record<string, any>) => allocation.invoice_id === invoice.id),
+          );
+          if (refunds.length === 0) continue;
+          const target = invoice.total_paise ?? 0;
+          const current = salesReturn.total_paise ?? 0;
+          const returnDelta = target - current;
+          const currentRefund = refunds.reduce((sum, refund) => sum + Math.abs(refund.amount_paise ?? 0), 0);
+          const refundDelta = target - currentRefund;
+          if (returnDelta === 0 && refundDelta === 0) continue;
+
+          let remaining = refundDelta;
+          for (let index = 0; index < refunds.length && remaining !== 0; index += 1) {
+            const refund = refunds[index];
+            const available = Math.abs(refund.amount_paise ?? 0);
+            const absoluteAdjustment = Math.min(available, Math.abs(remaining));
+            if (absoluteAdjustment === 0) continue;
+            // Refund payments are negative. A positive delta increases the
+            // refund; a negative delta reduces it.
+            const paymentAdjustment = remaining > 0 ? -absoluteAdjustment : absoluteAdjustment;
+            await paymentsTable.update(refund.id, {
+              amount_paise: refund.amount_paise + paymentAdjustment,
+              allocations: refund.allocations.map((allocation: Record<string, any>) =>
+                allocation.invoice_id === invoice.id
+                  ? { ...allocation, amount_paise: allocation.amount_paise + paymentAdjustment }
+                  : allocation,
+              ),
+              updated_at: now,
+              entity_version: (refund.entity_version ?? 0) + 1,
+            });
+            const refundJournal = await journalsTable.get(refund.journal_entry_id) as Record<string, any> | undefined;
+            if (refundJournal) {
+              const refundLines = await linesTable.where('entry_id').equals(refundJournal.id).toArray() as Array<Record<string, any>>;
+              const receivableLine = refundLines.find((line) => line.debit_paise > 0);
+              const cashLine = refundLines.find((line) => line.credit_paise > 0);
+              const journalAdjustment = -paymentAdjustment;
+              if (receivableLine) await linesTable.update(receivableLine.id, { debit_paise: receivableLine.debit_paise + journalAdjustment });
+              if (cashLine) await linesTable.update(cashLine.id, { credit_paise: cashLine.credit_paise + journalAdjustment });
+              await journalsTable.update(refundJournal.id, {
+                total_debit_paise: refundJournal.total_debit_paise + journalAdjustment,
+                total_credit_paise: refundJournal.total_credit_paise + journalAdjustment,
+                updated_at: now,
+              });
+            }
+            remaining += paymentAdjustment;
+          }
+
+          if (returnDelta !== 0) {
+            await returnsTable.update(salesReturn.id, {
+              round_off_paise: target - (salesReturn.pre_round_total_paise ?? current),
+              round_off_mode: 'manual',
+              total_paise: target,
+              customer_credit_paise: target,
+              updated_at: now,
+              entity_version: (salesReturn.entity_version ?? 0) + 1,
+            });
+          }
+
+          const returnJournal = await journalsTable.get(salesReturn.journal_entry_id) as Record<string, any> | undefined;
+          const roundOffAccount = await accountsTable.where('business_id').equals(invoice.business_id)
+            .filter((account: Record<string, any>) => account.code === '4900').first();
+          if (returnJournal && roundOffAccount) {
+            const returnLines = await linesTable.where('entry_id').equals(returnJournal.id).toArray() as Array<Record<string, any>>;
+            const receivableLine = returnLines.find((line) => line.credit_paise > 0);
+            if (receivableLine) await linesTable.update(receivableLine.id, { credit_paise: receivableLine.credit_paise + returnDelta });
+            if (returnDelta > 0) {
+              await linesTable.add({
+                id: ulid(), business_id: invoice.business_id, entry_id: returnJournal.id,
+                line_no: returnLines.length + 1, account_id: roundOffAccount.id,
+                debit_paise: returnDelta, credit_paise: 0, party_type: null, party_id: null,
+                description: 'Round off (full return reconciliation)',
+              });
+            } else {
+              const roundOffLine = returnLines.find((line) => line.account_id === roundOffAccount.id);
+              if (roundOffLine) {
+                const reduction = -returnDelta;
+                if ((roundOffLine.debit_paise ?? 0) >= reduction) {
+                  await linesTable.update(roundOffLine.id, {
+                    debit_paise: roundOffLine.debit_paise - reduction,
+                  });
+                } else {
+                  await linesTable.update(roundOffLine.id, {
+                    credit_paise: (roundOffLine.credit_paise ?? 0) + reduction - roundOffLine.debit_paise,
+                    debit_paise: 0,
+                  });
+                }
+              } else {
+                await linesTable.add({
+                  id: ulid(), business_id: invoice.business_id, entry_id: returnJournal.id,
+                  line_no: returnLines.length + 1, account_id: roundOffAccount.id,
+                  debit_paise: 0, credit_paise: -returnDelta, party_type: null, party_id: null,
+                  description: 'Round off (full return reconciliation)',
+                });
+              }
+            }
+            const finalReturnLines = await linesTable.where('entry_id').equals(returnJournal.id).toArray() as Array<Record<string, any>>;
+            await journalsTable.update(returnJournal.id, {
+              total_debit_paise: finalReturnLines.reduce((sum, line) => sum + (line.debit_paise ?? 0), 0),
+              total_credit_paise: finalReturnLines.reduce((sum, line) => sum + (line.credit_paise ?? 0), 0),
+              updated_at: now,
+            });
+          }
+
+          await auditTable.add({
+            id: ulid(), business_id: invoice.business_id, device_id: 'migration', actor: 'migration',
+            action: 'sales_return.refund_reconciled', entity_type: 'sales_return', entity_id: salesReturn.id,
+            before: { total_paise: current, refund_paise: currentRefund },
+            after: { total_paise: target, refund_paise: target, return_delta: returnDelta, refund_delta: refundDelta }, at: now,
+          });
+          await eventsTable.add({
+            event_id: ulid(), business_id: invoice.business_id, device_id: 'migration',
+            entity_type: 'sales_return', entity_id: salesReturn.id, operation: 'updated',
+            entity_version: (salesReturn.entity_version ?? 0) + 1, timestamp: now,
+            payload: { id: salesReturn.id, total_paise: target, customer_credit_paise: target },
+          });
+        }
+      });
+
     // After any sync_event insert commits, kick the sync worker so the write
     // lands in the local backup folder within a few hundred ms instead of
     // waiting for the next 5s tick. Fires on ALL writers uniformly, so no
