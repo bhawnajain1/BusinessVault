@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.72 — 2026-09-30
+
+### Fixed
+
+- Added a visible business selector to Data & Backup so devices with multiple businesses can back up each business before using Start Fresh.
+
 ## 1.0.71 — 2026-09-30
 
 ### Fixed
