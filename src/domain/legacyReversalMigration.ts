@@ -289,6 +289,25 @@ export async function repairInvoiceEditCreditNotes(
   deviceId: string,
 ): Promise<InvoiceEditRepairResult> {
   const candidates = await findInvoiceEditRepairCandidates(db, businessId);
+  const repairedAuditRows = await db.audit_log
+    .where('business_id')
+    .equals(businessId)
+    .filter((row) => row.action === 'invoice.edit_credit_note_repaired')
+    .toArray();
+  const previouslyRepairedIds = new Set(
+    repairedAuditRows
+      .map((row) => (row.before as { credit_note_invoice_id?: unknown })?.credit_note_invoice_id)
+      .filter((id): id is string => typeof id === 'string'),
+  );
+  const repairedRows = await db.invoices
+    .where('business_id')
+    .equals(businessId)
+    .filter((invoice) => previouslyRepairedIds.has(invoice.id))
+    .toArray();
+  for (const repairedRow of repairedRows) {
+    await db.invoice_lines.where('invoice_id').equals(repairedRow.id).delete();
+    await db.invoices.delete(repairedRow.id);
+  }
   let repaired = 0;
   for (const candidate of candidates) {
     await db.transaction(

@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.75 — 2026-09-30
+
+### Fixed
+
+- Repaired invoice-edit credit notes no longer reappear in the invoice audit view after repair or sync; genuine sales-return credit notes remain visible.
+
 ## 1.0.74 — 2026-09-30
 
 ### Fixed
