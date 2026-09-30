@@ -211,8 +211,11 @@ export async function trialBalance(
     .where('[business_id+entry_date]')
     .between([businessId, ''], [businessId, asOfStr], true, true)
     .toArray();
+  const editReplacementIds = await getInvoiceEditReplacementIds(db, businessId, entries);
   const postedIds = new Set(
-    entries.filter((e) => e.posted === 1).map((e) => e.id),
+    entries
+      .filter((e) => e.posted === 1 && !editReplacementIds.has(e.id))
+      .map((e) => e.id),
   );
 
   const totals = new Map<string, { dr: number; cr: number }>();
@@ -293,7 +296,12 @@ export async function profitAndLoss(
     .where('[business_id+entry_date]')
     .between([businessId, fromStr], [businessId, toStr], true, true)
     .toArray();
-  const postedIds = new Set(entries.filter((e) => e.posted === 1).map((e) => e.id));
+  const editReplacementIds = await getInvoiceEditReplacementIds(db, businessId, entries);
+  const postedIds = new Set(
+    entries
+      .filter((e) => e.posted === 1 && !editReplacementIds.has(e.id))
+      .map((e) => e.id),
+  );
 
   const totals = new Map<string, { dr: number; cr: number }>();
   for (const acct of accounts) totals.set(acct.id, { dr: 0, cr: 0 });
@@ -503,4 +511,50 @@ function toDateString(d: Date): string {
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
   const day = String(d.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+async function getInvoiceEditReplacementIds(
+  db: BusinessVaultDB,
+  businessId: string,
+  entries: JournalEntry[],
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const invoices = await db.invoices.where('business_id').equals(businessId).toArray();
+  const invoicesById = new Map(invoices.map((invoice) => [invoice.id, invoice]));
+  const invoicesByJournalId = new Map(invoices.map((invoice) => [invoice.journal_entry_id, invoice]));
+  for (const entry of entries) {
+    if (
+      entry.ref_type !== 'reversal' ||
+      (!entry.entry_number.startsWith('JE-REV-') &&
+        !/^Reversal of .+: edit$/i.test(entry.narration.trim()))
+    ) {
+      continue;
+    }
+    const creditNote = invoicesByJournalId.get(entry.id);
+    const original = entry.ref_id ? invoicesById.get(entry.ref_id) : undefined;
+    const linkedOriginal = creditNote?.reverses_invoice_id
+      ? invoicesById.get(creditNote.reverses_invoice_id)
+      : undefined;
+    const editedInvoice = original ?? linkedOriginal;
+    const legacySuccessor = editedInvoice
+      ? invoices.find(
+          (invoice) =>
+            invoice.id !== editedInvoice.id &&
+            invoice.id !== creditNote?.id &&
+            invoice.invoice_number === editedInvoice.invoice_number &&
+            invoice.created_at > editedInvoice.created_at &&
+            invoice.reverses_invoice_id === null,
+        )
+      : undefined;
+    const currentInvoiceJournalIsReplacement =
+      !!editedInvoice && editedInvoice.journal_entry_id !== entry.id && entry.reverses_id !== null;
+    const successor = editedInvoice?.reversed_by_invoice_id
+      ? invoicesById.get(editedInvoice.reversed_by_invoice_id) ?? legacySuccessor
+      : legacySuccessor;
+    const replacementJournalId = successor?.journal_entry_id;
+    if (!currentInvoiceJournalIsReplacement && !replacementJournalId) continue;
+    ids.add(entry.id);
+    if (entry.reverses_id) ids.add(entry.reverses_id);
+  }
+  return ids;
 }

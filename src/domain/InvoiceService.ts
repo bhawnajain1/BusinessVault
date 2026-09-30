@@ -2023,7 +2023,10 @@ async function writeEventInTx(
     synced_at: null,
     journal_file: null,
   };
-  await db.sync_events.add(evt);
+  // Keep the transaction alive across the async hash boundary. Some browsers
+  // can commit the transaction before the next queued IndexedDB request even
+  // when the hash itself is wrapped with Dexie.waitFor.
+  await Dexie.waitFor(db.sync_events.add(evt));
   return evt;
 }
 

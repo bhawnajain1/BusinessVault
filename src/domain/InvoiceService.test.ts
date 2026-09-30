@@ -663,7 +663,40 @@ describe('InvoiceService.updateInvoice', () => {
         is_interstate: false,
         financial_year: '2026-27',
         lines: [intrastateLine()],
-      })).resolves.toMatchObject({ id: inv.id });
+    })).resolves.toMatchObject({ id: inv.id });
+  });
+
+  it('shows a reduced-value edit as the final debit without the edit reversal credit', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-EDIT-REDUCE',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    await service.updateInvoice(inv.id, {
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [{ ...intrastateLine(), qty_micros: 1_000_000, taxable_paise: 10000, cgst_paise: 900, sgst_paise: 900, line_total_paise: 11800 }],
+    });
+
+    const tb = await trialBalance(businessId, new Date('2026-08-31'), { db });
+    const receivables = tb.find((row) => row.code === '1200');
+    expect(receivables?.debits_paise).toBe(11800);
+    expect(receivables?.credits_paise).toBe(0);
+    expect(receivables?.balance_paise).toBe(11800);
   });
 });
 

@@ -11,6 +11,8 @@ import type {
 } from '../db/types';
 import {
   MIGRATION_VERSION,
+  findInvoiceEditRepairCandidates,
+  repairInvoiceEditCreditNotes,
   runLegacyReversalMigration,
 } from './legacyReversalMigration';
 import {
@@ -323,6 +325,45 @@ describe('legacyReversalMigration', () => {
     const audit = await db.legacy_reversal_audit.get(fx.cnId);
     expect(audit?.classification).toBe('EDIT_REVERSAL');
     expect(audit?.materialized_sales_return_id).toBeNull();
+  });
+
+  it('repairs an old edit CN while retaining the latest bill and reversal accounting', async () => {
+    const db = freshDb();
+    await seedBusiness(db);
+    const fx = await seedLegacyReversal(db, { kind: 'edit' });
+    const original = await db.invoices.get(fx.origId);
+    expect(original).toBeDefined();
+    const latestId = ulid();
+    const latestJournalId = ulid();
+    const latest: Invoice = {
+      ...original!,
+      id: latestId,
+      journal_entry_id: latestJournalId,
+      reversed_by_invoice_id: null,
+      reverses_invoice_id: null,
+      invoice_number: original!.invoice_number,
+      created_at: '9999-08-02T00:00:00.000Z',
+      updated_at: '9999-08-02T00:00:00.000Z',
+      entity_version: 1,
+    };
+    await db.invoices.add(latest);
+
+    const candidates = await findInvoiceEditRepairCandidates(db, BIZ);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].latestInvoice.id).toBe(latestId);
+    const result = await repairInvoiceEditCreditNotes(db, BIZ, 'device-1');
+    expect(result.repaired).toBe(1);
+    expect(await db.invoices.get(fx.cnId)).toBeUndefined();
+    expect(await db.invoices.get(latestId)).toEqual(latest);
+    expect(await db.invoices.get(fx.origId)).toMatchObject({
+      reversed_by_invoice_id: latestId,
+    });
+    expect(await db.journal_entries.get(fx.reversalJeId)).toMatchObject({ posted: 0 });
+    expect(
+      (await db.audit_log.toArray()).some(
+        (row) => row.action === 'invoice.edit_credit_note_repaired',
+      ),
+    ).toBe(true);
   });
 
   it('classifies an ambiguous reversal as UNKNOWN, preserves the row, does NOT backfill or touch summary', async () => {
