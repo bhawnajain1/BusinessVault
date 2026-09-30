@@ -4,6 +4,17 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.71 — 2026-09-30
+
+### Fixed
+
+- Improved legacy invoice-edit CN detection for older records whose reversal journal metadata is incomplete, while continuing to exclude genuine sales returns.
+- Clarified that superseded invoice audit rows remain visible when the invoice-history checkbox is enabled; only obsolete edit-CN rows are removed by repair.
+
+### Tests
+
+- Added regression coverage for legacy edit CNs identified by the historical invoice-number and edit-reason signature.
+
 ## 1.0.70 — 2026-09-30
 
 ### Fixed

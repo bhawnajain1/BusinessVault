@@ -327,6 +327,26 @@ describe('legacyReversalMigration', () => {
     expect(audit?.materialized_sales_return_id).toBeNull();
   });
 
+  it('classifies an edit CN from its historical number and note when JE metadata is missing', async () => {
+    const db = freshDb();
+    await seedBusiness(db);
+    const fx = await seedLegacyReversal(db, { kind: 'edit' });
+    await db.journal_entries.update(fx.reversalJeId, {
+      entry_number: 'JE-LEGACY-UNKNOWN',
+      narration: 'Legacy adjustment',
+      ref_type: 'manual',
+    });
+    const cn = await db.invoices.get(fx.cnId);
+    expect(cn).toBeDefined();
+    await db.invoices.update(fx.cnId, { journal_entry_id: '' });
+
+    const result = await runLegacyReversalMigration(db, BIZ);
+
+    expect(result.classifiedAs.EDIT_REVERSAL).toBe(1);
+    expect(result.materializedSalesReturns).toBe(0);
+    expect((await db.legacy_reversal_audit.get(fx.cnId))?.classification).toBe('EDIT_REVERSAL');
+  });
+
   it('repairs an old edit CN while retaining the latest bill and reversal accounting', async () => {
     const db = freshDb();
     await seedBusiness(db);

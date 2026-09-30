@@ -74,6 +74,20 @@ function classify(evidence: ClassificationEvidence): LegacyMigrationClassificati
     return 'EDIT_REVERSAL';
   }
 
+  // Older builds sometimes persisted the CN without the reversal JE metadata.
+  // The generated invoice number and note still identify the edit shape. Keep
+  // this fallback strict and reject any record carrying return evidence.
+  const looksLikeLegacyEditCreditNote =
+    !!evidence.credit_note_invoice_number && /-CN$/i.test(evidence.credit_note_invoice_number) &&
+    !!evidence.notes && /reason:\s*edit\b/i.test(evidence.notes);
+  if (
+    looksLikeLegacyEditCreditNote &&
+    stock_movement_types.every((type) => type !== 'sale_return') &&
+    !journal_narration?.trim().startsWith('Sales return for ')
+  ) {
+    return 'EDIT_REVERSAL';
+  }
+
   // Sales-return signals — ReturnService writes ref_type='invoice' on the
   // reversal JE and stock_movements with movement_type='sale_return'.
   const hasSaleReturnMovements =
@@ -401,6 +415,7 @@ async function gatherEvidence(
     stock_movement_types: stockMovementTypes,
     original_lines_present: originalLines.length > 0,
     original_lines_count: originalLines.length,
+    notes: cn.notes,
   };
 }
 
