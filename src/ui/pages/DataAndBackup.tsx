@@ -5,7 +5,7 @@ import { setCurrentBusinessId } from '../../lib/business';
 import { db } from '../../db';
 import type { Business } from '../../db/types';
 import BackupSettings from '../settings/BackupSettings';
-import { reconnectWithUserGesture, stopSyncWorkerAsync } from '../../sync/bootProvider';
+import { reconnectWithUserGesture, stopSyncWorkerAsync, tryBootProvider } from '../../sync/bootProvider';
 import { log } from '../../lib/log';
 import { resetAppToFreshState } from '../../lib/resetApp';
 import { beginAppOperation } from '../../lib/operationLock';
@@ -48,6 +48,13 @@ export default function DataAndBackup() {
     setBusinessId(nextId);
     setReconnectError(null);
   }, [businessId]);
+
+  const onPrepareBusiness = useCallback(async (nextId: string): Promise<boolean> => {
+    await stopSyncWorkerAsync();
+    await setCurrentBusinessId(nextId);
+    setBusinessId(nextId);
+    return tryBootProvider();
+  }, []);
 
   const onReconnect = useCallback(async (selectedLocalHandle?: FileSystemDirectoryHandle): Promise<void> => {
     setReconnectError(null);
@@ -148,6 +155,7 @@ export default function DataAndBackup() {
       <BackupSettings
         key={businessId}
         businessId={businessId}
+        onPrepareBusiness={onPrepareBusiness}
         onReconnect={reconnecting ? undefined : onReconnect}
         onResetFresh={onResetFresh}
       />

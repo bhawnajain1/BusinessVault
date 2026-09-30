@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.73 — 2026-09-30
+
+### Fixed
+
+- Start Fresh now backs up every business stored on the device, verifies each backup, and clears the browser only after all businesses succeed.
+
 ## 1.0.72 — 2026-09-30
 
 ### Fixed
