@@ -453,7 +453,7 @@ export class BusinessVaultDB extends Dexie {
             after: { total_paise: invoice.total_paise, difference }, at: now,
           });
           await eventsTable.add({
-            id: ulid(), business_id: invoice.business_id, device_id: 'migration',
+            event_id: ulid(), business_id: invoice.business_id, device_id: 'migration',
             entity_type: 'sales_return', entity_id: salesReturn.id, operation: 'updated',
             entity_version: (salesReturn.entity_version ?? 0) + 1, timestamp: now,
             payload: { id: salesReturn.id, total_paise: invoice.total_paise, round_off_paise: difference },
