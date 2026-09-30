@@ -128,12 +128,12 @@ export function buildStatement(
     }
   }
   for (const sr of salesReturns) {
-    if (sr.status !== 'posted' || sr.deleted_at || sr.apply_to_balance_paise <= 0) continue;
+    if (sr.status !== 'posted' || sr.deleted_at || sr.total_paise <= 0) continue;
     out.push({
       date: sr.return_date,
       transaction: `Sales return ${sr.return_number}`,
       debit_paise: 0,
-      credit_paise: sr.apply_to_balance_paise,
+      credit_paise: sr.total_paise,
     });
   }
   for (const pay of payments) {

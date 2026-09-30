@@ -634,6 +634,36 @@ describe('SalesReturnService.createSalesReturn', () => {
     expect((await db.payments.where('business_id').equals(businessId).toArray()).some((p) => p.direction === 'out')).toBe(true);
   });
 
+  it('T8b: full return refunds the original rounded invoice total', async () => {
+    const inv = await makeInvoice('INV-000008B');
+    const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();
+
+    // Simulate an invoice whose line components total ₹1180.00 but whose
+    // rounded invoice total is ₹1180.50.
+    await db.invoices.update(inv.id, {
+      total_paise: 118_050,
+      balance_paise: 0,
+      paid_paise: 118_050,
+      status: 'paid',
+    });
+
+    const sr = await retSvc.createSalesReturn({
+      business_id: businessId,
+      device_id: deviceId,
+      original_invoice_id: inv.id,
+      return_date: '2026-08-20',
+      reason: 'Rounded full refund',
+      lines: [{ original_invoice_line_id: lines[0].id, qty_micros: 10_000_000 }],
+    });
+
+    expect(sr.total_paise).toBe(118_050);
+    expect(sr.round_off_paise).toBe(50);
+    const refund = (await db.payments.where('business_id').equals(businessId).toArray())
+      .find((payment) => payment.direction === 'out');
+    expect(refund?.amount_paise).toBe(-118_050);
+    expect((await db.advances.where('business_id').equals(businessId).toArray())).toHaveLength(0);
+  });
+
   it('T9: partial payment + partial return refunds the paid portion instead of creating an advance', async () => {
     const inv = await makeInvoice('INV-000009');
     const lines = await db.invoice_lines.where('invoice_id').equals(inv.id).toArray();

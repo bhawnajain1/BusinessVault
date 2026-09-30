@@ -486,8 +486,25 @@ export class SalesReturnService {
           cessPaise += proCess;
         }
         const grossLines = taxablePaise + cgstPaise + sgstPaise + igstPaise + cessPaise;
-        const totalPaise = grossLines;
-        const roundOffPaise = 0;
+
+        const returnedAfterThisRequest = new Map(priorReturnedByLine);
+        for (const item of items) {
+          returnedAfterThisRequest.set(
+            item.original_invoice_line_id,
+            (returnedAfterThisRequest.get(item.original_invoice_line_id) ?? 0) + item.qty_micros,
+          );
+        }
+        const isFullReturn =
+          originalLines.length > 0 &&
+          originalLines.every(
+            (line) => (returnedAfterThisRequest.get(line.id) ?? 0) >= line.qty_micros,
+          );
+
+        // A full return reverses the invoice's rounded total, not merely the
+        // sum of prorated tax fields. Preserve that round-off difference in
+        // the return so a paid rounded invoice is refunded in full.
+        const totalPaise = isFullReturn ? inv.total_paise : grossLines;
+        const roundOffPaise = totalPaise - grossLines;
 
         if (totalPaise <= 0) {
           throw new SalesReturnValidationError(
@@ -640,19 +657,6 @@ export class SalesReturnService {
             }
           }
         }
-        const returnedAfterThisRequest = new Map(priorReturnedByLine);
-        for (const item of items) {
-          returnedAfterThisRequest.set(
-            item.original_invoice_line_id,
-            (returnedAfterThisRequest.get(item.original_invoice_line_id) ?? 0) + item.qty_micros,
-          );
-        }
-        const isFullReturn =
-          originalLines.length > 0 &&
-          originalLines.every(
-            (line) => (returnedAfterThisRequest.get(line.id) ?? 0) >= line.qty_micros,
-          );
-
         // Reduce invoice balance for the portion that offsets outstanding.
         // Do NOT touch total_paise / paid_paise; only balance_paise moves.
         // Status flips back to 'issued' if a fully-paid invoice now has

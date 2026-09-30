@@ -347,6 +347,120 @@ export class BusinessVaultDB extends Dexie {
         });
       });
 
+    // v14: repair full paid returns created before return totals included the
+    // invoice's round-off paise. Those rows already have a refund payment, so
+    // repair the persisted return, refund, invoice cache, and journals once.
+    this.version(14)
+      .stores(STORES_V13)
+      .upgrade(async (tx) => {
+        const returnsTable = tx.table('sales_returns');
+        const invoicesTable = tx.table('invoices');
+        const paymentsTable = tx.table('payments');
+        const journalsTable = tx.table('journal_entries');
+        const linesTable = tx.table('journal_lines');
+        const auditTable = tx.table('audit_log');
+        const eventsTable = tx.table('sync_events');
+        const accountsTable = tx.table('accounts');
+        const now = new Date().toISOString();
+        const returns = await returnsTable.toCollection().toArray() as Array<Record<string, any>>;
+
+        for (const salesReturn of returns) {
+          if (salesReturn.status !== 'posted' || salesReturn.deleted_at) continue;
+          if (salesReturn.round_off_paise !== 0 || salesReturn.apply_to_balance_paise !== 0) continue;
+          const invoice = await invoicesTable.get(salesReturn.original_invoice_id) as Record<string, any> | undefined;
+          if (!invoice || invoice.status !== 'cancelled') continue;
+          const difference = (invoice.total_paise ?? 0) - (salesReturn.total_paise ?? 0);
+          if (difference <= 0 || difference > 99) continue;
+
+          const payments = (await paymentsTable.toCollection().toArray() as Array<Record<string, any>>).filter(
+            (payment) => payment.direction === 'out' &&
+              payment.party_type === 'customer' &&
+              payment.party_id === invoice.customer_id &&
+              payment.allocations?.some((allocation: Record<string, any>) => allocation.invoice_id === invoice.id),
+          );
+          const refund = payments[0];
+          if (!refund) continue;
+
+          await returnsTable.update(salesReturn.id, {
+            round_off_paise: difference,
+            round_off_mode: 'manual',
+            pre_round_total_paise: salesReturn.total_paise,
+            total_paise: invoice.total_paise,
+            customer_credit_paise: invoice.total_paise,
+            updated_at: now,
+            entity_version: (salesReturn.entity_version ?? 0) + 1,
+          });
+          await paymentsTable.update(refund.id, {
+            amount_paise: (refund.amount_paise ?? 0) - difference,
+            allocations: refund.allocations.map((allocation: Record<string, any>) =>
+              allocation.invoice_id === invoice.id
+                ? { ...allocation, amount_paise: allocation.amount_paise - difference }
+                : allocation,
+            ),
+            updated_at: now,
+            entity_version: (refund.entity_version ?? 0) + 1,
+          });
+          await invoicesTable.update(invoice.id, {
+            paid_paise: Math.max(0, (invoice.paid_paise ?? 0) - difference),
+            updated_at: now,
+            entity_version: (invoice.entity_version ?? 0) + 1,
+          });
+
+          const returnJournal = await journalsTable.get(salesReturn.journal_entry_id) as Record<string, any> | undefined;
+          const roundOffAccount = await accountsTable.where('business_id').equals(invoice.business_id)
+            .filter((account: Record<string, any>) => account.code === '4900').first();
+          if (returnJournal && roundOffAccount) {
+            const returnLines = await linesTable.where('entry_id').equals(returnJournal.id).toArray() as Array<Record<string, any>>;
+            const receivableLine = returnLines.find((line) => line.credit_paise > 0);
+            if (receivableLine) {
+              await linesTable.update(receivableLine.id, { credit_paise: receivableLine.credit_paise + difference });
+            }
+            await linesTable.add({
+              id: ulid(), business_id: invoice.business_id, entry_id: returnJournal.id,
+              line_no: returnLines.length + 1, account_id: roundOffAccount.id,
+              debit_paise: difference, credit_paise: 0, party_type: null, party_id: null,
+              description: 'Round off (full return repair)',
+            });
+            await journalsTable.update(returnJournal.id, {
+              total_debit_paise: returnJournal.total_debit_paise + difference,
+              total_credit_paise: returnJournal.total_credit_paise + difference,
+              updated_at: now,
+            });
+          }
+
+          const refundJournal = await journalsTable.get(refund.journal_entry_id) as Record<string, any> | undefined;
+          if (refundJournal) {
+            const refundLines = await linesTable.where('entry_id').equals(refundJournal.id).toArray() as Array<Record<string, any>>;
+            const receivableLine = refundLines.find((line) => line.debit_paise > 0);
+            if (receivableLine) {
+              await linesTable.update(receivableLine.id, { debit_paise: receivableLine.debit_paise + difference });
+            }
+            const cashLine = refundLines.find((line) => line.credit_paise > 0);
+            if (cashLine) {
+              await linesTable.update(cashLine.id, { credit_paise: cashLine.credit_paise + difference });
+            }
+            await journalsTable.update(refundJournal.id, {
+              total_debit_paise: refundJournal.total_debit_paise + difference,
+              total_credit_paise: refundJournal.total_credit_paise + difference,
+              updated_at: now,
+            });
+          }
+
+          await auditTable.add({
+            id: ulid(), business_id: invoice.business_id, device_id: 'migration',
+            action: 'sales_return.round_off_repaired', entity_type: 'sales_return',
+            entity_id: salesReturn.id, before: { total_paise: salesReturn.total_paise },
+            after: { total_paise: invoice.total_paise, difference }, at: now,
+          });
+          await eventsTable.add({
+            id: ulid(), business_id: invoice.business_id, device_id: 'migration',
+            entity_type: 'sales_return', entity_id: salesReturn.id, operation: 'updated',
+            entity_version: (salesReturn.entity_version ?? 0) + 1, timestamp: now,
+            payload: { id: salesReturn.id, total_paise: invoice.total_paise, round_off_paise: difference },
+          });
+        }
+      });
+
     // After any sync_event insert commits, kick the sync worker so the write
     // lands in the local backup folder within a few hundred ms instead of
     // waiting for the next 5s tick. Fires on ALL writers uniformly, so no

@@ -426,14 +426,14 @@ export function buildCustomerRows(
   }
 
   for (const sr of returns) {
-    if (sr.status !== 'posted' || sr.deleted_at || sr.apply_to_balance_paise <= 0) continue;
+    if (sr.status !== 'posted' || sr.deleted_at || sr.total_paise <= 0) continue;
     out.push({
       date: sr.return_date,
       ref: sr.return_number,
       kind: 'sales_return_credit',
       description: `Sales return credit (applied to invoice ${sr.original_invoice_id})`,
       debit_paise: 0,
-      credit_paise: sr.apply_to_balance_paise,
+      credit_paise: sr.total_paise,
     });
   }
 

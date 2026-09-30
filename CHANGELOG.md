@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.79 — 2026-09-30
+
+### Fixed
+
+- Full sales returns now refund the original invoice's exact rounded total, including round-off paise, and customer statements retain the return credit when it is immediately refunded.
+
 ## 1.0.78 — 2026-09-30
 
 ### Fixed
