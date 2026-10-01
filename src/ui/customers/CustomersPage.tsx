@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../../db';
 import type { Customer, Invoice, Payment, Advance } from '../../db/types';
-import { createCustomerService } from '../../domain/CustomerService';
+import { createCustomerService, type DuplicateCustomerGroup } from '../../domain/CustomerService';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Drawer from '../components/Drawer';
@@ -84,6 +84,10 @@ export default function CustomersPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [rollups, setRollups] = useState<Map<string, CustomerRollup>>(new Map());
+  const [duplicateGroups, setDuplicateGroups] = useState<DuplicateCustomerGroup[]>([]);
+  const [duplicateScanComplete, setDuplicateScanComplete] = useState(false);
+  const [duplicateScanError, setDuplicateScanError] = useState<string | null>(null);
+  const [mergingDuplicates, setMergingDuplicates] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
 
   useEffect(() => {
@@ -112,8 +116,8 @@ export default function CustomersPage() {
       const [invs, pays, advs, customers] = await Promise.all([
         db.invoices.where('business_id').equals(businessId).toArray(),
         db.payments
-          .where('[business_id+direction]')
-          .equals([businessId, 'in'])
+          .where('business_id')
+          .equals(businessId)
           .toArray(),
         db.advances
           .where('business_id')
@@ -139,9 +143,11 @@ export default function CustomersPage() {
       const lastPaymentByCustomer = new Map<string, string>();
       for (const p of pays) {
         if (p.party_type !== 'customer') continue;
-        const prev = lastPaymentByCustomer.get(p.party_id);
-        if (!prev || p.payment_date > prev) {
-          lastPaymentByCustomer.set(p.party_id, p.payment_date);
+        if (p.direction === 'in') {
+          const prev = lastPaymentByCustomer.get(p.party_id);
+          if (!prev || p.payment_date > prev) {
+            lastPaymentByCustomer.set(p.party_id, p.payment_date);
+          }
         }
         for (const a of p.allocations) {
           if (!a.invoice_id) continue;
@@ -306,6 +312,43 @@ export default function CustomersPage() {
     setForm(EMPTY_FORM);
     setSaveError(null);
     navigate('/customers/new');
+  }
+
+  async function scanDuplicateGstins() {
+    if (!businessId) return;
+    setDuplicateScanError(null);
+    setDuplicateScanComplete(false);
+    try {
+      const groups = await createCustomerService({ db }).findDuplicateGstinGroups(businessId);
+      setDuplicateGroups(groups);
+      setDuplicateScanComplete(true);
+    } catch (e) {
+      setDuplicateScanError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function mergeDuplicateGstins() {
+    if (!businessId || !deviceId || duplicateGroups.length === 0) return;
+    if (!window.confirm(`Merge ${duplicateGroups.reduce((sum, group) => sum + group.customers.length - 1, 0)} duplicate customer record(s)? The oldest record for each GSTIN will be kept.`)) return;
+    setMergingDuplicates(true);
+    setDuplicateScanError(null);
+    try {
+      const svc = createCustomerService({ db });
+      for (const group of duplicateGroups) {
+        await svc.mergeCustomers({
+          businessId,
+          deviceId,
+          survivorId: group.customers[0].id,
+          duplicateIds: group.customers.slice(1).map((customer) => customer.id),
+        });
+      }
+      setDuplicateGroups([]);
+      setReloadKey((key) => key + 1);
+    } catch (e) {
+      setDuplicateScanError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMergingDuplicates(false);
+    }
   }
 
   function openEdit(row: Customer) {
@@ -474,14 +517,37 @@ export default function CustomersPage() {
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-fg">Customers</h1>
-        <button
-          type="button"
-          onClick={openNew}
-          className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90"
-        >
-          New Customer
-        </button>
+        <div className="flex gap-2">
+          <button type="button" onClick={scanDuplicateGstins} className="h-8 rounded-md border border-slate-300 bg-white px-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50">
+            Check duplicate GSTINs
+          </button>
+          <button type="button" onClick={openNew} className="h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg hover:opacity-90">
+            New Customer
+          </button>
+        </div>
       </div>
+
+      {(duplicateScanComplete || duplicateScanError) && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+          {duplicateScanError && <p className="mb-2 text-red-700">{duplicateScanError}</p>}
+          {duplicateGroups.length > 0 ? (
+            <>
+              <p className="font-semibold">Duplicate GSTINs found: {duplicateGroups.length}</p>
+              <p className="mt-1 text-amber-800">The oldest customer record for each GSTIN will be kept. Invoices, returns, payments, advances, journal references, and customer prices will be moved to it.</p>
+              <ul className="mt-2 list-disc pl-5">
+                {duplicateGroups.map((group) => (
+                  <li key={group.gstin}>{group.gstin}: {group.customers.map((customer) => customer.name).join(', ')}</li>
+                ))}
+              </ul>
+              <button type="button" disabled={mergingDuplicates} onClick={mergeDuplicateGstins} className="mt-3 h-9 rounded-md bg-amber-700 px-3 text-[13px] font-semibold text-white hover:bg-amber-800 disabled:opacity-50">
+                {mergingDuplicates ? 'Merging...' : 'Merge all duplicate customers'}
+              </button>
+            </>
+          ) : (
+            <p>No duplicate GSTINs found.</p>
+          )}
+        </div>
+      )}
 
       <DataTable<Customer>
         columns={columns}

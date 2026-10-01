@@ -8,6 +8,7 @@ import type {
   ItemStock,
   JournalEntry,
   JournalLine,
+  Payment,
   SalesReturn,
   SalesReturnItem,
   StockMovement,
@@ -181,7 +182,7 @@ export class SalesReturnService {
         'Chart of accounts missing required system accounts (1200/4000) — run "Repair chart of accounts".',
       );
     }
-    const [cgstAcct, sgstAcct, igstAcct, cessAcct, roundOffAcct, customerAdvAcct] =
+    const [cgstAcct, sgstAcct, igstAcct, cessAcct, roundOffAcct, cashAcct] =
       await Promise.all([
         findAccountByCode(input.business_id, SYSTEM_ACCOUNT_CODES.OUTPUT_CGST, {
           db: this.db,
@@ -198,11 +199,7 @@ export class SalesReturnService {
         findAccountByCode(input.business_id, SYSTEM_ACCOUNT_CODES.ROUND_OFF, {
           db: this.db,
         }),
-        findAccountByCode(
-          input.business_id,
-          SYSTEM_ACCOUNT_CODES.CUSTOMER_ADVANCE,
-          { db: this.db },
-        ),
+        findAccountByCode(input.business_id, SYSTEM_ACCOUNT_CODES.CASH, { db: this.db }),
       ]);
 
     const salesReturnId = ulid();
@@ -220,6 +217,7 @@ export class SalesReturnService {
         this.db.sales_return_items,
         this.db.invoice_line_return_summary,
         this.db.advances,
+        this.db.payments,
         this.db.stock_movements,
         this.db.item_stock,
         this.db.items,
@@ -488,8 +486,25 @@ export class SalesReturnService {
           cessPaise += proCess;
         }
         const grossLines = taxablePaise + cgstPaise + sgstPaise + igstPaise + cessPaise;
-        const totalPaise = grossLines;
-        const roundOffPaise = 0;
+
+        const returnedAfterThisRequest = new Map(priorReturnedByLine);
+        for (const item of items) {
+          returnedAfterThisRequest.set(
+            item.original_invoice_line_id,
+            (returnedAfterThisRequest.get(item.original_invoice_line_id) ?? 0) + item.qty_micros,
+          );
+        }
+        const isFullReturn =
+          originalLines.length > 0 &&
+          originalLines.every(
+            (line) => (returnedAfterThisRequest.get(line.id) ?? 0) >= line.qty_micros,
+          );
+
+        // A full return reverses the invoice's rounded total, not merely the
+        // sum of prorated tax fields. Preserve that round-off difference in
+        // the return so a paid rounded invoice is refunded in full.
+        const totalPaise = isFullReturn ? inv.total_paise : grossLines;
+        const roundOffPaise = totalPaise - grossLines;
 
         if (totalPaise <= 0) {
           throw new SalesReturnValidationError(
@@ -642,7 +657,6 @@ export class SalesReturnService {
             }
           }
         }
-
         // Reduce invoice balance for the portion that offsets outstanding.
         // Do NOT touch total_paise / paid_paise; only balance_paise moves.
         // Status flips back to 'issued' if a fully-paid invoice now has
@@ -651,9 +665,9 @@ export class SalesReturnService {
         // rather than a negative-balance invoice, so this case is handled by
         // customerCreditAmount below; here we only handle the direct-offset
         // path.
-        if (applyToBalance > 0) {
-          const newBalance = inv.balance_paise - applyToBalance;
-          const nextStatus = computeStatusAfterReturn(inv, newBalance);
+        if (applyToBalance > 0 || isFullReturn || customerCreditAmount > 0) {
+          const newBalance = Math.max(0, inv.balance_paise - applyToBalance);
+          const nextStatus = isFullReturn ? 'cancelled' : computeStatusAfterReturn(inv, newBalance);
           log.info('salesReturn', 'reducing invoice balance', {
             invoiceId: inv.id,
             invoiceNumber: inv.invoice_number,
@@ -686,58 +700,188 @@ export class SalesReturnService {
           });
         }
 
-        // Materialize the customer credit if there's excess. This is a real
-        // Advance row so it shows up in party ledgers and can be applied to
-        // a future invoice via AdvanceService.applyAdvance.
-        let creditAdvanceId: string | null = null;
+        // If the customer already paid this invoice, refund the returned
+        // amount instead of turning it into an advance. Each refund mirrors
+        // the original payment account and allocation so the customer ledger
+        // nets to zero and the cash/bank account shows the money going out.
+        let refundPaymentIds: string[] = [];
         if (customerCreditAmount > 0) {
-          if (!customerAdvAcct) {
+          const paidPayments = (await this.db.payments
+            .where('business_id')
+            .equals(input.business_id)
+            .toArray())
+            .filter(
+              (payment) =>
+                !payment.deleted_at &&
+                payment.direction === 'in' &&
+                payment.party_type === 'customer' &&
+                payment.party_id === inv.customer_id &&
+                payment.allocations.some(
+                  (allocation) => allocation.invoice_id === inv.id && allocation.amount_paise > 0,
+                ),
+            );
+          let remainingRefund = customerCreditAmount;
+          for (const payment of paidPayments) {
+            const allocated = payment.allocations
+              .filter((allocation) => allocation.invoice_id === inv.id)
+              .reduce((sum, allocation) => sum + Math.max(0, allocation.amount_paise), 0);
+            const refundAmount = Math.min(remainingRefund, allocated);
+            if (refundAmount <= 0) continue;
+            const refundPaymentId = ulid();
+            const refundJournalId = ulid();
+            const refundPayment: Payment = {
+              ...payment,
+              id: refundPaymentId,
+              payment_number: `${payment.payment_number}-REF-${returnNumber}`,
+              payment_date: input.return_date,
+              direction: 'out',
+              amount_paise: -refundAmount,
+              reference: `refund of ${payment.payment_number}`,
+              notes: `Refund for sales return ${returnNumber}`,
+              allocations: [{ invoice_id: inv.id, amount_paise: -refundAmount }],
+              journal_entry_id: refundJournalId,
+              created_at: now,
+              updated_at: now,
+              entity_version: 1,
+            };
+            const refundJournal: JournalEntry = {
+              id: refundJournalId,
+              business_id: input.business_id,
+              entry_number: `JE-REF-${returnNumber}-${refundPaymentId}`,
+              entry_date: input.return_date,
+              narration: `Refund ${refundPayment.payment_number}: sales return ${returnNumber}`,
+              ref_type: 'reversal',
+              ref_id: refundPaymentId,
+              reversed_by_id: null,
+              reverses_id: payment.journal_entry_id,
+              total_debit_paise: refundAmount,
+              total_credit_paise: refundAmount,
+              posted: 1,
+              created_at: now,
+              updated_at: now,
+              entity_version: 1,
+            };
+            const refundLines: JournalLine[] = [
+              {
+                id: ulid(), business_id: input.business_id, entry_id: refundJournalId,
+                line_no: 1, account_id: receivableAcct.id, debit_paise: refundAmount,
+                credit_paise: 0, party_type: 'customer', party_id: inv.customer_id,
+                description: 'Accounts Receivable refunded to customer',
+              },
+              {
+                id: ulid(), business_id: input.business_id, entry_id: refundJournalId,
+                line_no: 2, account_id: payment.account_id, debit_paise: 0,
+                credit_paise: refundAmount, party_type: null, party_id: null,
+                description: 'Cash/bank refund to customer',
+              },
+            ];
+            await this.db.payments.add(refundPayment);
+            await this.db.journal_entries.add(refundJournal);
+            await this.db.journal_lines.bulkAdd(refundLines);
+            await writeEventInTx(this.db, {
+              business_id: input.business_id, device_id: input.device_id,
+              entity_type: 'payment', entity_id: refundPaymentId,
+              operation: 'created', entity_version: 1, timestamp: now,
+              payload: refundPayment,
+            });
+            await writeEventInTx(this.db, {
+              business_id: input.business_id, device_id: input.device_id,
+              entity_type: 'journal_entry', entity_id: refundJournalId,
+              operation: 'posted', entity_version: 1, timestamp: now,
+              payload: refundJournal,
+            });
+            for (const line of refundLines) {
+              await writeEventInTx(this.db, {
+                business_id: input.business_id, device_id: input.device_id,
+                entity_type: 'journal_line', entity_id: line.id,
+                operation: 'created', entity_version: 1, timestamp: now,
+                payload: line,
+              });
+            }
+            refundPaymentIds.push(refundPaymentId);
+            remainingRefund -= refundAmount;
+            if (remainingRefund <= 0) break;
+          }
+          if (remainingRefund > 0 && cashAcct) {
+            const refundPaymentId = ulid();
+            const refundJournalId = ulid();
+            const refundPayment: Payment = {
+              id: refundPaymentId,
+              business_id: input.business_id,
+              payment_number: `REF-${returnNumber}`,
+              payment_date: input.return_date,
+              direction: 'out',
+              party_type: 'customer',
+              party_id: inv.customer_id,
+              method: 'cash',
+              account_id: cashAcct.id,
+              amount_paise: -remainingRefund,
+              reference: `refund for sales return ${returnNumber}`,
+              notes: `Refund for sales return ${returnNumber}`,
+              allocations: [{ invoice_id: inv.id, amount_paise: -remainingRefund }],
+              journal_entry_id: refundJournalId,
+              created_at: now,
+              updated_at: now,
+              entity_version: 1,
+            };
+            const refundJournal: JournalEntry = {
+              id: refundJournalId,
+              business_id: input.business_id,
+              entry_number: `JE-REF-${returnNumber}`,
+              entry_date: input.return_date,
+              narration: `Refund for sales return ${returnNumber}`,
+              ref_type: 'reversal',
+              ref_id: refundPaymentId,
+              reversed_by_id: null,
+              reverses_id: inv.journal_entry_id,
+              total_debit_paise: remainingRefund,
+              total_credit_paise: remainingRefund,
+              posted: 1,
+              created_at: now,
+              updated_at: now,
+              entity_version: 1,
+            };
+            const refundLines: JournalLine[] = [
+              { id: ulid(), business_id: input.business_id, entry_id: refundJournalId, line_no: 1,
+                account_id: receivableAcct.id, debit_paise: remainingRefund, credit_paise: 0,
+                party_type: 'customer', party_id: inv.customer_id, description: 'Accounts Receivable refunded to customer' },
+              { id: ulid(), business_id: input.business_id, entry_id: refundJournalId, line_no: 2,
+                account_id: cashAcct.id, debit_paise: 0, credit_paise: remainingRefund,
+                party_type: null, party_id: null, description: 'Cash refund to customer' },
+            ];
+            await this.db.payments.add(refundPayment);
+            await this.db.journal_entries.add(refundJournal);
+            await this.db.journal_lines.bulkAdd(refundLines);
+            await writeEventInTx(this.db, { business_id: input.business_id, device_id: input.device_id,
+              entity_type: 'payment', entity_id: refundPaymentId, operation: 'created', entity_version: 1,
+              timestamp: now, payload: refundPayment });
+            await writeEventInTx(this.db, { business_id: input.business_id, device_id: input.device_id,
+              entity_type: 'journal_entry', entity_id: refundJournalId, operation: 'posted', entity_version: 1,
+              timestamp: now, payload: refundJournal });
+            for (const line of refundLines) {
+              await writeEventInTx(this.db, { business_id: input.business_id, device_id: input.device_id,
+                entity_type: 'journal_line', entity_id: line.id, operation: 'created', entity_version: 1,
+                timestamp: now, payload: line });
+            }
+            refundPaymentIds.push(refundPaymentId);
+            remainingRefund = 0;
+          }
+          if (remainingRefund > 0) {
             throw new SalesReturnValidationError(
-              'Customer Advances account (2050) missing — cannot post excess return as credit.',
+              `Could not identify original customer payments for ₹${(remainingRefund / 100).toFixed(2)} refund.`,
             );
           }
-          creditAdvanceId = ulid();
-          const advance = {
-            id: creditAdvanceId,
-            business_id: input.business_id,
-            advance_number: `ADV-${returnNumber}`,
-            advance_date: input.return_date,
-            party_type: 'customer' as const,
-            party_id: inv.customer_id,
-            method: 'cash' as const,
-            account_id: customerAdvAcct.id,
-            amount_paise: customerCreditAmount,
-            remaining_paise: customerCreditAmount,
-            reference: `sales_return:${returnNumber}`,
-            notes: `Customer credit from Sales Return ${returnNumber} against invoice ${inv.invoice_number}`,
-            applications: [],
-            journal_entry_id: journalEntryId,
-            created_at: now,
-            updated_at: now,
-            entity_version: 1,
-          };
-          await this.db.advances.add(advance);
-          await writeEventInTx(this.db, {
-            business_id: input.business_id,
-            device_id: input.device_id,
-            entity_type: 'advance',
-            entity_id: creditAdvanceId,
-            operation: 'created',
-            entity_version: 1,
-            timestamp: now,
-            payload: advance,
-          });
-          log.info(
-            'salesReturn',
-            'created customer credit advance for excess return',
-            {
-              advanceId: creditAdvanceId,
-              advanceNumber: advance.advance_number,
-              customerId: inv.customer_id,
-              amountPaise: customerCreditAmount,
-              againstReturn: returnNumber,
-            },
-          );
+          const refundedPaid = Math.min(inv.paid_paise, customerCreditAmount);
+          if (refundedPaid > 0) {
+            const currentInvoice = await this.db.invoices.get(inv.id);
+            if (currentInvoice) {
+              await this.db.invoices.update(inv.id, {
+                paid_paise: Math.max(0, currentInvoice.paid_paise - refundedPaid),
+                updated_at: now,
+                entity_version: currentInvoice.entity_version + 1,
+              });
+            }
+          }
         }
 
         // Reversing journal entry. Debit Sales Revenue + GST outputs (undo
@@ -816,7 +960,8 @@ export class SalesReturnService {
             description: 'Output Cess reversed',
           });
         }
-        if (applyToBalance > 0) {
+        const receivableReduction = customerCreditAmount > 0 ? totalPaise : applyToBalance;
+        if (receivableReduction > 0) {
           jeLines.push({
             id: ulid(),
             business_id: input.business_id,
@@ -824,24 +969,12 @@ export class SalesReturnService {
             line_no: jlNo++,
             account_id: receivableAcct.id,
             debit_paise: 0,
-            credit_paise: applyToBalance,
+            credit_paise: receivableReduction,
             party_type: 'customer',
             party_id: inv.customer_id,
-            description: 'Accounts Receivable reduced (return)',
-          });
-        }
-        if (customerCreditAmount > 0 && customerAdvAcct) {
-          jeLines.push({
-            id: ulid(),
-            business_id: input.business_id,
-            entry_id: journalEntryId,
-            line_no: jlNo++,
-            account_id: customerAdvAcct.id,
-            debit_paise: 0,
-            credit_paise: customerCreditAmount,
-            party_type: 'customer',
-            party_id: inv.customer_id,
-            description: 'Customer credit issued (return)',
+            description: customerCreditAmount > 0
+              ? 'Accounts Receivable reversed before cash/bank refund'
+              : 'Accounts Receivable reduced (return)',
           });
         }
         if (totalCogsReversalPaise > 0) {
@@ -1021,7 +1154,7 @@ export class SalesReturnService {
             total_paise: totalPaise,
             apply_to_balance_paise: applyToBalance,
             customer_credit_paise: customerCreditAmount,
-            credit_advance_id: creditAdvanceId,
+             refund_payment_ids: refundPaymentIds,
             journal_entry_id: journalEntryId,
           },
           at: now,
@@ -1036,7 +1169,7 @@ export class SalesReturnService {
           totalPaise,
           applyToBalance,
           customerCreditAmount,
-          creditAdvanceId,
+          refundPaymentIds,
           journalEntryId,
           jeLineCount: jeLines.length,
           movementCount: movements.length,

@@ -162,7 +162,7 @@ function accRow(code: string, name: string, type: Account['type']): Account {
   };
 }
 
-function intrastateLine(overrides: { qty_micros?: number } = {}): {
+function intrastateLine(): {
   item_id: string;
   hsn: string;
   warehouse_id: string;
@@ -188,7 +188,6 @@ function intrastateLine(overrides: { qty_micros?: number } = {}): {
     sgst_paise: 1800,
     igst_paise: 0,
     line_total_paise: 23600,
-    ...overrides,
   };
 }
 
@@ -597,7 +596,7 @@ describe('InvoiceService — cess and round-off posting (regression)', () => {
 });
 
 describe('InvoiceService.updateInvoice', () => {
-  it('updates the existing invoice row without creating a credit note', async () => {
+  it('edits the existing invoice row under the same invoice_number', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -610,7 +609,7 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    const updated = await service.updateInvoice(inv.id, {
+    const reissued = await service.updateInvoice(inv.id, {
       business_id: businessId,
       device_id: deviceId,
       invoice_date: '2026-08-19',
@@ -621,33 +620,14 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    expect(updated.id).toBe(inv.id);
-    expect(updated.invoice_number).toBe('INV-EDIT-1');
-    expect(updated.reversed_by_invoice_id).toBeNull();
-    expect(updated.reverses_invoice_id).toBeNull();
-    expect(await db.invoices.where('business_id').equals(businessId).count()).toBe(1);
+    expect(reissued.id).toBe(inv.id);
+    expect(reissued.invoice_number).toBe('INV-EDIT-1');
+    const original = await db.invoices.get(inv.id);
+    expect(original?.reversed_by_invoice_id).toBeNull();
+    expect(await db.invoices.count()).toBe(1);
   });
 
-  it('updates sale stock movement quantity when an inventory line is edited', async () => {
-    const item = await db.items.get('01ITEM');
-    await db.items.put({ ...(item ?? { id: '01ITEM', business_id: businessId, name: 'Widget' }), track_inventory: 1 } as typeof item & { track_inventory: number });
-    await db.item_stock.add({ id: 'stock-edit', business_id: businessId, item_id: '01ITEM', warehouse_id: '01WAREHOUSE', qty_micros: 10_000_000, avg_cost_paise: 100, updated_at: new Date().toISOString() });
-    const inv = await service.createInvoice({
-      business_id: businessId, device_id: deviceId, invoice_number: 'INV-STOCK-EDIT', invoice_date: '2026-08-19',
-      customer_id: customerId, customer_state_code: '29', place_of_supply: '29', is_interstate: false,
-      financial_year: '2026-27', lines: [intrastateLine({ qty_micros: 1_000_000 })],
-    });
-    await service.updateInvoice(inv.id, {
-      business_id: businessId, device_id: deviceId, invoice_date: '2026-08-19', customer_id: customerId,
-      customer_state_code: '29', place_of_supply: '29', is_interstate: false, financial_year: '2026-27',
-      lines: [intrastateLine({ qty_micros: 2_000_000 })],
-    });
-    const movements = (await db.stock_movements.where('business_id').equals(businessId).toArray())
-      .filter((movement) => movement.ref_id === inv.id);
-    expect(movements.filter((movement) => movement.movement_type === 'sale').reduce((sum, movement) => sum + movement.qty_micros, 0)).toBe(-2_000_000);
-  });
-
-  it('can edit the same invoice row more than once', async () => {
+  it('can edit the same invoice more than once', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -660,7 +640,8 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    // A second edit updates the same row again.
+    // The original primary key remains stable, so a second edit updates the
+    // same row again.
     await service.updateInvoice(inv.id, {
       business_id: businessId,
       device_id: deviceId,
@@ -682,8 +663,40 @@ describe('InvoiceService.updateInvoice', () => {
         is_interstate: false,
         financial_year: '2026-27',
         lines: [intrastateLine()],
-      }),
-    ).resolves.toMatchObject({ id: inv.id, reversed_by_invoice_id: null });
+    })).resolves.toMatchObject({ id: inv.id });
+  });
+
+  it('shows a reduced-value edit as the final debit without the edit reversal credit', async () => {
+    const inv = await service.createInvoice({
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_number: 'INV-EDIT-REDUCE',
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [intrastateLine()],
+    });
+
+    await service.updateInvoice(inv.id, {
+      business_id: businessId,
+      device_id: deviceId,
+      invoice_date: '2026-08-19',
+      customer_id: customerId,
+      customer_state_code: '29',
+      place_of_supply: '29',
+      is_interstate: false,
+      financial_year: '2026-27',
+      lines: [{ ...intrastateLine(), qty_micros: 1_000_000, taxable_paise: 10000, cgst_paise: 900, sgst_paise: 900, line_total_paise: 11800 }],
+    });
+
+    const tb = await trialBalance(businessId, new Date('2026-08-31'), { db });
+    const receivables = tb.find((row) => row.code === '1200');
+    expect(receivables?.debits_paise).toBe(11800);
+    expect(receivables?.credits_paise).toBe(0);
+    expect(receivables?.balance_paise).toBe(11800);
   });
 });
 

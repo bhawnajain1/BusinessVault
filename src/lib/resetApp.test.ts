@@ -3,7 +3,9 @@ import 'fake-indexeddb/auto';
 
 vi.mock('../sync/bootProvider', () => ({
   stopSyncWorkerAsync: vi.fn(async () => undefined),
+  suppressProviderBoot: vi.fn(),
 }));
+vi.mock('../drive/connectDrive', () => ({ disconnectAllDrives: vi.fn(async () => undefined) }));
 vi.mock('../drive/tokenStore', () => ({ resetTokenDb: vi.fn() }));
 
 import { resetAppToFreshState } from './resetApp';

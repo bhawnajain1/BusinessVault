@@ -599,9 +599,9 @@ export default function InvoiceForm() {
 
       {editingId && (
         <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-          Saving will void the original invoice and issue a new one. Change the
-          Invoice # above to rename it — the change is recorded in the audit
-          log. The original stays in the audit trail (marked as reversed).
+          Saving updates this invoice in place. The invoice ID and number are
+          retained, while accounting and stock adjustments remain in the audit
+          journal.
         </div>
       )}
 

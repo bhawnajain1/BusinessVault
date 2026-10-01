@@ -22,7 +22,7 @@ import {
   DRIVE_FILE_SCOPE,
   hasRequiredDriveScopes,
 } from '../auth/gis';
-import { saveTokens, loadTokens, clearTokens } from './tokenStore';
+import { getTokenDb, saveTokens, loadTokens, clearTokens } from './tokenStore';
 
 const USERINFO_ENDPOINT = 'https://www.googleapis.com/oauth2/v3/userinfo';
 
@@ -190,6 +190,11 @@ export async function disconnectDrive(businessId: string): Promise<void> {
   }
   await clearTokens(businessId);
   log.info('connectDrive', 'disconnected', { businessId });
+}
+
+export async function disconnectAllDrives(): Promise<void> {
+  const records = await getTokenDb().drive_tokens.toArray();
+  for (const record of records) await disconnectDrive(record.businessId);
 }
 
 export async function isDriveConnected(businessId: string): Promise<boolean> {

@@ -30,6 +30,11 @@ import {
   setLowStockSoundEnabled,
 } from '../../lib/lowStockPrefs';
 import { playLowStockSound } from '../../lib/lowStockSound';
+import {
+  findInvoiceEditRepairCandidates,
+  repairInvoiceEditCreditNotes,
+  type InvoiceEditRepairCandidate,
+} from '../../domain/legacyReversalMigration';
 
 interface Counts {
   units: number;
@@ -50,6 +55,9 @@ export default function Settings() {
   const [counts, setCounts] = useState<Counts | null>(null);
   const [seedError, setSeedError] = useState<string | null>(null);
   const [stateManuallySet, setStateManuallySet] = useState(false);
+  const [editRepairCandidates, setEditRepairCandidates] = useState<InvoiceEditRepairCandidate[]>([]);
+  const [editRepairMsg, setEditRepairMsg] = useState<string | null>(null);
+  const [editRepairBusy, setEditRepairBusy] = useState(false);
 
   async function loadCounts(businessId: string) {
     const [units, categories, warehouses, customers, suppliers, items, invoices, accounts] =
@@ -443,6 +451,35 @@ export default function Settings() {
     }
   }
 
+  async function scanOldInvoiceEditCreditNotes() {
+    if (!business) return;
+    setEditRepairMsg(null);
+    try {
+      setEditRepairCandidates(await findInvoiceEditRepairCandidates(db, business.id));
+    } catch (e) {
+      setEditRepairMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async function repairOldInvoiceEditCreditNotes() {
+    if (!business || editRepairCandidates.length === 0) return;
+    if (!window.confirm(
+      `Remove ${editRepairCandidates.length} old invoice-edit CN record(s)? Genuine sales-return CNs will not be changed. Account balances and stock will remain unchanged because reversal journals and stock movements are retained.`,
+    )) return;
+    setEditRepairBusy(true);
+    setEditRepairMsg(null);
+    try {
+      const result = await repairInvoiceEditCreditNotes(db, business.id, await getDeviceId());
+      setEditRepairCandidates([]);
+      setEditRepairMsg(`Repaired ${result.repaired} old invoice-edit CN record${result.repaired === 1 ? '' : 's'}. Account balances and stock movements were preserved.`);
+      await loadCounts(business.id);
+    } catch (e) {
+      setEditRepairMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setEditRepairBusy(false);
+    }
+  }
+
   if (!business) {
     // Pre-onboarding fallback. Restore-from-Drive failures land users here
     // (no business row created yet), so we surface Download logs inline —
@@ -514,6 +551,43 @@ export default function Settings() {
           </div>
         </div>
         {logoError && <div className="mt-2 text-xs text-rose-600">{logoError}</div>}
+      </section>
+
+      <section className="border border-amber-200 rounded p-4 bg-amber-50">
+        <h2 className="text-sm font-semibold text-amber-900 mb-2">Invoice edit cleanup</h2>
+        <p className="text-xs text-amber-800">
+          Finds only credit notes created by the old invoice-edit workflow. Genuine sales-return credit notes and ambiguous records are left untouched.
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void scanOldInvoiceEditCreditNotes()}
+            disabled={editRepairBusy}
+            className="text-sm border border-amber-300 rounded px-3 py-1.5 hover:bg-amber-100 disabled:opacity-50"
+          >
+            Check old invoice-edit CNs
+          </button>
+          {editRepairCandidates.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void repairOldInvoiceEditCreditNotes()}
+              disabled={editRepairBusy}
+              className="text-sm rounded bg-amber-700 px-3 py-1.5 text-white hover:bg-amber-800 disabled:opacity-50"
+            >
+              {editRepairBusy ? 'Repairing...' : `Repair ${editRepairCandidates.length} CN${editRepairCandidates.length === 1 ? '' : 's'}`}
+            </button>
+          )}
+        </div>
+        {editRepairCandidates.length > 0 && (
+          <ul className="mt-3 space-y-1 text-xs text-amber-900">
+            {editRepairCandidates.map((candidate) => (
+              <li key={candidate.creditNote.id}>
+                {candidate.creditNote.invoice_number} for {candidate.original.invoice_number}; latest bill retained: {candidate.latestInvoice.invoice_number}; reversal journal and {candidate.reversalStockMovementCount} stock movement(s) retained.
+              </li>
+            ))}
+          </ul>
+        )}
+        {editRepairMsg && <p className={`mt-2 text-sm ${editRepairMsg.startsWith('Error') ? 'text-rose-700' : 'text-emerald-700'}`}>{editRepairMsg}</p>}
       </section>
 
       <section className="border border-slate-200 rounded p-4 bg-white">

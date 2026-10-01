@@ -20,6 +20,7 @@ export default function InvoicesPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customerById, setCustomerById] = useState<Map<string, Customer>>(new Map());
   const [reloadTick, setReloadTick] = useState(0);
+  const [repairedCreditNoteIds, setRepairedCreditNoteIds] = useState<Set<string>>(new Set());
   const serviceRef = useRef<InvoiceService | null>(null);
   if (serviceRef.current === null) serviceRef.current = new InvoiceService();
 
@@ -29,6 +30,18 @@ export default function InvoicesPage() {
       const rows = await db.customers.where('business_id').equals(businessId).toArray();
       setCustomers(rows);
       setCustomerById(new Map(rows.map((c) => [c.id, c])));
+      const repaired = await db.audit_log
+        .where('business_id')
+        .equals(businessId)
+        .filter((row) => row.action === 'invoice.edit_credit_note_repaired')
+        .toArray();
+      setRepairedCreditNoteIds(
+        new Set(
+          repaired
+            .map((row) => (row.before as { credit_note_invoice_id?: unknown })?.credit_note_invoice_id)
+            .filter((id): id is string => typeof id === 'string'),
+        ),
+      );
     })();
   }, [businessId]);
 
@@ -67,6 +80,9 @@ export default function InvoicesPage() {
           // Recycle-bin: soft-deleted invoices never appear on the main list.
           // They live at /invoices/deleted and can be restored from there.
           if (inv.deleted_at) return false;
+          // A repaired legacy edit CN is intentionally removed from the audit
+          // view too. Genuine sales-return CNs have no repair audit marker.
+          if (repairedCreditNoteIds.has(inv.id)) return false;
           // Credit notes are audit rows created by voiding/editing; hiding
           // them keeps the list showing one entry per real invoice number.
           if (!showVoided && inv.reverses_invoice_id) return false;
@@ -99,7 +115,7 @@ export default function InvoicesPage() {
       };
       return paginateCollection<Invoice>(makeCol, offset, limit);
     },
-    [businessId, statusFilter, customerFilter, fyFilter, customerById, showVoided],
+    [businessId, statusFilter, customerFilter, fyFilter, customerById, repairedCreditNoteIds, showVoided],
   );
 
   const columns: ColumnDef<Invoice>[] = [

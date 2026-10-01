@@ -153,6 +153,32 @@ describe('GSTR report export', () => {
     await db.delete();
   });
 
+  it('exports rounded credit-note components and explicit round-off', async () => {
+    const db = new BusinessVaultDB(`gstr-rounded-note-${Date.now()}`);
+    const registered: Customer = { id: 'registered', business_id: businessId, name: 'Registered', phone: '', email: '', gstin: '08BBBBB0000B1Z0', billing_address: '', shipping_address: '', state: 'Rajasthan', state_code: '08', opening_balance_paise: 0, credit_limit_paise: 0, notes: '', active: 1, created_at: now, updated_at: now, entity_version: 1 };
+    await seedCatalog(db, [registered]);
+    const original = invoice('rounded-original', registered.id, '07663', 900, 0);
+    await db.invoices.add(original);
+    await db.invoice_lines.add(invoiceLine('rounded-line', original.id, 900));
+    const note = salesReturn('rounded-note', 'SR-000007', registered.id, original.id, 900);
+    note.total_paise = 900;
+    note.round_off_paise = -45;
+    note.pre_round_total_paise = 945;
+    note.cgst_paise = 22;
+    note.sgst_paise = 23;
+    await db.sales_returns.add(note);
+
+    const report = await buildGstrReport(businessId, 'gstr1', '2026-08-01', '2026-08-31', { db });
+    const row = report.sections.cdnr.rows[0];
+    expect(row['Note Value']).toBe(9);
+    expect(row['Taxable Value']).toBe(9);
+    expect(row['Central Tax Amount']).toBe(0.22);
+    expect(row['State/UT Tax Amount']).toBe(0.23);
+    expect(row['Round Off Amount']).toBe(-0.45);
+    expect(report.reconciliationIssues?.some((issue) => issue.documentNumber === 'SR-000007' && issue.message.includes('do not reconcile'))).toBe(false);
+    await db.delete();
+  });
+
   it('warns without classifying a note when category fields are insufficient', async () => {
     const db = new BusinessVaultDB(`gstr-note-warning-${Date.now()}`);
     const customer: Customer = { id: 'unregistered', business_id: businessId, name: 'Cash buyer', phone: '', email: '', gstin: null, billing_address: '', shipping_address: '', state: '', state_code: '', opening_balance_paise: 0, credit_limit_paise: 0, notes: '', active: 1, created_at: now, updated_at: now, entity_version: 1 };

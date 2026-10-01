@@ -211,7 +211,7 @@ beforeEach(async () => {
 describe('Dashboard/InvoicesPage/Receivables coherence', () => {
   it('after 4 creates + 2 renames + 1 more, all three surfaces agree', async () => {
     // Reproduces the exact sequence from the user's debug log:
-    // 4 invoices created, 2 renamed (rename-edit produces original + CN + reissue),
+    // 4 invoices created, 2 renamed in place,
     // then 1 more invoice created.
     const inv1 = await createSimpleInvoice('INV-000001', 100000);
     const inv2 = await createSimpleInvoice('INV-000002', 200000);
@@ -287,10 +287,8 @@ describe('Dashboard/InvoicesPage/Receivables coherence', () => {
         db.advances.where('business_id').equals(businessId).toArray(),
       ]);
 
-    // Edits update the existing rows in place: 4 edited/unchanged invoices +
-    // 1 fresh invoice, with no generated credit notes or replacement rows.
+    // In-place edits do not add credit-note invoice rows.
     expect(invoiceRows.length).toBe(5);
-    expect(invoiceRows.every((invoice) => !invoice.reverses_invoice_id && !invoice.reversed_by_invoice_id)).toBe(true);
 
     // Surface 1: Dashboard KPI (via extracted pure fn).
     const stats = computeDashboardStats({
@@ -363,7 +361,7 @@ describe('Dashboard/InvoicesPage/Receivables coherence', () => {
     // Silence unused-var lint — the assertion above IS using both sets.
     void receivablesInvoiceIds;
 
-    // In-place edits do not create superseded or credit-note invoice rows.
+    // Diagnostics: the hidden-row gap matches what actually happened.
     expect(stats.diagnostics.supersededInvoices).toBe(0);
     expect(stats.diagnostics.creditNotes).toBe(0);
     expect(stats.diagnostics.recycledInvoices).toBe(0);

@@ -90,8 +90,8 @@ export default function PartyLedgerPage() {
               .equals([businessId, id])
               .toArray(),
             db.payments
-              .where('[business_id+direction]')
-              .equals([businessId, 'in'])
+              .where('business_id')
+              .equals(businessId)
               .filter((p) => p.party_id === id && p.party_type === 'customer')
               .toArray(),
             db.advances
@@ -386,7 +386,7 @@ export default function PartyLedgerPage() {
   );
 }
 
-function buildCustomerRows(
+export function buildCustomerRows(
   _cust: Customer | null,
   invs: Invoice[],
   returns: SalesReturn[],
@@ -399,7 +399,6 @@ function buildCustomerRows(
 
   for (const inv of invs) {
     if (
-      inv.status === 'cancelled' ||
       inv.status === 'draft' ||
       inv.deleted_at ||
       inv.reversed_by_invoice_id
@@ -427,14 +426,14 @@ function buildCustomerRows(
   }
 
   for (const sr of returns) {
-    if (sr.status !== 'posted' || sr.deleted_at || sr.apply_to_balance_paise <= 0) continue;
+    if (sr.status !== 'posted' || sr.deleted_at || sr.total_paise <= 0) continue;
     out.push({
       date: sr.return_date,
       ref: sr.return_number,
       kind: 'sales_return_credit',
       description: `Sales return credit (applied to invoice ${sr.original_invoice_id})`,
       debit_paise: 0,
-      credit_paise: sr.apply_to_balance_paise,
+      credit_paise: sr.total_paise,
     });
   }
 
@@ -444,9 +443,11 @@ function buildCustomerRows(
       date: pay.payment_date,
       ref: pay.payment_number,
       kind: 'payment',
-      description: `Payment received (${pay.method})${pay.reference ? ` · ${pay.reference}` : ''}`,
-      debit_paise: 0,
-      credit_paise: pay.amount_paise,
+      description: pay.direction === 'out'
+        ? `Refund paid (${pay.method})${pay.reference ? ` · ${pay.reference}` : ''}`
+        : `Payment received (${pay.method})${pay.reference ? ` · ${pay.reference}` : ''}`,
+      debit_paise: pay.direction === 'out' ? Math.abs(pay.amount_paise) : 0,
+      credit_paise: pay.direction === 'out' ? 0 : Math.abs(pay.amount_paise),
     });
   }
 

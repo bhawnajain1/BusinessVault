@@ -4,6 +4,118 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.84 — 2026-09-30
+
+### Release
+
+- Release build containing the deployed sales-return and GSTR-1 round-off fixes.
+
+## 1.0.83 — 2026-09-30
+
+### Fixed
+
+- GSTR-1 credit-note exports now include CGST, SGST, IGST, cess, and explicit round-off amounts, with reconciliation warnings when components do not equal the credit-note value.
+
+## 1.0.80 — 2026-09-30
+
+### Fixed
+
+- Fixed the round-off repair migration so it writes valid `sync_events` primary keys and can complete on existing local databases.
+
+## 1.0.82 — 2026-09-30
+
+### Fixed
+
+- Corrected the signed refund adjustment in the historical full-return repair and reran it as a v16 migration for browsers that already opened v15.
+
+## 1.0.81 — 2026-09-30
+
+### Fixed
+
+- Reconciled full paid sales-return refunds in both directions so historical prorating and tax rounding cannot leave an invoice over-refunded or under-refunded.
+
+## 1.0.79 — 2026-09-30
+
+### Fixed
+
+- Full sales returns now refund the original invoice's exact rounded total, including round-off paise, and customer statements retain the return credit when it is immediately refunded.
+
+## 1.0.78 — 2026-09-30
+
+### Fixed
+
+- Customer detail, customer ledgers, and customer rollups now include outgoing refund payments, so fully returned paid invoices show net paid and closing balances of zero while incoming receipt dates remain accurate.
+
+## 1.0.77 — 2026-09-30
+
+### Fixed
+
+- Sales returns now refund paid customer amounts through auditable refund payments instead of creating customer advances; customer statements show the refund as a debit and return the balance to zero.
+
+## 1.0.76 — 2026-09-30
+
+### Fixed
+
+- A sales return covering every line on an invoice now marks that invoice as cancelled and clears its receivable balance for audit-only retention.
+
+## 1.0.75 — 2026-09-30
+
+### Fixed
+
+- Repaired invoice-edit credit notes no longer reappear in the invoice audit view after repair or sync; genuine sales-return credit notes remain visible.
+
+## 1.0.74 — 2026-09-30
+
+### Fixed
+
+- Start Fresh now disconnects active storage, revokes saved Drive sessions, removes saved local-folder access, and reports reset failures instead of redirecting as though the reset succeeded.
+
+## 1.0.73 — 2026-09-30
+
+### Fixed
+
+- Start Fresh now backs up every business stored on the device, verifies each backup, and clears the browser only after all businesses succeed.
+
+## 1.0.72 — 2026-09-30
+
+### Fixed
+
+- Added a visible business selector to Data & Backup so devices with multiple businesses can back up each business before using Start Fresh.
+
+## 1.0.71 — 2026-09-30
+
+### Fixed
+
+- Improved legacy invoice-edit CN detection for older records whose reversal journal metadata is incomplete, while continuing to exclude genuine sales returns.
+- Clarified that superseded invoice audit rows remain visible when the invoice-history checkbox is enabled; only obsolete edit-CN rows are removed by repair.
+
+### Tests
+
+- Added regression coverage for legacy edit CNs identified by the historical invoice-number and edit-reason signature.
+
+## 1.0.70 — 2026-09-30
+
+### Fixed
+
+- Fixed Trial Balance and Profit & Loss reporting for reduced-value invoice edits so obsolete edit-reversal credit entries are not shown; reports now reflect the final edited bill amount.
+- Updated the legacy invoice-edit CN repair tool to preserve audit journals and stock movements while excluding obsolete edit postings from financial reports.
+- Hardened invoice creation transactions against browser IndexedDB premature-commit errors.
+
+### Tests
+
+- Added regression coverage for reduced-value invoice edits and legacy invoice-edit CN repair.
+
+## 1.0.69 — 2026-09-30
+
+### Added
+
+- Added business-scoped duplicate GSTIN validation for customer creation and updates.
+- Added a Customers-page tool to find and merge existing duplicate-GSTIN customer records while preserving linked invoices, returns, payments, advances, journal references, and customer prices.
+
+### Tests
+
+- Passed the release gate, including typecheck, lint, unit tests, integration tests, mandatory backup round trip, and production build.
+
 ## 1.0.68 — 2026-09-29
 
 ### Fixed

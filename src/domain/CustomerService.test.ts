@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { BusinessVaultDB } from '../db/database';
+import type { CustomerItemPrice, Invoice } from '../db/types';
 import { CustomerService } from './CustomerService';
 
 const BIZ = 'biz-01H';
@@ -57,6 +58,133 @@ describe('CustomerService', () => {
     expect(rows.length).toBe(0);
     const events = await db.sync_events.toArray();
     expect(events.length).toBe(0);
+  });
+
+  it('rejects a second customer with the same GSTIN in the same business', async () => {
+    const db = freshDb();
+    const svc = new CustomerService({ db });
+    await svc.create({
+      businessId: BIZ,
+      deviceId: DEV,
+      name: 'First Customer',
+      gstin: '29AABCS1234A1ZX',
+    });
+
+    await expect(
+      svc.create({
+        businessId: BIZ,
+        deviceId: DEV,
+        name: 'Duplicate Customer',
+        gstin: ' 29aabcs1234a1zx ',
+      }),
+    ).rejects.toThrow(/already exists/);
+    expect(await db.customers.count()).toBe(1);
+    expect(await db.sync_events.count()).toBe(1);
+  });
+
+  it('allows the same GSTIN in different businesses and rejects duplicate updates', async () => {
+    const db = freshDb();
+    const svc = new CustomerService({ db });
+    const first = await svc.create({
+      businessId: BIZ,
+      deviceId: DEV,
+      name: 'First Customer',
+      gstin: '29AABCS1234A1ZX',
+    });
+    await svc.create({
+      businessId: 'other-business',
+      deviceId: DEV,
+      name: 'Other Customer',
+      gstin: '29AABCS1234A1ZX',
+    });
+    const second = await svc.create({
+      businessId: BIZ,
+      deviceId: DEV,
+      name: 'Second Customer',
+    });
+
+    await expect(
+      svc.update({
+        id: second.id,
+        businessId: BIZ,
+        deviceId: DEV,
+        patch: { gstin: '29AABCS1234A1ZX' },
+      }),
+    ).rejects.toThrow(/already exists/);
+    await expect(
+      svc.update({
+        id: first.id,
+        businessId: BIZ,
+        deviceId: DEV,
+        patch: { gstin: ' 29aabcs1234a1zx ' },
+      }),
+    ).resolves.toMatchObject({ gstin: '29AABCS1234A1ZX' });
+  });
+
+  it('finds duplicate GSTIN groups and merges references into the oldest customer', async () => {
+    const db = freshDb();
+    const svc = new CustomerService({ db, now: () => '2026-09-30T00:00:00.000Z' });
+    const survivor = await svc.create({
+      businessId: BIZ,
+      deviceId: DEV,
+      name: 'Original Customer',
+      gstin: '29AABCS1234A1ZX',
+      phone: '1111',
+      openingBalancePaise: 1000,
+    });
+    const duplicate = await svc.create({
+      businessId: BIZ,
+      deviceId: DEV,
+      name: 'Duplicate Customer',
+      gstin: null,
+      email: 'duplicate@example.com',
+      notes: 'Keep this note',
+      openingBalancePaise: 2500,
+    });
+    await db.customers.update(duplicate.id, { gstin: survivor.gstin });
+    const invoice = {
+      id: 'invoice-duplicate-customer',
+      business_id: BIZ,
+      customer_id: duplicate.id,
+    } as Invoice;
+    await db.invoices.add(invoice);
+    await db.customer_item_prices.add({
+      id: `${BIZ}:${duplicate.id}:item-1`,
+      business_id: BIZ,
+      customer_id: duplicate.id,
+      item_id: 'item-1',
+      unit_price_paise: 900,
+      created_at: '2026-09-30T00:00:00.000Z',
+      updated_at: '2026-09-30T00:00:00.000Z',
+      entity_version: 1,
+    } satisfies CustomerItemPrice);
+
+    const groups = await svc.findDuplicateGstinGroups(BIZ);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].customers.map((customer) => customer.id)).toEqual([
+      survivor.id,
+      duplicate.id,
+    ]);
+
+    const result = await svc.mergeCustomers({
+      businessId: BIZ,
+      deviceId: DEV,
+      survivorId: survivor.id,
+      duplicateIds: [duplicate.id],
+    });
+    expect(result.mergedCustomerIds).toEqual([duplicate.id]);
+    expect(result.reassigned.invoices).toBe(1);
+    expect(result.reassigned.customerItemPrices).toBe(1);
+    expect(result.survivor.email).toBe('duplicate@example.com');
+    expect(result.survivor.opening_balance_paise).toBe(3500);
+    expect(await db.invoices.get(invoice.id)).toMatchObject({ customer_id: survivor.id });
+    expect(await db.customers.get(duplicate.id)).toBeUndefined();
+    expect(await db.customer_item_prices.get(`${BIZ}:${survivor.id}:item-1`)).toMatchObject({
+      unit_price_paise: 900,
+    });
+    expect(
+      (await db.audit_log.toArray()).filter((row) => row.action === 'customer.merged'),
+    ).toHaveLength(1);
   });
 
   it('bumps entity_version on update and emits customer.updated', async () => {

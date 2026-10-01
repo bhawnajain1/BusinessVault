@@ -12,6 +12,7 @@ import type {
 } from '../db/types';
 import { rebuildInvoiceLineReturnSummary } from './invoiceLineReturnSummary';
 import { allocateSalesReturnNumber } from './salesReturnNumbering';
+import { appendSyncEvent } from './syncEventLog';
 
 // Conservative migration from the pre-v5 world where Sales Returns and
 // invoice-edit reversals were BOTH represented as an Invoice row with
@@ -73,6 +74,20 @@ function classify(evidence: ClassificationEvidence): LegacyMigrationClassificati
     return 'EDIT_REVERSAL';
   }
 
+  // Older builds sometimes persisted the CN without the reversal JE metadata.
+  // The generated invoice number and note still identify the edit shape. Keep
+  // this fallback strict and reject any record carrying return evidence.
+  const looksLikeLegacyEditCreditNote =
+    !!evidence.credit_note_invoice_number && /-CN$/i.test(evidence.credit_note_invoice_number) &&
+    !!evidence.notes && /reason:\s*edit\b/i.test(evidence.notes);
+  if (
+    looksLikeLegacyEditCreditNote &&
+    stock_movement_types.every((type) => type !== 'sale_return') &&
+    !journal_narration?.trim().startsWith('Sales return for ')
+  ) {
+    return 'EDIT_REVERSAL';
+  }
+
   // Sales-return signals — ReturnService writes ref_type='invoice' on the
   // reversal JE and stock_movements with movement_type='sale_return'.
   const hasSaleReturnMovements =
@@ -96,6 +111,21 @@ export interface MigrationResult {
   classifiedAs: Record<LegacyMigrationClassification, number>;
   materializedSalesReturns: number;
   skippedIdempotent: number;
+}
+
+export interface InvoiceEditRepairCandidate {
+  creditNote: Invoice;
+  original: Invoice;
+  latestInvoice: Invoice;
+  reversalJournal: JournalEntry | null;
+  reversalStockMovementCount: number;
+}
+
+export interface InvoiceEditRepairResult {
+  examined: number;
+  repaired: number;
+  skipped: number;
+  candidates: InvoiceEditRepairCandidate[];
 }
 
 // Run once. Safe to call repeatedly — a CN already audited at the current
@@ -205,6 +235,171 @@ export async function runLegacyReversalMigration(
   };
 }
 
+/**
+ * Finds old edit-generated CN rows without changing data. Only rows with the
+ * same deterministic evidence used by the legacy classifier are returned.
+ */
+export async function findInvoiceEditRepairCandidates(
+  db: BusinessVaultDB,
+  businessId: string,
+): Promise<InvoiceEditRepairCandidate[]> {
+  const invoices = await db.invoices.where('business_id').equals(businessId).toArray();
+  const candidates: InvoiceEditRepairCandidate[] = [];
+  for (const creditNote of invoices.filter((row) => row.reverses_invoice_id != null)) {
+    const original = await db.invoices.get(creditNote.reverses_invoice_id!);
+    if (!original) continue;
+    const evidence = await gatherEvidence(db, creditNote, original.id);
+    if (classify(evidence) !== 'EDIT_REVERSAL') continue;
+    const successors = invoices.filter(
+      (row) =>
+        row.id !== creditNote.id &&
+        row.id !== original.id &&
+        row.invoice_number === original.invoice_number &&
+        row.created_at > original.created_at &&
+        row.reverses_invoice_id == null,
+    );
+    successors.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    if (successors.length === 0) continue;
+    const reversalJournal = creditNote.journal_entry_id
+      ? (await db.journal_entries.get(creditNote.journal_entry_id)) ?? null
+      : null;
+    const reversalStockMovementCount = await db.stock_movements
+      .where('[business_id+ref_type+ref_id]')
+      .equals([businessId, 'reversal', creditNote.id])
+      .count();
+    candidates.push({
+      creditNote,
+      original,
+      latestInvoice: successors[0],
+      reversalJournal,
+      reversalStockMovementCount,
+    });
+  }
+  return candidates.sort((a, b) => a.creditNote.created_at.localeCompare(b.creditNote.created_at));
+}
+
+/**
+ * Removes only obsolete edit-generated invoice/CN headers and lines. Journal
+ * and stock reversal rows remain immutable, so the old posting stays exactly
+ * cancelled and the latest edited invoice remains the active bill.
+ */
+export async function repairInvoiceEditCreditNotes(
+  db: BusinessVaultDB,
+  businessId: string,
+  deviceId: string,
+): Promise<InvoiceEditRepairResult> {
+  const candidates = await findInvoiceEditRepairCandidates(db, businessId);
+  const repairedAuditRows = await db.audit_log
+    .where('business_id')
+    .equals(businessId)
+    .filter((row) => row.action === 'invoice.edit_credit_note_repaired')
+    .toArray();
+  const previouslyRepairedIds = new Set(
+    repairedAuditRows
+      .map((row) => (row.before as { credit_note_invoice_id?: unknown })?.credit_note_invoice_id)
+      .filter((id): id is string => typeof id === 'string'),
+  );
+  const repairedRows = await db.invoices
+    .where('business_id')
+    .equals(businessId)
+    .filter((invoice) => previouslyRepairedIds.has(invoice.id))
+    .toArray();
+  for (const repairedRow of repairedRows) {
+    await db.invoice_lines.where('invoice_id').equals(repairedRow.id).delete();
+    await db.invoices.delete(repairedRow.id);
+  }
+  let repaired = 0;
+  for (const candidate of candidates) {
+    await db.transaction(
+      'rw',
+      [db.invoices, db.invoice_lines, db.journal_entries, db.audit_log, db.sync_events],
+      async () => {
+        const currentCn = await db.invoices.get(candidate.creditNote.id);
+        if (!currentCn || currentCn.reverses_invoice_id == null) return;
+        const journalIdsToExclude = [
+          currentCn.journal_entry_id,
+          candidate.latestInvoice.journal_entry_id !== candidate.original.journal_entry_id
+            ? candidate.reversalJournal?.reverses_id ?? candidate.original.journal_entry_id
+            : null,
+        ].filter((id): id is string => !!id);
+        for (const journalId of journalIdsToExclude) {
+          const journal = await db.journal_entries.get(journalId);
+          if (!journal || journal.posted !== 1) continue;
+          const updatedJournal = {
+            ...journal,
+            posted: 0,
+            updated_at: new Date().toISOString(),
+            entity_version: journal.entity_version + 1,
+          };
+          await db.journal_entries.put(updatedJournal);
+          await appendSyncEvent(db, {
+            businessId,
+            deviceId,
+            entityType: 'journal_entry',
+            entityId: journalId,
+            operation: 'updated',
+            payload: updatedJournal,
+            timestamp: updatedJournal.updated_at,
+          });
+        }
+        await db.invoice_lines.where('invoice_id').equals(currentCn.id).delete();
+        await db.invoices.delete(currentCn.id);
+        await db.invoices.update(candidate.original.id, {
+          reversed_by_invoice_id: candidate.latestInvoice.id,
+          updated_at: new Date().toISOString(),
+          entity_version: candidate.original.entity_version + 1,
+        });
+        await appendSyncEvent(db, {
+          businessId,
+          deviceId,
+          entityType: 'invoice',
+          entityId: candidate.original.id,
+          operation: 'updated',
+          payload: {
+            id: candidate.original.id,
+            reversed_by_invoice_id: candidate.latestInvoice.id,
+            updated_at: new Date().toISOString(),
+            entity_version: candidate.original.entity_version + 1,
+          },
+          timestamp: new Date().toISOString(),
+        });
+        await db.audit_log.add({
+          id: ulid(),
+          business_id: businessId,
+          device_id: deviceId,
+          actor: 'invoice-edit-repair',
+          action: 'invoice.edit_credit_note_repaired',
+          entity_type: 'invoice',
+          entity_id: candidate.original.id,
+          before: {
+            credit_note_invoice_id: currentCn.id,
+            credit_note_invoice_number: currentCn.invoice_number,
+            original_invoice_id: candidate.original.id,
+          },
+          after: {
+            retained_original_invoice_id: candidate.original.id,
+            retained_latest_invoice_id: candidate.latestInvoice.id,
+            retained_reversal_journal_id: currentCn.journal_entry_id,
+            retained_reversal_stock_movement_count: candidate.reversalStockMovementCount,
+          },
+          at: new Date().toISOString(),
+        });
+        await appendSyncEvent(db, {
+          businessId,
+          deviceId,
+          entityType: 'invoice',
+          entityId: currentCn.id,
+          operation: 'deleted',
+          payload: { id: currentCn.id, repaired_edit_credit_note: true },
+          timestamp: new Date().toISOString(),
+        });
+        repaired++;
+      },
+    );
+  }
+  return { examined: candidates.length, repaired, skipped: 0, candidates };
+}
+
 async function gatherEvidence(
   db: BusinessVaultDB,
   cn: Invoice,
@@ -239,6 +434,7 @@ async function gatherEvidence(
     stock_movement_types: stockMovementTypes,
     original_lines_present: originalLines.length > 0,
     original_lines_count: originalLines.length,
+    notes: cn.notes,
   };
 }
 

@@ -98,11 +98,13 @@ export interface CreateInvoiceInput {
   notes?: string;
   terms?: string;
   idempotencyKey?: string;
+  /** Internal edit path: reuse the existing invoice primary key. */
+  replaceInvoiceId?: string;
 }
 
 export interface ReversalResult {
   originalInvoice: Invoice;
-  creditNote: Invoice;
+  creditNote: Invoice | null;
   reversingJournalEntryId: string;
 }
 
@@ -193,7 +195,16 @@ export class InvoiceService {
     }
 
     const now = new Date().toISOString();
-    const invoiceId = ulid();
+    const existingInvoice = input.replaceInvoiceId
+      ? await this.db.invoices.get(input.replaceInvoiceId)
+      : undefined;
+    if (input.replaceInvoiceId && !existingInvoice) {
+      throw new Error(`Invoice not found: ${input.replaceInvoiceId}`);
+    }
+    const invoiceId = input.replaceInvoiceId ?? ulid();
+    const existingInvoiceLines = input.replaceInvoiceId
+      ? await this.db.invoice_lines.where('invoice_id').equals(input.replaceInvoiceId).toArray()
+      : [];
     const journalEntryId = ulid();
 
     // Compute totals from lines (defense in depth — caller supplied but we recompute).
@@ -290,7 +301,6 @@ export class InvoiceService {
       notes: input.notes ?? '',
       terms: input.terms ?? '',
       pdf_attachment_id: null,
-      shared_pdf_url: null,
       journal_entry_id: journalEntryId,
       signature_attachment_id: signatureAttachmentId,
       e_invoice_status: 'not_recorded',
@@ -299,13 +309,13 @@ export class InvoiceService {
       e_invoice_ack_date: null,
       e_invoice_qr_reference: null,
       e_invoice_note: null,
-      created_at: now,
+      created_at: existingInvoice?.created_at ?? now,
       updated_at: now,
-      entity_version: 1,
+      entity_version: (existingInvoice?.entity_version ?? 0) + 1,
     };
 
     const invoiceLines: InvoiceLine[] = input.lines.map((l, idx) => ({
-      id: ulid(),
+      id: existingInvoiceLines[idx]?.id ?? ulid(),
       business_id: input.business_id,
       invoice_id: invoiceId,
       line_no: idx + 1,
@@ -411,14 +421,38 @@ export class InvoiceService {
         const dupe = await this.db.invoices
           .where('[business_id+invoice_number]')
           .equals([input.business_id, input.invoice_number])
-          .filter((row) => !row.reversed_by_invoice_id && !row.deleted_at)
+          .filter(
+            (row) =>
+              row.id !== input.replaceInvoiceId &&
+              !row.reversed_by_invoice_id &&
+              !row.deleted_at,
+          )
           .first();
         if (dupe) {
           throw new Error(
             `Invoice number "${input.invoice_number}" already exists and is already in use by this business. Choose a different invoice number.`,
           );
         }
-        await this.db.invoices.add(invoice);
+        if (input.replaceInvoiceId) {
+          const retainedLineIds = new Set(invoiceLines.map((line) => line.id));
+          for (const oldLine of existingInvoiceLines) {
+            if (retainedLineIds.has(oldLine.id)) continue;
+            await this.db.invoice_lines.delete(oldLine.id);
+            await writeEventInTx(this.db, {
+              business_id: input.business_id,
+              device_id: input.device_id,
+              entity_type: 'invoice_line',
+              entity_id: oldLine.id,
+              operation: 'deleted' as SyncEvent['operation'],
+              entity_version: 1,
+              timestamp: now,
+              payload: { id: oldLine.id, invoice_id: invoiceId },
+            });
+          }
+          await this.db.invoices.put(invoice);
+        } else {
+          await this.db.invoices.add(invoice);
+        }
 
         const parsedNumber = parseInvoiceNumber(input.invoice_number);
         if (parsedNumber) {
@@ -443,7 +477,11 @@ export class InvoiceService {
 
         // 2. invoice_lines rows + one sync event per line so restore can
         //    rehydrate the ledger. Handlers live at eventHandlers.ts.
-        await this.db.invoice_lines.bulkAdd(invoiceLines);
+        if (input.replaceInvoiceId) {
+          await this.db.invoice_lines.bulkPut(invoiceLines);
+        } else {
+          await this.db.invoice_lines.bulkAdd(invoiceLines);
+        }
         for (const line of invoiceLines) {
           await writeEventInTx(this.db, {
             business_id: input.business_id,
@@ -583,8 +621,8 @@ export class InvoiceService {
           device_id: input.device_id,
           entity_type: 'invoice',
           entity_id: invoiceId,
-          operation: 'created',
-          entity_version: 1,
+           operation: input.replaceInvoiceId ? 'updated' : 'created',
+           entity_version: invoice.entity_version,
           timestamp: now,
           payload: invoiceEventPayload,
           payload_hash: invoicePayloadHash,
@@ -610,6 +648,7 @@ export class InvoiceService {
   private async reverseInvoicePosting(
     invoiceId: string,
     reason: string,
+    createCreditNote = true,
   ): Promise<ReversalResult> {
     if (!reason || reason.trim().length === 0) {
       throw new Error('reversal reason required');
@@ -622,7 +661,7 @@ export class InvoiceService {
     }
 
     const now = new Date().toISOString();
-    const creditNoteId = ulid();
+    const creditNoteId = createCreditNote ? ulid() : null;
     const reversalJournalId = ulid();
 
     // Fetch original journal lines to reverse them exactly (defensive).
@@ -654,11 +693,11 @@ export class InvoiceService {
     const reversalJournal: JournalEntry = {
       id: reversalJournalId,
       business_id: original.business_id,
-      entry_number: `JE-REV-${creditNoteId}`,
+      entry_number: `JE-REV-${invoiceId}`,
       entry_date: original.invoice_date,
       narration: `Reversal of ${original.invoice_number}: ${reason}`,
       ref_type: 'reversal',
-      ref_id: creditNoteId,
+      ref_id: invoiceId,
       reversed_by_id: null,
       reverses_id: original.journal_entry_id,
       total_debit_paise: originalJournal.total_credit_paise,
@@ -670,9 +709,9 @@ export class InvoiceService {
     };
 
     // Credit note = a negative-mirror invoice pointing back at the original.
-    const creditNote: Invoice = {
+    const creditNote: Invoice | null = createCreditNote ? {
       ...original,
-      id: creditNoteId,
+      id: creditNoteId!,
       invoice_number: `${original.invoice_number}-CN`,
       subtotal_paise: -original.subtotal_paise,
       discount_paise: -original.discount_paise,
@@ -695,7 +734,7 @@ export class InvoiceService {
       created_at: now,
       updated_at: now,
       entity_version: 1,
-    };
+    } : null;
 
     // Pre-compute hashes outside tx (SubtleCrypto).
     // NOTE: payload field `voided_at` is retained for backwards wire compatibility
@@ -708,7 +747,9 @@ export class InvoiceService {
     };
     const reversalHash = await sha256Hex(canonicalJson(reversalPayload));
     const creditNotePayload = creditNote;
-    const creditNoteHash = await sha256Hex(canonicalJson(creditNotePayload));
+    const creditNoteHash = creditNote
+      ? await sha256Hex(canonicalJson(creditNotePayload))
+      : null;
 
     return await this.db.transaction(
       'rw',
@@ -724,18 +765,19 @@ export class InvoiceService {
       ],
       async () => {
         // Mark original as reversed (append-only: we do NOT delete rows).
-        await this.db.invoices.update(invoiceId, {
-          reversed_by_invoice_id: creditNoteId,
-          updated_at: now,
-          entity_version: original.entity_version + 1,
-        });
+        if (createCreditNote) {
+          await this.db.invoices.update(invoiceId, {
+            reversed_by_invoice_id: creditNoteId,
+            updated_at: now,
+            entity_version: original.entity_version + 1,
+          });
+        }
 
         // Insert credit note invoice + mirror lines.
-        await this.db.invoices.add(creditNote);
         const creditNoteLines: InvoiceLine[] = originalInvoiceLines.map((l) => ({
           ...l,
           id: ulid(),
-          invoice_id: creditNoteId,
+          invoice_id: creditNoteId!,
           qty_micros: -l.qty_micros,
           discount_paise: -l.discount_paise,
           taxable_paise: -l.taxable_paise,
@@ -745,8 +787,12 @@ export class InvoiceService {
           cess_paise: -l.cess_paise,
           line_total_paise: -l.line_total_paise,
         }));
-        await this.db.invoice_lines.bulkAdd(creditNoteLines);
+        if (creditNote) {
+          await this.db.invoices.add(creditNote);
+          await this.db.invoice_lines.bulkAdd(creditNoteLines);
+        }
         for (const cnl of creditNoteLines) {
+          if (!creditNote) continue;
           await writeEventInTx(this.db, {
             business_id: original.business_id,
             device_id: 'system',
@@ -770,7 +816,7 @@ export class InvoiceService {
               line.item_id,
               line.warehouse_id,
               line.qty_micros,
-              creditNoteId,
+              reversalJournalId,
               original.invoice_date,
             );
           }
@@ -804,28 +850,30 @@ export class InvoiceService {
         }
 
         // Sync events for the reversal + the credit note.
-        await writeEventInTx(this.db, {
-          business_id: original.business_id,
-          device_id: 'system',
-          entity_type: 'invoice',
-          entity_id: invoiceId,
-          operation: 'reversed',
-          entity_version: original.entity_version + 1,
-          timestamp: now,
-          payload: reversalPayload,
-          payload_hash: reversalHash,
-        });
-        await writeEventInTx(this.db, {
-          business_id: original.business_id,
-          device_id: 'system',
-          entity_type: 'invoice',
-          entity_id: creditNoteId,
-          operation: 'created',
-          entity_version: 1,
-          timestamp: now,
-          payload: creditNotePayload,
-          payload_hash: creditNoteHash,
-        });
+        if (creditNote) {
+          await writeEventInTx(this.db, {
+            business_id: original.business_id,
+            device_id: 'system',
+            entity_type: 'invoice',
+            entity_id: invoiceId,
+            operation: 'reversed',
+            entity_version: original.entity_version + 1,
+            timestamp: now,
+            payload: reversalPayload,
+            payload_hash: reversalHash,
+          });
+          await writeEventInTx(this.db, {
+            business_id: original.business_id,
+            device_id: 'system',
+            entity_type: 'invoice',
+            entity_id: creditNote.id,
+            operation: 'created',
+            entity_version: 1,
+            timestamp: now,
+            payload: creditNotePayload,
+            payload_hash: creditNoteHash!,
+          });
+        }
 
         const updatedOriginal = await this.db.invoices.get(invoiceId);
         return {
@@ -1346,7 +1394,14 @@ export class InvoiceService {
     );
   }
 
-  /** Edit an existing invoice in place. No credit note or replacement invoice is created. */
+  /**
+   * Edit an existing invoice. To preserve the append-only journal invariant
+   * (spec §24) the underlying implementation reverses the original's postings —
+   * emits a reversing journal + a mirror-negative credit note — and then posts a
+   * fresh invoice under the same invoice_number. The reversed original stays in
+   * the ledger for audit; UI filters it out of default list views. Callers see
+   * a normal "edit" — the reversal shape is not surfaced.
+   */
   async updateInvoice(
     invoiceId: string,
     input: Omit<CreateInvoiceInput, 'invoice_number' | 'idempotencyKey'> & {
@@ -1407,7 +1462,8 @@ export class InvoiceService {
       );
     }
 
-    // §3 invoice-number rename. Validate the target number before mutating the row.
+    // §3 invoice-number rename. Determine the target number for the reissue.
+    // If the caller passed a new one, validate it and record the audit trail.
     const proposedNumber = (input.invoice_number ?? '').trim();
     const isRename =
       proposedNumber.length > 0 && proposedNumber !== original.invoice_number;
@@ -1517,145 +1573,14 @@ export class InvoiceService {
       void originalLines;
     }
 
-    if (input.lines.length === 0) throw new Error('InvoiceService.updateInvoice: at least one line required');
-
-    const now = new Date().toISOString();
-    const subtotalPaise = sumField(input.lines, (l) => bankersRound((l.unit_price_paise * l.qty_micros) / 1_000_000));
-    const taxablePaise = sum(input.lines.map((l) => l.taxable_paise));
-    const cgstPaise = sum(input.lines.map((l) => l.cgst_paise));
-    const sgstPaise = sum(input.lines.map((l) => l.sgst_paise));
-    const igstPaise = sum(input.lines.map((l) => l.igst_paise));
-    const cessPaise = sum(input.lines.map((l) => l.cess_paise ?? 0));
-    const discountPaise = input.discount_paise ?? 0;
-    const preRoundTotalPaise = taxablePaise + cgstPaise + sgstPaise + igstPaise + cessPaise;
-    let roundOffPaise: number;
-    let roundOffMode: 'auto' | 'none' | 'manual';
-    if (input.round_off_mode === 'auto') {
-      const rounded = roundOffToNearestRupee(preRoundTotalPaise);
-      roundOffPaise = rounded.round_off_paise;
-      roundOffMode = 'auto';
-    } else if (input.round_off_mode === 'manual') {
-      roundOffPaise = input.round_off_paise ?? 0;
-      roundOffMode = 'manual';
-    } else {
-      roundOffPaise = input.round_off_paise ?? 0;
-      roundOffMode = 'none';
-    }
-    const totalPaise = preRoundTotalPaise + roundOffPaise;
-    if (input.is_interstate && (cgstPaise > 0 || sgstPaise > 0)) {
-      throw new Error('Interstate invoice must not carry CGST/SGST');
-    }
-    if (!input.is_interstate && igstPaise > 0) {
-      throw new Error('Intrastate invoice must not carry IGST');
-    }
-
-    const nextLines: InvoiceLine[] = input.lines.map((line, index) => ({
-      id: originalLines[index]?.id ?? ulid(),
-      business_id: original.business_id,
-      invoice_id: invoiceId,
-      line_no: index + 1,
-      item_id: line.item_id,
-      description: line.description ?? '',
-      hsn: line.hsn,
-      warehouse_id: line.warehouse_id,
-      qty_micros: line.qty_micros,
-      unit_price_paise: line.unit_price_paise,
-      discount_pct_bps: line.discount_pct_bps ?? 0,
-      discount_paise: line.discount_paise ?? 0,
-      taxable_paise: line.taxable_paise,
-      tax_rate_bps: line.tax_rate_bps,
-      cgst_paise: line.cgst_paise,
-      sgst_paise: line.sgst_paise,
-      igst_paise: line.igst_paise,
-      cess_paise: line.cess_paise ?? 0,
-      line_total_paise: line.line_total_paise,
-    }));
-    const nextInvoice: Invoice = {
-      ...original,
-      invoice_number: isRename ? proposedNumber : original.invoice_number,
-      invoice_date: input.invoice_date,
-      due_date: input.due_date ?? null,
-      customer_id: input.customer_id,
-      customer_state_code: input.customer_state_code,
-      place_of_supply: input.place_of_supply,
-      is_interstate: input.is_interstate ? 1 : 0,
-      financial_year: input.financial_year,
-      subtotal_paise: subtotalPaise,
-      discount_paise: discountPaise,
-      taxable_paise: taxablePaise,
-      cgst_paise: cgstPaise,
-      sgst_paise: sgstPaise,
-      igst_paise: igstPaise,
-      cess_paise: cessPaise,
-      round_off_paise: roundOffPaise,
-      round_off_mode: roundOffMode,
-      pre_round_total_paise: preRoundTotalPaise,
-      total_paise: totalPaise,
-      balance_paise: totalPaise - original.paid_paise,
-      status: original.paid_paise >= totalPaise ? 'paid' : original.paid_paise > 0 ? 'partial' : 'issued',
-      notes: input.notes ?? '',
-      terms: input.terms ?? '',
-      updated_at: now,
-      entity_version: original.entity_version + 1,
-    };
-
-    const journalLines = await this.buildInvoiceJournalLines(
-      original.business_id,
-      original.journal_entry_id,
-      totalPaise,
-      taxablePaise,
-      cgstPaise,
-      sgstPaise,
-      igstPaise,
-      cessPaise,
-    );
-    const oldStockByKey = new Map<string, number>();
-    for (const line of originalLines) {
-      const key = `${line.item_id}|${line.warehouse_id}`;
-      oldStockByKey.set(key, (oldStockByKey.get(key) ?? 0) + line.qty_micros);
-    }
-    const newStockByKey = new Map<string, number>();
-    for (const line of nextLines) {
-      const key = `${line.item_id}|${line.warehouse_id}`;
-      newStockByKey.set(key, (newStockByKey.get(key) ?? 0) + line.qty_micros);
-    }
-    const originalSaleMovements = (await this.db.stock_movements
-      .where('business_id')
-      .equals(original.business_id)
-      .toArray())
-      .filter((movement) => movement.ref_id === invoiceId && movement.movement_type === 'sale');
-    let cogsPaise = 0;
-    for (const [key, quantity] of newStockByKey) {
-      const [itemId, warehouseId] = key.split('|');
-      const item = await this.db.items.get(itemId);
-      validateHsnSac(nextLines.find((line) => line.item_id === itemId)?.hsn ?? '', item?.is_service === 1, `Invoice line ${itemId}`);
-      if (item?.track_inventory !== 1) continue;
-      const stock = await this.db.item_stock.where('[business_id+item_id+warehouse_id]').equals([original.business_id, itemId, warehouseId]).first();
-      cogsPaise += bankersRound(((stock?.avg_cost_paise ?? 0) * quantity) / 1_000_000);
-    }
-    const linesToPost = [...journalLines];
-    if (cogsPaise > 0) {
-      const cogsAcc = await requireAccount(this.db, original.business_id, ACC_COGS_CODE);
-      const invAcc = await requireAccount(this.db, original.business_id, ACC_INVENTORY_CODE);
-      linesToPost.push({ id: ulid(), business_id: original.business_id, entry_id: original.journal_entry_id, line_no: linesToPost.length + 1, account_id: cogsAcc.id, debit_paise: cogsPaise, credit_paise: 0, party_type: null, party_id: null, description: 'Cost of goods sold' });
-      linesToPost.push({ id: ulid(), business_id: original.business_id, entry_id: original.journal_entry_id, line_no: linesToPost.length + 1, account_id: invAcc.id, debit_paise: 0, credit_paise: cogsPaise, party_type: null, party_id: null, description: 'Inventory reduction' });
-    }
-    const updatedJournal: JournalEntry = {
-      ...(await this.db.journal_entries.get(original.journal_entry_id))!,
-      entry_date: input.invoice_date,
-      narration: `Sales invoice ${nextInvoice.invoice_number}`,
-      total_debit_paise: linesToPost.reduce((total, line) => total + line.debit_paise, 0),
-      total_credit_paise: linesToPost.reduce((total, line) => total + line.credit_paise, 0),
-      updated_at: now,
-      entity_version: ((await this.db.journal_entries.get(original.journal_entry_id))?.entity_version ?? 0) + 1,
-    };
-
-    log.info('invoice', 'updateInvoice updating in place', {
+    log.info('invoice', 'updateInvoice starting reversal and reissue', {
       invoiceId,
       invoiceNumber: original.invoice_number,
       proposedNumber: isRename ? proposedNumber : original.invoice_number,
       lineCount: input.lines.length,
     });
+    await this.reverseInvoicePosting(invoiceId, 'edit', false);
+    const nextNumber = isRename ? proposedNumber : original.invoice_number;
 
     // Emit the rename audit row BEFORE reissuing, so an interrupted reissue
     // still leaves a record of the user's intent. Payload contains both
@@ -1671,90 +1596,49 @@ export class InvoiceService {
         entity_type: 'invoice',
         entity_id: invoiceId,
         before: { invoice_number: original.invoice_number },
-        after: { invoice_number: nextInvoice.invoice_number },
+        after: { invoice_number: nextNumber },
         at: now,
       };
       await this.db.audit_log.add(auditEntry);
       log.info('invoice', 'invoice number renamed', {
         invoiceId,
         from: original.invoice_number,
-        to: nextInvoice.invoice_number,
+        to: nextNumber,
       });
     }
 
-    await this.db.transaction('rw', [this.db.invoices, this.db.invoice_lines, this.db.journal_entries, this.db.journal_lines, this.db.item_stock, this.db.stock_movements, this.db.sync_events, this.db.audit_log], async () => {
-      await this.db.invoices.put(nextInvoice);
-      await this.db.invoice_lines.where('invoice_id').equals(invoiceId).delete();
-      await this.db.invoice_lines.bulkAdd(nextLines);
-      const oldJournalLines = await this.db.journal_lines.where('entry_id').equals(original.journal_entry_id).toArray();
-      const journalLinesWithStableIds = linesToPost.map((line, index) => ({
-        ...line,
-        id: oldJournalLines[index]?.id ?? line.id,
-      }));
-      await this.db.journal_lines.where('entry_id').equals(original.journal_entry_id).delete();
-      await this.db.journal_lines.bulkAdd(journalLinesWithStableIds);
-      await this.db.journal_entries.put(updatedJournal);
-      for (const key of new Set([...oldStockByKey.keys(), ...newStockByKey.keys()])) {
-        const [itemId, warehouseId] = key.split('|');
-        const delta = (newStockByKey.get(key) ?? 0) - (oldStockByKey.get(key) ?? 0);
-        if (!delta) continue;
-        const stock = await this.db.item_stock.where('[business_id+item_id+warehouse_id]').equals([original.business_id, itemId, warehouseId]).first();
-        if (stock) await this.db.item_stock.update(stock.id, { qty_micros: stock.qty_micros - delta, updated_at: now });
-      }
-      const movementsByKey = new Map<string, StockMovement[]>();
-      for (const movement of originalSaleMovements) {
-        const key = `${movement.item_id}|${movement.warehouse_id}`;
-        const rows = movementsByKey.get(key) ?? [];
-        rows.push(movement);
-        movementsByKey.set(key, rows);
-      }
-      for (const key of new Set([...movementsByKey.keys(), ...newStockByKey.keys()])) {
-        const [itemId, warehouseId] = key.split('|');
-        const desiredQty = newStockByKey.get(key) ?? 0;
-        const rows = movementsByKey.get(key) ?? [];
-        const first = rows[0];
-        const movement = first ?? {
-          id: ulid(),
-          business_id: original.business_id,
-          item_id: itemId,
-          warehouse_id: warehouseId,
-          movement_type: 'sale' as const,
-          qty_micros: 0,
-          unit_cost_paise: 0,
-          ref_type: 'invoice' as const,
-          ref_id: invoiceId,
-          occurred_at: input.invoice_date,
-          notes: '',
-        };
-        const stock = await this.db.item_stock.where('[business_id+item_id+warehouse_id]').equals([original.business_id, itemId, warehouseId]).first();
-        const nextMovement = {
-          ...movement,
-          qty_micros: -desiredQty,
-          unit_cost_paise: stock?.avg_cost_paise ?? movement.unit_cost_paise,
-          occurred_at: input.invoice_date,
-        };
-        await this.db.stock_movements.put(nextMovement);
-        await appendSyncEvent(this.db, {
-          businessId: original.business_id,
-          deviceId: input.device_id,
-          entityType: 'stock_movement',
-          entityId: nextMovement.id,
-          operation: 'updated',
-          payload: nextMovement,
-          timestamp: now,
-        });
-        for (const stale of rows.slice(1)) {
-          await this.db.stock_movements.update(stale.id, { qty_micros: 0 });
-        }
-      }
-      await appendSyncEvent(this.db, { businessId: original.business_id, deviceId: input.device_id, entityType: 'invoice', entityId: invoiceId, operation: 'updated', payload: nextInvoice, timestamp: now });
-      for (const line of nextLines) await appendSyncEvent(this.db, { businessId: original.business_id, deviceId: input.device_id, entityType: 'invoice_line', entityId: line.id, operation: 'updated', payload: line, timestamp: now });
-      await appendSyncEvent(this.db, { businessId: original.business_id, deviceId: input.device_id, entityType: 'journal_entry', entityId: updatedJournal.id, operation: 'updated', payload: updatedJournal, timestamp: now });
+    // Strip our extra invoice_number key and reuse the existing invoice ID.
+    const { invoice_number: _ignored, ...rest } = input;
+    void _ignored;
+    let reissued: Invoice;
+    try {
+      reissued = await this.createInvoice({
+        ...rest,
+        invoice_number: nextNumber,
+        replaceInvoiceId: invoiceId,
+      });
+    } catch (error) {
+      log.error('invoice', 'updateInvoice reissue failed after reversal', {
+        invoiceId,
+        invoiceNumber: original.invoice_number,
+        proposedNumber: nextNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    log.info('invoice', 'updateInvoice reissue completed', {
+      originalInvoiceId: invoiceId,
+      reissuedInvoiceId: reissued.id,
+      invoiceNumber: reissued.invoice_number,
+      totalPaise: reissued.total_paise,
     });
+    // §17 post-op reconciliation. The edit path is a reverse + reissue —
+    // net effect on TB should be the new invoice's total. If the mirror
+    // and new posting drift, this surfaces it.
     await reconcileAfter(original.business_id, 'invoice.edit', {
       db: this.db,
     });
-    return nextInvoice;
+    return reissued;
   }
 
   async listInvoices(filter: ListFilter, pagination: Pagination = {}): Promise<Invoice[]> {
@@ -2139,7 +2023,10 @@ async function writeEventInTx(
     synced_at: null,
     journal_file: null,
   };
-  await db.sync_events.add(evt);
+  // Keep the transaction alive across the async hash boundary. Some browsers
+  // can commit the transaction before the next queued IndexedDB request even
+  // when the hash itself is wrapped with Dexie.waitFor.
+  await Dexie.waitFor(db.sync_events.add(evt));
   return evt;
 }
 

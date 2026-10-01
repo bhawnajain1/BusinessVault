@@ -1,7 +1,9 @@
 import { db } from '../db';
 import { metaDb } from './device';
-import { stopSyncWorkerAsync } from '../sync/bootProvider';
+import { getActiveProvider } from '../sync/providerRegistry';
+import { stopSyncWorkerAsync, suppressProviderBoot } from '../sync/bootProvider';
 import { resetTokenDb } from '../drive/tokenStore';
+import { disconnectAllDrives } from '../drive/connectDrive';
 import { log } from './log';
 
 const DATABASES = [
@@ -42,7 +44,11 @@ function deleteDatabase(name: string): Promise<void> {
 
 export async function resetAppToFreshState(): Promise<void> {
   log.warn('reset', 'start fresh requested');
+  suppressProviderBoot();
+  const provider = getActiveProvider();
   await stopSyncWorkerAsync();
+  if (provider) await provider.disconnect();
+  await disconnectAllDrives();
   log.info('reset', 'sync worker stopped and drained');
   db.close();
   metaDb().close();

@@ -329,12 +329,16 @@ export async function buildGstrReport(
       'Place Of Supply': original?.place_of_supply ?? '',
       'Reverse Charge': 'N',
       'Note Supply Type': 'Regular',
-      'Note Value': rupees(note.total_paise),
-      'Applicable % of Tax Rate': '',
-      Rate: note.taxable_paise ? rate((note.cgst_paise + note.sgst_paise + note.igst_paise) * 10000 / note.taxable_paise) : 0,
-      'Taxable Value': rupees(note.taxable_paise),
-      'Cess Amount': rupees(note.cess_paise),
-    }];
+       'Note Value': rupees(note.total_paise),
+       'Applicable % of Tax Rate': '',
+       Rate: note.taxable_paise ? rate((note.cgst_paise + note.sgst_paise + note.igst_paise) * 10000 / note.taxable_paise) : 0,
+       'Taxable Value': rupees(note.taxable_paise),
+       'Integrated Tax Amount': rupees(note.igst_paise),
+       'Central Tax Amount': rupees(note.cgst_paise),
+       'State/UT Tax Amount': rupees(note.sgst_paise),
+       'Cess Amount': rupees(note.cess_paise),
+       'Round Off Amount': rupees(note.round_off_paise),
+     }];
   });
   const cdnur: GstrRow[] = [];
   const b2csNoteWarnings: GstrValidationIssue[] = [];
@@ -346,7 +350,7 @@ export async function buildGstrReport(
     const qualifiesB2cl = Boolean(original && original.is_interstate === 1 && original.invoice_date >= GSTR_RULES.b2clThresholdEffectiveFrom && original.total_paise > GSTR_RULES.b2clThresholdPaise);
     const rateValue = note.taxable_paise ? rate(Math.round((note.cgst_paise + note.sgst_paise + note.igst_paise) * 10000 / note.taxable_paise)) : 0;
     if (qualifiesB2cl && placeOfSupply) {
-      cdnur.push({ 'UR Type': 'B2CL', 'Note Number': note.return_number, 'Note Date': note.return_date, 'Note Type': 'C', 'Place Of Supply': placeOfSupply, 'Note Value': rupees(note.total_paise), 'Applicable % of Tax Rate': '', Rate: rateValue, 'Taxable Value': rupees(note.taxable_paise), 'Cess Amount': rupees(note.cess_paise) });
+      cdnur.push({ 'UR Type': 'B2CL', 'Note Number': note.return_number, 'Note Date': note.return_date, 'Note Type': 'C', 'Place Of Supply': placeOfSupply, 'Note Value': rupees(note.total_paise), 'Applicable % of Tax Rate': '', Rate: rateValue, 'Taxable Value': rupees(note.taxable_paise), 'Integrated Tax Amount': rupees(note.igst_paise), 'Central Tax Amount': rupees(note.cgst_paise), 'State/UT Tax Amount': rupees(note.sgst_paise), 'Cess Amount': rupees(note.cess_paise), 'Round Off Amount': rupees(note.round_off_paise) });
       continue;
     }
     if (placeOfSupply && original) {
@@ -367,7 +371,7 @@ export async function buildGstrReport(
     sections: report === 'gstr1' ? {
       'GSTR1 Report': { columns: ['GSTIN/UIN', 'Party Name', 'Transaction Type', 'Invoice No.', 'Invoice Date', 'Invoice Value', 'Rate', 'Cess Rate', 'Taxable value', 'Reverse Charge', 'Integrated Tax Amount', 'Central Tax Amount', 'State/UT Tax Amount', 'Cess Amount', 'Place of Supply(Name of state)'], rows: [] },
       'b2b,sez,de': { columns: GSTR1_COLUMNS.b2b, rows: gstr1B2b }, b2cl: { columns: GSTR1_COLUMNS.b2cl, rows: gstr1B2cl }, b2cs: { columns: GSTR1_COLUMNS.b2cs, rows: gstr1B2cs },
-      cdnr: { columns: ['GSTIN/UIN of Recipient', 'Receiver Name', 'Note Number', 'Note Date', 'Note Type', 'Place Of Supply', 'Reverse Charge', 'Note Supply Type', 'Note Value', 'Applicable % of Tax Rate', 'Rate', 'Taxable Value', 'Cess Amount'], rows: cdnr }, cdnur: { columns: ['UR Type', 'Note Number', 'Note Date', 'Note Type', 'Place Of Supply', 'Note Value', 'Applicable % of Tax Rate', 'Rate', 'Taxable Value', 'Cess Amount'], rows: cdnur }, exp: empty(['Export Type', 'Invoice Number', 'Invoice date', 'Invoice Value', 'Port Code', 'Shipping Bill Number', 'Shipping Bill Date', 'Rate', 'Taxable Value']), at: empty(['Place Of Supply', 'Applicable % of Tax Rate', 'Rate', 'Gross Advance Received', 'Cess Amount']), atadj: empty(['Place Of Supply', 'Applicable % of Tax Rate', 'Rate', 'Gross Advance Adjusted', 'Cess Amount']), exemp: empty(['Description', 'Nil Rated Supplies', 'Exempted(other than nil rated/non GST supply)', 'Non-GST Supplies']),
+      cdnr: { columns: ['GSTIN/UIN of Recipient', 'Receiver Name', 'Note Number', 'Note Date', 'Note Type', 'Place Of Supply', 'Reverse Charge', 'Note Supply Type', 'Note Value', 'Applicable % of Tax Rate', 'Rate', 'Taxable Value', 'Integrated Tax Amount', 'Central Tax Amount', 'State/UT Tax Amount', 'Cess Amount', 'Round Off Amount'], rows: cdnr }, cdnur: { columns: ['UR Type', 'Note Number', 'Note Date', 'Note Type', 'Place Of Supply', 'Note Value', 'Applicable % of Tax Rate', 'Rate', 'Taxable Value', 'Integrated Tax Amount', 'Central Tax Amount', 'State/UT Tax Amount', 'Cess Amount', 'Round Off Amount'], rows: cdnur }, exp: empty(['Export Type', 'Invoice Number', 'Invoice date', 'Invoice Value', 'Port Code', 'Shipping Bill Number', 'Shipping Bill Date', 'Rate', 'Taxable Value']), at: empty(['Place Of Supply', 'Applicable % of Tax Rate', 'Rate', 'Gross Advance Received', 'Cess Amount']), atadj: empty(['Place Of Supply', 'Applicable % of Tax Rate', 'Rate', 'Gross Advance Adjusted', 'Cess Amount']), exemp: empty(['Description', 'Nil Rated Supplies', 'Exempted(other than nil rated/non GST supply)', 'Non-GST Supplies']),
       'hsn(b2b)': { columns: GSTR1_COLUMNS.hsn, rows: hsnRows(invoiceLines.filter((line) => !b2cInvoiceIds.has(line.invoice_id)), invoiceById, itemsById, unitsById) }, 'hsn(b2c)': { columns: GSTR1_COLUMNS.hsn, rows: hsnRows(invoiceLines.filter((line) => b2cInvoiceIds.has(line.invoice_id)), invoiceById, itemsById, unitsById) }, itemSummary: { columns: GSTR1_COLUMNS.hsn, rows: hsnRows(invoiceLines, invoiceById, itemsById, unitsById) }, docs: { columns: ['Nature of Document', 'Serial number from', 'Serial number to', 'Total documents issued', 'Cancelled documents', 'Net documents issued'], rows: [{ 'Nature of Document': 'Invoices for outward supply', 'Serial number from': activeInvoices[0]?.invoice_number ?? '', 'Serial number to': activeInvoices.at(-1)?.invoice_number ?? '', 'Total documents issued': activeInvoices.length + invoices.filter((i) => i.status === 'cancelled').length, 'Cancelled documents': invoices.filter((i) => i.status === 'cancelled').length, 'Net documents issued': activeInvoices.length }, { 'Nature of Document': 'Credit Note', 'Serial number from': activeSalesReturns[0]?.return_number ?? '', 'Serial number to': activeSalesReturns.at(-1)?.return_number ?? '', 'Total documents issued': activeSalesReturns.length + salesReturns.filter((r) => r.status === 'cancelled').length, 'Cancelled documents': salesReturns.filter((r) => r.status === 'cancelled').length, 'Net documents issued': activeSalesReturns.length }] },
     } : {
       'GSTR2 Report': { columns: ['GSTIN/UIN', 'Supplier Name', 'Bill Number', 'Bill Date', 'Bill Value', 'Rate', 'Taxable Value', 'Integrated Tax Amount', 'Central Tax Amount', 'State/UT Tax Amount', 'Cess Amount'], rows: [] }, b2b: { columns: GSTR2_COLUMNS.b2b, rows: gstr2B2b }, hsn: { columns: GSTR2_COLUMNS.hsn, rows: hsnRows(purchaseLines, purchaseById, itemsById, unitsById) }, docs: { columns: ['Nature of Document', 'Bill Number From', 'Bill Number To', 'Total Number', 'Cancelled'], rows: [{ 'Nature of Document': 'Bills for inward supply', 'Bill Number From': activePurchases[0]?.supplier_bill_number || activePurchases[0]?.bill_number || '', 'Bill Number To': activePurchases.at(-1)?.supplier_bill_number || activePurchases.at(-1)?.bill_number || '', 'Total Number': activePurchases.length, Cancelled: purchases.filter((p) => p.status === 'cancelled').length }] },
@@ -382,6 +386,16 @@ export async function buildGstrReport(
   }
   for (const purchase of activePurchases) {
     if (!(linesByPurchase.get(purchase.id)?.length)) reconciliationIssues.push({ severity: 'warning', message: 'Purchase has no purchase lines and was not exported.', documentNumber: purchase.bill_number });
+  }
+  for (const note of activeSalesReturns) {
+    const components = note.taxable_paise + note.igst_paise + note.cgst_paise + note.sgst_paise + note.cess_paise + note.round_off_paise;
+    if (components !== note.total_paise) {
+      reconciliationIssues.push({
+        severity: 'warning',
+        message: `Credit note components (${rupees(components)}) do not reconcile to Note Value (${rupees(note.total_paise)}); verify taxable, GST, cess, and round-off values.`,
+        documentNumber: note.return_number,
+      });
+    }
   }
   for (const invoice of activeInvoices) {
     const customer = customerById.get(invoice.customer_id);
