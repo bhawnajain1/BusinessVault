@@ -4,6 +4,7 @@ import { db } from '../../db';
 import { InvoiceService } from '../../domain/InvoiceService';
 import type {
   Customer,
+  Business,
   Invoice,
   InvoiceLine,
   Item,
@@ -18,6 +19,7 @@ import { useActiveBusiness } from '../hooks/useActiveBusiness';
 
 interface Loaded {
   invoice: Invoice;
+  business: Business | undefined;
   lines: InvoiceLine[];
   customer: Customer | undefined;
   items: Map<string, Item>;
@@ -41,9 +43,10 @@ export default function InvoiceDetail() {
     try {
       const invoice = await db.invoices.get(id);
       if (!invoice) throw new Error(`Invoice not found: ${id}`);
-      const [lines, customer, journal] = await Promise.all([
+      const [lines, customer, business, journal] = await Promise.all([
         db.invoice_lines.where('invoice_id').equals(id).toArray(),
         db.customers.get(invoice.customer_id),
+        db.businesses.get(invoice.business_id),
         db.journal_entries.get(invoice.journal_entry_id),
       ]);
       const journalLines = journal
@@ -55,7 +58,7 @@ export default function InvoiceDetail() {
         const it = await db.items.get(iid);
         if (it) items.set(iid, it);
       }
-      setData({ invoice, lines, customer, items, journal, journalLines });
+      setData({ invoice, business, lines, customer, items, journal, journalLines });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -85,7 +88,7 @@ export default function InvoiceDetail() {
 
   if (error) return <div className="p-6 text-rose-600">{error}</div>;
   if (!data) return <div className="p-6 text-slate-500">Loading...</div>;
-  const { invoice, lines, customer, items, journal, journalLines } = data;
+  const { invoice, business, lines, customer, items, journal, journalLines } = data;
   const superseded = !!invoice.reversed_by_invoice_id;
   const isCreditNote = !!invoice.reverses_invoice_id;
 

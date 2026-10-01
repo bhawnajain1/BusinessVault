@@ -307,6 +307,16 @@ class GisDriveClient implements DriveApiClient {
     return (await res.json()) as DriveFileRef;
   }
 
+  async createPublicReaderLink(fileId: string): Promise<string> {
+    await this.fetch(`${DRIVE_V3}/files/${encodeURIComponent(fileId)}/permissions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'anyone', role: 'reader' }),
+    });
+    // Drive file IDs are opaque and not derived from invoice/customer data.
+    return `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`;
+  }
+
   async getFileContents(fileId: string): Promise<Blob> {
     const res = await this.fetch(
       `${DRIVE_V3}/files/${encodeURIComponent(fileId)}?alt=media`,

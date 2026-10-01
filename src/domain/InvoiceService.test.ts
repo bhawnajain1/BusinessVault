@@ -162,7 +162,7 @@ function accRow(code: string, name: string, type: Account['type']): Account {
   };
 }
 
-function intrastateLine(): {
+function intrastateLine(overrides: { qty_micros?: number } = {}): {
   item_id: string;
   hsn: string;
   warehouse_id: string;
@@ -188,6 +188,7 @@ function intrastateLine(): {
     sgst_paise: 1800,
     igst_paise: 0,
     line_total_paise: 23600,
+    ...overrides,
   };
 }
 
@@ -596,7 +597,7 @@ describe('InvoiceService — cess and round-off posting (regression)', () => {
 });
 
 describe('InvoiceService.updateInvoice', () => {
-  it('reverses the original and reissues under the same invoice_number', async () => {
+  it('updates the existing invoice row without creating a credit note', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -609,7 +610,7 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    const reissued = await service.updateInvoice(inv.id, {
+    const updated = await service.updateInvoice(inv.id, {
       business_id: businessId,
       device_id: deviceId,
       invoice_date: '2026-08-19',
@@ -620,13 +621,33 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    expect(reissued.id).not.toBe(inv.id);
-    expect(reissued.invoice_number).toBe('INV-EDIT-1');
-    const original = await db.invoices.get(inv.id);
-    expect(original?.reversed_by_invoice_id).not.toBeNull();
+    expect(updated.id).toBe(inv.id);
+    expect(updated.invoice_number).toBe('INV-EDIT-1');
+    expect(updated.reversed_by_invoice_id).toBeNull();
+    expect(updated.reverses_invoice_id).toBeNull();
+    expect(await db.invoices.where('business_id').equals(businessId).count()).toBe(1);
   });
 
-  it('refuses to edit an already-superseded invoice', async () => {
+  it('updates sale stock movement quantity when an inventory line is edited', async () => {
+    const item = await db.items.get('01ITEM');
+    await db.items.put({ ...(item ?? { id: '01ITEM', business_id: businessId, name: 'Widget' }), track_inventory: 1 } as typeof item & { track_inventory: number });
+    await db.item_stock.add({ id: 'stock-edit', business_id: businessId, item_id: '01ITEM', warehouse_id: '01WAREHOUSE', qty_micros: 10_000_000, avg_cost_paise: 100, updated_at: new Date().toISOString() });
+    const inv = await service.createInvoice({
+      business_id: businessId, device_id: deviceId, invoice_number: 'INV-STOCK-EDIT', invoice_date: '2026-08-19',
+      customer_id: customerId, customer_state_code: '29', place_of_supply: '29', is_interstate: false,
+      financial_year: '2026-27', lines: [intrastateLine({ qty_micros: 1_000_000 })],
+    });
+    await service.updateInvoice(inv.id, {
+      business_id: businessId, device_id: deviceId, invoice_date: '2026-08-19', customer_id: customerId,
+      customer_state_code: '29', place_of_supply: '29', is_interstate: false, financial_year: '2026-27',
+      lines: [intrastateLine({ qty_micros: 2_000_000 })],
+    });
+    const movements = (await db.stock_movements.where('business_id').equals(businessId).toArray())
+      .filter((movement) => movement.ref_id === inv.id);
+    expect(movements.filter((movement) => movement.movement_type === 'sale').reduce((sum, movement) => sum + movement.qty_micros, 0)).toBe(-2_000_000);
+  });
+
+  it('can edit the same invoice row more than once', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
       device_id: deviceId,
@@ -639,9 +660,7 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    // First edit reverses the original and creates a reissue. The original's
-    // reversed_by_invoice_id is now set — a second edit against the original
-    // id must be refused (caller should target the reissued id instead).
+    // A second edit updates the same row again.
     await service.updateInvoice(inv.id, {
       business_id: businessId,
       device_id: deviceId,
@@ -653,8 +672,7 @@ describe('InvoiceService.updateInvoice', () => {
       financial_year: '2026-27',
       lines: [intrastateLine()],
     });
-    await expect(
-      service.updateInvoice(inv.id, {
+    await expect(service.updateInvoice(inv.id, {
         business_id: businessId,
         device_id: deviceId,
         invoice_date: '2026-08-19',
@@ -665,7 +683,7 @@ describe('InvoiceService.updateInvoice', () => {
         financial_year: '2026-27',
         lines: [intrastateLine()],
       }),
-    ).rejects.toThrow(/already-superseded/);
+    ).resolves.toMatchObject({ id: inv.id, reversed_by_invoice_id: null });
   });
 });
 
@@ -1735,12 +1753,11 @@ describe('InvoiceService — editable invoice number (feedback §3 §4)', () => 
     });
 
     expect(updated.invoice_number).toBe('INV-000042');
-    // Original still exists and is marked as superseded (by its credit note).
+    // The original row is updated in place.
     const original = await db.invoices.get(inv.id);
-    expect(original?.reversed_by_invoice_id).toBeTruthy();
-    expect(original?.invoice_number).toBe('INV-000001');
-    // The reissue is a fresh invoice with the new number.
-    expect(updated.id).not.toBe(inv.id);
+    expect(original?.reversed_by_invoice_id).toBeNull();
+    expect(original?.invoice_number).toBe('INV-000042');
+    expect(updated.id).toBe(inv.id);
     // Audit row was written.
     const audit = await db.audit_log
       .where('[business_id+entity_type+entity_id]')

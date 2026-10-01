@@ -192,6 +192,10 @@ class FakeDrive implements DriveApiClient {
     this.changes.push({ fileId, time: n.modifiedTime });
     return this.ref(n);
   }
+  async createPublicReaderLink(fileId: string): Promise<string> {
+    if (!this.nodes.has(fileId)) throw new Error(`File not found: ${fileId}`);
+    return `https://drive.google.com/file/d/${fileId}/view`;
+  }
   async getFileContents(fileId: string): Promise<Blob> {
     const n = this.nodes.get(fileId);
     if (!n) {

@@ -319,6 +319,9 @@ export interface Invoice {
   notes: string;
   terms: string;
   pdf_attachment_id: string | null;
+  // Publicly shareable invoice PDF link. Google Drive file IDs are opaque,
+  // high-entropy identifiers; only the link holder can open the PDF.
+  shared_pdf_url?: string | null;
   journal_entry_id: string;
   // Soft-delete "recycle bin" fields. When set, the invoice is hidden from the
   // main list and its linked payments/advance applications are cascade-hidden

@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
 import { db } from '../../db';
 import type { Business, Customer, Invoice, InvoiceLine, Item, Payment } from '../../db/types';
 import Money from '../components/Money';
@@ -7,6 +9,8 @@ import Qty from '../components/Qty';
 import { loadLogoBlob, loadSignatureBlob } from '../../domain/BusinessProfileService';
 import { getCustomerDueForInvoice, type CustomerInvoiceDue } from '../../domain/partyLedger';
 import { log } from '../../lib/log';
+import { uploadInvoicePdf } from '../../domain/invoiceShare';
+import { buildInvoiceWhatsAppUrl } from '../../domain/whatsAppInvoice';
 
 interface Loaded {
   business: Business | null;
@@ -113,8 +117,12 @@ export function amountInWords(totalPaise: number): string {
 
 export default function InvoicePrint() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const invoiceElement = useRef<HTMLDivElement>(null);
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sharingPdf, setSharingPdf] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
 
   useEffect(() => {
     const createdBlobUrls: string[] = [];
@@ -209,6 +217,65 @@ export default function InvoicePrint() {
   const totalTax = invoice.cgst_paise + invoice.sgst_paise + invoice.igst_paise;
   const totalQty = lines.reduce((sum, line) => sum + line.qty_micros, 0);
 
+  async function sharePdfViaWhatsApp() {
+    const element = invoiceElement.current;
+    if (!element) return;
+    // Open synchronously from the click so popup blockers allow the later
+    // navigation after PDF rendering and upload have completed.
+    const popup = window.open('', '_blank');
+    if (!popup) {
+      setShareError('Your browser blocked WhatsApp. Allow popups for BusinessVault and try again.');
+      return;
+    }
+    setShareError(null);
+    setSharingPdf(true);
+    try {
+      // html2canvas renders screen CSS, not @media print. Capture a dedicated
+      // A4-width clone with the same dimensions and typography as print.
+      const capture = document.createElement('div');
+      capture.className = 'invoice-print-root invoice-pdf-capture';
+      capture.append(element.cloneNode(true));
+      document.body.append(capture);
+      let canvas: HTMLCanvasElement;
+      try {
+        canvas = await html2canvas(capture, {
+          backgroundColor: '#ffffff',
+          scale: 2,
+          useCORS: true,
+        });
+      } finally {
+        capture.remove();
+      }
+      const pdf = new jsPDF({ unit: 'mm', format: 'a4' });
+      const printableWidthMm = 190;
+      const printableHeightMm = 277;
+      const sourcePageHeight = Math.floor(canvas.width * (printableHeightMm / printableWidthMm));
+      for (let top = 0, page = 0; top < canvas.height; top += sourcePageHeight, page += 1) {
+        if (page > 0) pdf.addPage();
+        const height = Math.min(sourcePageHeight, canvas.height - top);
+        const pageCanvas = document.createElement('canvas');
+        pageCanvas.width = canvas.width;
+        pageCanvas.height = height;
+        const context = pageCanvas.getContext('2d');
+        if (!context) throw new Error('Could not prepare invoice PDF page.');
+        context.drawImage(canvas, 0, top, canvas.width, height, 0, 0, canvas.width, height);
+        const heightMm = (height * printableWidthMm) / canvas.width;
+        pdf.addImage(pageCanvas.toDataURL('image/png'), 'PNG', 10, 10, printableWidthMm, heightMm);
+      }
+      const pdfUrl = await uploadInvoicePdf(invoice, pdf.output('blob'));
+      const whatsAppUrl = buildInvoiceWhatsAppUrl({ business, customer, invoice, pdfUrl });
+      if (!whatsAppUrl) throw new Error('Add a valid customer mobile number before sending on WhatsApp.');
+      popup.location.href = whatsAppUrl;
+    } catch (e) {
+      popup.close();
+      if (!(e instanceof DOMException && e.name === 'AbortError')) {
+        setShareError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      setSharingPdf(false);
+    }
+  }
+
   return (
     <>
       <style>{`
@@ -221,7 +288,19 @@ export default function InvoicePrint() {
         .invoice-print-root .right { text-align: right; }
         .invoice-print-root .center { text-align: center; }
         .invoice-print-root .nowrap { white-space: nowrap; }
-        .invoice-print-root .keep-together { break-inside: avoid; page-break-inside: avoid; }
+         .invoice-print-root .keep-together { break-inside: avoid; page-break-inside: avoid; }
+         .invoice-pdf-capture {
+           position: fixed;
+           left: -10000px;
+           top: 0;
+           width: 190mm;
+           margin: 0;
+           padding: 0;
+           background: #fff;
+           font-size: 10px;
+         }
+         .invoice-pdf-capture table { font-size: 9px; }
+         .invoice-pdf-capture th, .invoice-pdf-capture td { padding: 3px 4px; }
         @media print {
           .no-print { display: none !important; }
           @page { size: A4; margin: 10mm; }
@@ -246,16 +325,32 @@ export default function InvoicePrint() {
           >
             ← Back to invoice
           </Link>
-          <button
-            type="button"
-            onClick={() => window.print()}
-            className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
-          >
-            Print / Save PDF
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={sharePdfViaWhatsApp}
+              disabled={sharingPdf}
+              className="border border-green-700 text-green-800 text-sm rounded px-3 py-1.5 hover:bg-green-50 disabled:opacity-50"
+            >
+              {sharingPdf ? 'Preparing invoice link...' : 'Send Invoice on WhatsApp'}
+            </button>
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
+            >
+              Print / Save PDF
+            </button>
+          </div>
         </div>
+        {searchParams.get('share') === 'pdf' && (
+          <div className="no-print mb-4 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-900">
+            Invoice saved. Tap <strong>Send Invoice on WhatsApp</strong> to open the customer's chat with a secure PDF link.
+          </div>
+        )}
+        {shareError && <div className="no-print mb-4 text-sm text-rose-600">{shareError}</div>}
 
-        <div className="border border-[#3d414d]">
+        <div ref={invoiceElement} className="border border-[#3d414d]">
           <div className="center border-b border-[#3d414d] py-2 text-lg font-bold">Tax Invoice</div>
           <div className="grid grid-cols-[140px_1fr_260px] gap-3 border-b border-[#3d414d] p-2 keep-together">
             <div className="flex items-center justify-center">

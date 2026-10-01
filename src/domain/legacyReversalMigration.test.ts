@@ -13,6 +13,7 @@ import {
   MIGRATION_VERSION,
   runLegacyReversalMigration,
 } from './legacyReversalMigration';
+import { repairLegacyInvoiceEdits } from './legacyEditRepair';
 import {
   getReturnedQtyMicros,
   rebuildInvoiceLineReturnSummary,
@@ -471,5 +472,61 @@ describe('legacyReversalMigration', () => {
     expect(value.version).toBe(MIGRATION_VERSION);
     expect(value.materialized).toBe(1);
     expect(value.counts.SALES_RETURN).toBe(1);
+  });
+
+  it('dry-runs and repairs a high-confidence invoice edit without deleting history', async () => {
+    const db = freshDb();
+    await seedBusiness(db);
+    const fx = await seedLegacyReversal(db, { kind: 'edit' });
+    const original = await db.invoices.get(fx.origId);
+    const creditNote = await db.invoices.get(fx.cnId);
+    expect(original).toBeDefined();
+    expect(creditNote).toBeDefined();
+    const replacement = {
+      ...original!,
+      id: ulid(),
+      reversed_by_invoice_id: null,
+      reverses_invoice_id: null,
+      journal_entry_id: original!.journal_entry_id,
+      created_at: new Date(new Date(creditNote!.created_at).getTime() + 1000).toISOString(),
+      updated_at: new Date(new Date(creditNote!.created_at).getTime() + 1000).toISOString(),
+      entity_version: 1,
+    };
+    await db.invoices.add(replacement);
+
+    const preview = await repairLegacyInvoiceEdits(db, BIZ);
+    expect(preview.dryRun).toBe(true);
+    expect(preview.repaired).toBe(0);
+    expect(preview.candidates[0].confidence).toBe('high');
+    expect((await db.invoices.get(fx.origId))?.deleted_at).toBeFalsy();
+
+    const applied = await repairLegacyInvoiceEdits(db, BIZ, { apply: true });
+    expect(applied.repaired).toBe(1);
+    expect((await db.invoices.get(fx.origId))?.deleted_reason).toBe('Legacy invoice edit repair');
+    expect((await db.invoices.get(fx.cnId))?.deleted_reason).toBe('Legacy invoice edit repair');
+    expect((await db.invoices.get(replacement.id))?.deleted_at).toBeFalsy();
+    expect((await db.audit_log.toArray()).filter((entry) => entry.entity_id === replacement.id)).toHaveLength(1);
+
+    const second = await repairLegacyInvoiceEdits(db, BIZ, { apply: true });
+    expect(second.repaired).toBe(0);
+  });
+
+  it('skips an edit reversal when multiple replacement invoices are possible', async () => {
+    const db = freshDb();
+    await seedBusiness(db);
+    const fx = await seedLegacyReversal(db, { kind: 'edit' });
+    const original = await db.invoices.get(fx.origId);
+    const creditNote = await db.invoices.get(fx.cnId);
+    const afterCreditNote = new Date(new Date(creditNote!.created_at).getTime() + 1000).toISOString();
+    await db.invoices.bulkAdd([
+      { ...original!, id: ulid(), reversed_by_invoice_id: null, reverses_invoice_id: null, created_at: afterCreditNote, updated_at: afterCreditNote, entity_version: 1 },
+      { ...original!, id: ulid(), reversed_by_invoice_id: null, reverses_invoice_id: null, created_at: new Date(new Date(afterCreditNote).getTime() + 1000).toISOString(), updated_at: new Date(new Date(afterCreditNote).getTime() + 1000).toISOString(), entity_version: 1 },
+    ]);
+
+    const result = await repairLegacyInvoiceEdits(db, BIZ, { apply: true });
+    expect(result.repaired).toBe(0);
+    expect(result.candidates[0].confidence).toBe('ambiguous');
+    expect((await db.invoices.get(fx.origId))?.deleted_at).toBeFalsy();
+    expect((await db.invoices.get(fx.cnId))?.deleted_at).toBeFalsy();
   });
 });

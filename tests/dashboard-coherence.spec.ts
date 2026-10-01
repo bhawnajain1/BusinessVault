@@ -287,11 +287,10 @@ describe('Dashboard/InvoicesPage/Receivables coherence', () => {
         db.advances.where('business_id').equals(businessId).toArray(),
       ]);
 
-    // Sanity: 4 originals + 2 CNs + 2 reissues + 1 fresh = 9 raw rows.
-    // If InvoiceService ever changes the reissue mechanic (e.g. mutates
-    // in place instead of appending), this number drops — but every
-    // downstream surface should still agree.
-    expect(invoiceRows.length).toBe(9);
+    // Edits update the existing rows in place: 4 edited/unchanged invoices +
+    // 1 fresh invoice, with no generated credit notes or replacement rows.
+    expect(invoiceRows.length).toBe(5);
+    expect(invoiceRows.every((invoice) => !invoice.reverses_invoice_id && !invoice.reversed_by_invoice_id)).toBe(true);
 
     // Surface 1: Dashboard KPI (via extracted pure fn).
     const stats = computeDashboardStats({
@@ -364,9 +363,9 @@ describe('Dashboard/InvoicesPage/Receivables coherence', () => {
     // Silence unused-var lint — the assertion above IS using both sets.
     void receivablesInvoiceIds;
 
-    // Diagnostics: the hidden-row gap matches what actually happened.
-    expect(stats.diagnostics.supersededInvoices).toBe(2);
-    expect(stats.diagnostics.creditNotes).toBe(2);
+    // In-place edits do not create superseded or credit-note invoice rows.
+    expect(stats.diagnostics.supersededInvoices).toBe(0);
+    expect(stats.diagnostics.creditNotes).toBe(0);
     expect(stats.diagnostics.recycledInvoices).toBe(0);
   });
 

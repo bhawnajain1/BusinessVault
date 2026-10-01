@@ -536,7 +536,7 @@ export default function InvoiceForm() {
       if (opts?.thenPrint) {
         navigate(`/invoices/${saved.id}/print`);
       } else {
-        navigate(`/invoices/${saved.id}`);
+        navigate(`/invoices/${saved.id}/print?share=pdf`);
       }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));

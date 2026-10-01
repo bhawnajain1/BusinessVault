@@ -137,6 +137,7 @@ export interface DriveApiClient {
   getFileMetadata(fileId: string): Promise<DriveFileRef>;
   moveFile(fileId: string, newParentId: string, oldParentId?: string): Promise<DriveFileRef>;
   deleteFile(fileId: string): Promise<void>;
+  createPublicReaderLink(fileId: string): Promise<string>;
 
   // ---- Changes API ----
   getStartPageToken(): Promise<string>;
