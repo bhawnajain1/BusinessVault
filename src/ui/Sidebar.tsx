@@ -54,6 +54,7 @@ const SECTIONS: NavSection[] = [
       { to: '/reports/receivables-payables', label: 'Receivables & Payables' },
       { to: '/reports/trial-balance', label: 'Trial Balance' },
       { to: '/reports/pnl', label: 'P&L' },
+      { to: '/reports/sales-purchases', label: 'Sales & Purchases' },
       { to: '/reports/balance-sheet', label: 'Balance Sheet' },
       { to: '/reports/gst', label: 'GST Summary' },
     ],

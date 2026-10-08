@@ -37,6 +37,11 @@ const REPORTS: ReadonlyArray<{ to: string; title: string; blurb: string }> = [
     blurb: 'Open balances by customer and supplier — who owes you, who you owe.',
   },
   {
+    to: '/reports/sales-purchases',
+    title: 'Sales & Purchases',
+    blurb: 'Date-range totals, separate month-wise summaries, and transaction details.',
+  },
+  {
     to: '/reports/sales-returns',
     title: 'Sales Returns',
     blurb: 'Returns register with roll-ups by reason and by customer.',

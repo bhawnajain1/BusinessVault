@@ -30,7 +30,9 @@ import { computePayables, computeReceivables } from './partyLedger';
 // Deliberately does NOT filter status='draft'/'cancelled' — that matches
 // InvoicesPage which shows those rows in the list; keeping the dashboard
 // aligned with the list is more important than being pedantically strict.
-export function isLiveInvoice(inv: Invoice): boolean {
+export function isLiveInvoice(
+  inv: Pick<Invoice, 'deleted_at' | 'reverses_invoice_id' | 'reversed_by_invoice_id'>,
+): boolean {
   if (inv.deleted_at) return false;
   if (inv.reverses_invoice_id) return false; // credit note
   if (inv.reversed_by_invoice_id) return false; // superseded original
@@ -39,7 +41,9 @@ export function isLiveInvoice(inv: Invoice): boolean {
 
 // Symmetric to isLiveInvoice for purchases. Purchase has no `deleted_at`
 // (no recycle-bin on the purchases side yet — see db/types.ts:354).
-export function isLivePurchase(p: Purchase): boolean {
+export function isLivePurchase(
+  p: Pick<Purchase, 'status' | 'reverses_purchase_id' | 'reversed_by_purchase_id' | 'replaced_by_purchase_id'>,
+): boolean {
   if (p.status === 'cancelled') return false;
   if (p.reverses_purchase_id) return false; // debit note
   if (p.reversed_by_purchase_id) return false; // superseded original

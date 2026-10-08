@@ -44,6 +44,7 @@ const StockValuationPage = lazyWithReload(() => import('./ui/reports/StockValuat
 const AuditLogPage = lazyWithReload(() => import('./ui/reports/AuditLogPage'), 'AuditLogPage');
 const ReceivablesPayablesPage = lazyWithReload(() => import('./ui/reports/ReceivablesPayablesPage'), 'ReceivablesPayablesPage');
 const SalesReturnsReportPage = lazyWithReload(() => import('./ui/reports/SalesReturnsReportPage'), 'SalesReturnsReportPage');
+const SalesPurchasesReportPage = lazyWithReload(() => import('./ui/reports/SalesPurchasesReportPage'), 'SalesPurchasesReportPage');
 const ReportsIndex = lazyWithReload(() => import('./ui/pages/Reports'), 'Reports');
 const DataAndBackup = lazyWithReload(() => import('./ui/pages/DataAndBackup'), 'DataAndBackup');
 const Restore = lazyWithReload(() => import('./ui/pages/Restore'), 'Restore');
@@ -100,6 +101,7 @@ export default function App() {
           <Route path="/reports/audit-log" element={<AuditLogPage />} />
           <Route path="/reports/receivables-payables" element={<ReceivablesPayablesPage />} />
           <Route path="/reports/sales-returns" element={<SalesReturnsReportPage />} />
+          <Route path="/reports/sales-purchases" element={<SalesPurchasesReportPage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/settings/backup" element={<DataAndBackup />} />
           <Route path="/restore" element={<Restore />} />
