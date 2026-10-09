@@ -4,7 +4,7 @@ import { writeCsv } from '../../csv/csvCodec';
 import { sanitizeCsvCell } from '../../csv/sanitize';
 import { triggerDownload } from '../../csv/streamCsvExport';
 import { fromMoney, type Money } from '../money';
-import type { GstAmounts, MonthlyGstCalculation } from './types';
+import { taxTotalPaise, type GstAmounts, type MonthlyGstCalculation } from './types';
 
 declare const __APP_VERSION__: string;
 
@@ -243,7 +243,7 @@ function tables(results: ExportCalculation[]): Record<SheetName, Table> {
   const output = {} as Record<SheetName, Table>;
   const create = (name: SheetName, columns: string[]) => { output[name] = { columns: ['Tax Period', ...columns], rows: [] }; };
   create('Overview', ['business_name', 'gstin', 'financial_year', 'filing_frequency', 'status', 'blocking_errors', 'warnings', 'disclaimer']);
-  create('Monthly Summary', ['section', 'document_count', 'party_count', 'detail_row_count', 'source_entity_ids', ...AMOUNTS]);
+  create('Monthly Summary', ['section', 'document_count', 'party_count', 'detail_row_count', 'source_entity_ids', 'tax_total_paise', ...AMOUNTS]);
   create('Sales Register', [...DOCUMENT_COLUMNS, ...SPECIAL_COLUMNS]);
   for (const name of ['G1 B2B', 'G1 B2CL', 'G1 B2CS', 'G1 Other'] as const) create(name, [...RATE_COLUMNS, 'source_entity_ids', 'source_entity_types', 'supply_type', ...SPECIAL_COLUMNS]);
   create('Sales Notes', [...DOCUMENT_COLUMNS, ...SPECIAL_COLUMNS]);
@@ -268,8 +268,11 @@ function tables(results: ExportCalculation[]): Record<SheetName, Table> {
       output[name].rows.push({ ...row, 'Tax Period': result.period.periodKey });
     };
     add('Overview', { business_name: result.businessName, gstin: result.gstinSnapshot, financial_year: result.period.financialYear, filing_frequency: result.period.filingFrequency, status: result.status, blocking_errors: result.issues.filter(i => i.severity === 'BLOCKING_ERROR').length, warnings: result.issues.filter(i => i.severity === 'WARNING').length, disclaimer: GST_WORKING_DISCLAIMER });
-    for (const section of ['outwardGross', 'outwardNotes', 'outwardNet', 'inwardGross', 'inwardNotes', 'inwardNet', 'outputLiability', 'rcmLiability', 'indicativeWorkingBalance'] as const) add('Monthly Summary', { section, ...result.totals[section] });
-    for (const [status, amounts] of Object.entries(result.totals.booksItc)) add('Monthly Summary', { section: `ITC:${status}`, ...amounts });
+    for (const section of ['outwardGross', 'outwardNotes', 'outwardNet', 'inwardGross', 'inwardNotes', 'inwardNet', 'outputLiability', 'rcmLiability', 'indicativeWorkingBalance'] as const) {
+      const values = result.totals[section];
+      add('Monthly Summary', { section, ...values, ...(section === 'outputLiability' || section === 'rcmLiability' || section === 'indicativeWorkingBalance' ? { tax_total_paise: taxTotalPaise(values) } : {}) });
+    }
+    for (const [status, amounts] of Object.entries(result.totals.booksItc)) add('Monthly Summary', { section: `ITC:${status}`, ...amounts, tax_total_paise: taxTotalPaise(amounts) });
     for (const [status, amounts] of Object.entries(result.totals.booksItcStatusPartitions ?? {})) add('Monthly Summary', { section: `ITC_PARTITION:${status}`, ...amounts });
     for (const [section, summary] of Object.entries(result.gstr1Sections.summaries)) add('Monthly Summary', { section: `G1:${section}`, ...summary });
     for (const row of result.outwardDocuments) add('Sales Register', row);

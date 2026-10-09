@@ -69,6 +69,13 @@ export interface GstAmounts {
   round_off_paise: number;
   total_paise: number;
 }
+
+/** Tax-only total. `total_paise` remains the source document/line value. */
+export function taxTotalPaise(amounts: GstAmounts): number {
+  const total = amounts.igst_paise + amounts.cgst_paise + amounts.sgst_paise + amounts.cess_paise;
+  if (!Number.isSafeInteger(total)) throw new Error('GST tax total exceeds the safe integer range.');
+  return total;
+}
 export type GstClassification = 'B2B' | 'B2CL' | 'B2CS' | 'EXPORT_WITH_PAYMENT'
   | 'EXPORT_WITHOUT_PAYMENT' | 'SEZ_WITH_PAYMENT' | 'SEZ_WITHOUT_PAYMENT'
   | 'DEEMED_EXPORT' | 'NIL_RATED' | 'EXEMPT' | 'NON_GST' | 'RCM'

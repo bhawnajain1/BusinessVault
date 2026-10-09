@@ -441,6 +441,20 @@ const migration_v15_to_v16: Migration = {
   },
 };
 
+const migration_v16_to_v17: Migration = {
+  from: 16, to: 17, describe: 'CA adjustment measure distinguishes taxable value from tax heads',
+  apply(tables) {
+    return {
+      ...tables,
+      gst_adjustments: (tables.gst_adjustments ?? []).map(row => ({
+        ...row,
+        measure: row.measure ?? (row.tax_head ? `${String(row.tax_head).toLowerCase()}_paise` : null),
+        tax_head: row.measure === 'taxable_paise' ? null : row.tax_head ?? null,
+      })),
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
@@ -458,6 +472,7 @@ export const MIGRATIONS: Migration[] = [
   migration_v13_to_v14,
   migration_v14_to_v15,
   migration_v15_to_v16,
+  migration_v16_to_v17,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

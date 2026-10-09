@@ -28,6 +28,14 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Quality gate
+        run: |
+          npm run typecheck
+          npm run lint
+          npm test
+          npm run test:e2e
+          npm run release:gate
+
       - name: Build
         env:
           BV_BASE: /businessvault-app/

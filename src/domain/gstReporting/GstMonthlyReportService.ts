@@ -406,9 +406,11 @@ export class GstMonthlyReportService {
         (!row.effective_to || row.effective_to > `${input.tax_period_key}-01`))?.filing_frequency ?? 'MONTHLY';
       const period = selectedMonthPeriods(input.business_id, business.gstin ?? '', [input.tax_period_key], frequency)[0];
       const live = calculateMonthlyGst(await this.repository.loadMonth(period), period, this.now());
-      const measure = input.measure ?? `${input.tax_head.toLowerCase()}_paise`;
+      const measure = input.measure ?? (input.tax_head ? `${input.tax_head.toLowerCase()}_paise` : null);
       const target = live.gstr3bSections.fields.find((row) => row.table_code === input.table_code && row.measure === measure);
-      if (input.report_type !== 'GSTR3B_DRAFT' || !target) throw new Error('Unsupported adjustment report/table/tax-head pair');
+      if (input.report_type !== 'GSTR3B_DRAFT' || !measure || !target
+        || measure === 'taxable_paise' && input.tax_head !== null
+        || measure !== 'taxable_paise' && input.tax_head !== measure.slice(0, -6).toUpperCase()) throw new Error('Unsupported adjustment report/table/tax-head pair');
       if (!Number.isSafeInteger(target.ca_adjustment_paise + input.adjustment_paise!) ||
           !Number.isSafeInteger((target.final_working_paise ?? 0) + input.adjustment_paise!)) throw new Error('Adjustment exceeds safe working amount');
     }, [...GST_SOURCE_TABLES, 'gst_report_runs', 'attachments', 'sync_queue'], true, supportingFile ? async (row, now) => {

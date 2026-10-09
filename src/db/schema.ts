@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 export const DB_NAME = 'businessvault';
 
@@ -232,4 +232,10 @@ export const STORES_V16: Record<string, string> = {
   gst_document_metadata: `${STORES_V15.gst_document_metadata}, *advance_offset_keys`,
   gst_notes: 'id, business_id, [business_id+note_date], [business_id+direction+note_number]',
   gst_nil_confirmations: 'id, business_id, [business_id+tax_period_key+filing_frequency]',
+};
+
+// v17 makes the taxable-versus-tax-head distinction durable for CA adjustments.
+export const STORES_V17: Record<string, string> = {
+  ...STORES_V16,
+  gst_notes: `${STORES_V16.gst_notes}, [business_id+original_source_entity_type+original_source_entity_id]`,
 };

@@ -262,6 +262,31 @@ describe('pure monthly GST working', () => {
     expect(codes(s)).toEqual(expect.arrayContaining(['HEADER_TOTAL_MISMATCH', 'LINE_HEADER_MISMATCH', 'SUPPLY_TYPE_CONFLICT']));
     expect(inv.header.taxable_paise).toBe(10001);
   });
+  it('excludes a document when its line total does not match its tax components', () => {
+    const s = fixture(); const inv = invoice(s);
+    inv.line.line_total_paise++;
+    const result = calculate(s);
+    expect(result.issues.some(issue => issue.code === 'LINE_TOTAL_MISMATCH' && issue.severity === 'BLOCKING_ERROR')).toBe(true);
+    expect(result.outwardDocuments[0]).toMatchObject({ included: false, exclusion_reason: 'INVALID_LINE_OR_HEADER_EVIDENCE' });
+    expect(result.totals.outwardNet.document_count).toBe(0);
+  });
+  it('excludes malformed positive documents without rewriting negative source evidence', () => {
+    const s = fixture(); const inv = invoice(s);
+    inv.header.igst_paise = -1800;
+    inv.line.igst_paise = -1800;
+    const result = calculate(s);
+    expect(result.outwardDocuments[0]).toMatchObject({ igst_paise: -1800, included: false, exclusion_reason: 'INVALID_POSITIVE_AMOUNT' });
+    expect(result.issues.some(issue => issue.code === 'UNEXPECTED_NEGATIVE_AMOUNT' && issue.severity === 'BLOCKING_ERROR')).toBe(true);
+    expect(result.totals.outwardNet.document_count).toBe(0);
+  });
+  it('does not expose zero when an aggregate exceeds the safe integer range', () => {
+    const s = fixture(); invoice(s, 'one', { taxable_paise: Number.MAX_SAFE_INTEGER, cgst_paise: 0, sgst_paise: 0, pre_round_total_paise: Number.MAX_SAFE_INTEGER, total_paise: Number.MAX_SAFE_INTEGER }, Number.MAX_SAFE_INTEGER, 0);
+    invoice(s, 'two', { taxable_paise: 1, cgst_paise: 0, sgst_paise: 0, pre_round_total_paise: 1, total_paise: 1 }, 1, 0);
+    const result = calculate(s);
+    expect(result.issues.some(issue => issue.code === 'UNSAFE_AGGREGATE')).toBe(true);
+    expect(result.status).toBe('INCOMPLETE');
+    expect(result.totals.outwardNet.taxable_paise).toBeNaN();
+  });
   it('excludes every exact duplicate while preserving source rows and series duplicate evidence', () => {
     const s = fixture(); invoice(s, '1', { invoice_number: 'INV-000001' }); invoice(s, '2', { invoice_number: 'INV-000001' });
     const result = calculate(s);
@@ -438,7 +463,7 @@ describe('pure monthly GST working', () => {
     review(s, 'later', 'ELIGIBLE_IN_BOOKS', { books_tax_paise: 0, source_period_key: '2025-04' });
     expect(calculate(s).status).toBe('READY_FOR_CA_REVIEW');
     expect(codes(s)).not.toContain('NIL_PERIOD_NOT_CONFIRMED');
-    const t = fixture(); t.adjustments.push({ ...stamp, id: 'manual', business_id: 'b', tax_period_key: '2025-05', report_type: 'GSTR3B_DRAFT', table_code: '5.1', tax_head: 'CGST', adjustment_paise: 100, reason: 'CA supplied interest' } as GstAdjustment);
+    const t = fixture(); t.adjustments.push({ ...stamp, id: 'manual', business_id: 'b', tax_period_key: '2025-05', report_type: 'GSTR3B_DRAFT', table_code: '5.1.INTEREST', tax_head: 'CGST', adjustment_paise: 100, reason: 'CA supplied interest' } as GstAdjustment);
     expect(calculate(t).status).toBe('READY_FOR_CA_REVIEW');
     expect(codes(t)).not.toContain('NIL_PERIOD_NOT_CONFIRMED');
   });

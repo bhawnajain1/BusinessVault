@@ -270,6 +270,27 @@ describe('GST report workspace', () => {
     expect(screen.queryByRole('link', { name: 'SUPPLIER95' })).toBeNull();
   });
 
+  it('drills each tax-only overview card into only its contributing sources', async () => {
+    mocks.calculateMonths.mockImplementationOnce(async () => {
+      const r = calculation('2026-08');
+      r.totals.outputLiability = { ...empty, igst_paise: 1800 };
+      r.totals.booksItc.NET_APPROVED = { ...empty, igst_paise: 900 };
+      r.totals.indicativeWorkingBalance = { ...empty, igst_paise: 900 };
+      r.outwardDocuments = [{ ...purchase('2026-08'), source_entity_type: 'INVOICE', source_entity_id: 'output', document_number: 'OUTPUT', igst_paise: 1800 }];
+      r.booksItcRows = [{ source_entity_type: 'PURCHASE', source_entity_id: 'itc', ledger_entry_id: 'itc-entry', tax_period_key: '2026-08', source_period_key: '2026-08', tax_head: 'IGST', status: 'ELIGIBLE_IN_BOOKS', category: 'OTHER_ITC', books_tax_paise: 900, eligible_paise: 900, temporarily_reversed_paise: 0, permanently_reversed_paise: 0, reclaimable_paise: 0, reclaimed_paise: 0, approved_paise: 900, reason: '', related_prior_entry_id: null }];
+      return [r];
+    });
+    await open();
+    fireEvent.click(screen.getByRole('button', { name: /Output GST/ }));
+    expect(screen.getByRole('link', { name: 'OUTPUT' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: 'Monthly Overview' }));
+    fireEvent.click(screen.getByRole('button', { name: /Books ITC/ }));
+    expect(screen.queryByRole('link', { name: 'OUTPUT' })).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'Monthly Overview' }));
+    fireEvent.click(screen.getByRole('button', { name: /Indicative liability/ }));
+    expect(screen.getByRole('link', { name: 'OUTPUT' })).toBeTruthy();
+  });
+
   it('drills ITC by amount component and tax head, not status, and includes historical balance evidence', async () => {
     const row = { source_entity_type: 'PURCHASE', source_entity_id: 'temporary', ledger_entry_id: 'temp', tax_period_key: '2026-08', source_period_key: '2026-07', tax_head: 'IGST' as const, status: 'TEMPORARILY_REVERSED' as const, category: 'OTHER_ITC', books_tax_paise: 0, eligible_paise: 900, temporarily_reversed_paise: 500, permanently_reversed_paise: 0, reclaimable_paise: 500, reclaimed_paise: 0, approved_paise: 400, reason: 'Review', related_prior_entry_id: null };
     mocks.calculateMonths.mockImplementationOnce(async () => {

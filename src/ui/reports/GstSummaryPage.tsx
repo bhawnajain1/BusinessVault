@@ -5,7 +5,8 @@ import { gstMonthlyReportService } from '../../domain/gstReporting';
 import type { GstMonthlyReportService, SaveGstDocumentMetadataInput, ReviewGstItcInput, SaveGstProfileInput, SaveGstNoteInput } from '../../domain/gstReporting/GstMonthlyReportService';
 import { downloadMonthlyGstExcel, downloadMonthlyGstCsv, downloadMonthlyGstPdf, downloadMonthlyGstJson } from '../../domain/gstReporting/exports';
 import { financialYearForDate, precedingFinancialYear, quarterPeriod } from '../../domain/gstReporting/periods';
-import type { GstAmounts, GstAmountKey, GstMonthlySources, MonthlyGstCalculation, NormalizedGstDocument, BooksItcStatus, BooksItcRow } from '../../domain/gstReporting/types';
+import { taxTotalPaise, type GstAmounts, type GstAmountKey, type GstMonthlySources, type MonthlyGstCalculation, type NormalizedGstDocument, type BooksItcStatus, type BooksItcRow } from '../../domain/gstReporting/types';
+import { isValidGstin } from '../../lib/gst';
 import { setCurrentBusinessId } from '../../lib/business';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { money, toDateString } from './reportUtils';
@@ -50,8 +51,9 @@ function editable<T extends { id: string; created_at: string; updated_at: string
   return { ...values, expectedVersion: entity_version };
 }
 
-function outputSources(result: MonthlyGstCalculation, key: GstAmountKey): string[] {
-  return result.outwardDocuments.filter(d => d.included && !d.reverse_charge && !['UNCLASSIFIED', 'UNCLASSIFIED_INVALID_GSTIN', 'ECO_9_5_SUPPLIER', 'NIL_RATED', 'EXEMPT', 'NON_GST'].includes(d.classification) && d[key] !== 0).map(d => d.source_entity_id);
+function outputGstSourceIds(result: MonthlyGstCalculation): string[] {
+  return result.outwardDocuments.filter(d => d.included && !d.reverse_charge && !['UNCLASSIFIED', 'UNCLASSIFIED_INVALID_GSTIN', 'ECO_9_5_SUPPLIER', 'NIL_RATED', 'EXEMPT', 'NON_GST'].includes(d.classification)
+    && taxTotalPaise(d) !== 0).map(d => d.source_entity_id);
 }
 
 function itcContribution(row: BooksItcRow, component: string): number {
@@ -74,8 +76,14 @@ function itcSources(result: MonthlyGstCalculation, component: string, key: GstAm
   return result.booksItcRows.filter(row => row.tax_head === head && itcContribution(row, component) !== 0).map(row => row.source_entity_id);
 }
 
-function balanceSources(result: MonthlyGstCalculation, key: GstAmountKey): string[] {
-  return [...outputSources(result, key), ...result.inwardDocuments.filter(d => d.included && d.classification === 'RCM' && d[key] !== 0).map(d => d.source_entity_id), ...itcSources(result, 'NET_APPROVED', key)];
+function approvedBooksItcSourceIds(result: MonthlyGstCalculation): string[] {
+  const contributingHeads = new Set(['IGST', 'CGST', 'SGST', 'CESS'].filter(head => result.totals.booksItc.NET_APPROVED[`${head.toLowerCase()}_paise` as keyof GstAmounts] !== 0));
+  return result.booksItcRows.filter(row => contributingHeads.has(row.tax_head) && row.approved_paise !== 0).map(row => row.source_entity_id);
+}
+
+function indicativeLiabilitySourceIds(result: MonthlyGstCalculation): string[] {
+  const contributingHeads = new Set(['IGST', 'CGST', 'SGST', 'CESS'].filter(head => result.totals.indicativeWorkingBalance[`${head.toLowerCase()}_paise` as keyof GstAmounts] !== 0));
+  return [...result.outwardDocuments.filter(d => outputGstSourceIds(result).includes(d.source_entity_id) && [...contributingHeads].some(head => d[`${head.toLowerCase()}_paise` as keyof GstAmounts] !== 0)).map(d => d.source_entity_id), ...result.inwardDocuments.filter(d => d.included && d.classification === 'RCM' && [...contributingHeads].some(head => d[`${head.toLowerCase()}_paise` as keyof GstAmounts] !== 0)).map(d => d.source_entity_id), ...result.booksItcRows.filter(row => contributingHeads.has(row.tax_head) && row.approved_paise !== 0).map(row => row.source_entity_id)];
 }
 
 export default function GstSummaryPage() {
@@ -330,7 +338,7 @@ export default function GstSummaryPage() {
     <fieldset disabled={operationBusy || active.loading || immutable}>
       <div className="gst-selection-grid">
         <label>Business<select className={control} value={businessId} onChange={e => { invalidate(true); setBusinessId(e.target.value); }}>{workspace?.businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
-        <label>GSTIN<span className="gst-readonly" aria-label="GSTIN read only">{business?.gstin || 'Not recorded'} {business?.gstin && <small>Valid GSTIN</small>}</span></label>
+        <label>GSTIN<span className="gst-readonly" aria-label="GSTIN read only">{business?.gstin || 'Not recorded'} <small>{business?.gstin ? isValidGstin(business.gstin) ? 'Valid GSTIN' : 'Invalid GSTIN' : 'GSTIN not recorded'}</small></span></label>
         <div><label>Financial year<input className={control} aria-label="Financial year" type="number" min="1900" max="9998" value={startYear} onChange={e => { const y = Number(e.target.value); if (Number.isInteger(y) && y >= 1900 && y <= 9998) { invalidate(true); setFinancialYear(`${y}-${String(y + 1).slice(-2)}`); setMonths([]); } }} /></label><span className="gst-field-helper">{financialYear}</span></div>
         <label>Filing frequency<select className={control} value={frequency} onChange={e => { invalidate(true); setFrequency(e.target.value as typeof frequency); }}><option>MONTHLY</option><option>QRMP</option></select></label>
       </div>
@@ -385,21 +393,21 @@ export default function GstSummaryPage() {
     {tab === 'Monthly Overview' && <>
       {current && <><div className="gst-metrics">
         <button type="button" className="gst-metric gst-metric-green" onClick={() => drill(current.totals.outwardNet.source_entity_ids, 'Net taxable outward')}><ShoppingBag size={22} /><span><small>Net taxable outward</small><strong>{money(current.totals.outwardNet.taxable_paise)}</strong><em>From {current.totals.outwardNet.document_count} sales documents</em></span></button>
-        <button type="button" className="gst-metric gst-metric-blue" onClick={() => drill(outputSources(current, 'total_paise'), 'Output GST')}><CircleDollarSign size={22} /><span><small>Output GST</small><strong>{money(current.totals.outputLiability.total_paise)}</strong><em>IGST {money(current.totals.outputLiability.igst_paise)} · CGST {money(current.totals.outputLiability.cgst_paise)} · SGST {money(current.totals.outputLiability.sgst_paise)}</em></span></button>
+        <button type="button" className="gst-metric gst-metric-blue" onClick={() => drill(outputGstSourceIds(current), 'Output GST')}><CircleDollarSign size={22} /><span><small>Output GST</small><strong>{money(taxTotalPaise(current.totals.outputLiability))}</strong><em>IGST {money(current.totals.outputLiability.igst_paise)} · CGST {money(current.totals.outputLiability.cgst_paise)} · SGST {money(current.totals.outputLiability.sgst_paise)}</em></span></button>
         <button type="button" className="gst-metric gst-metric-violet" onClick={() => drill(current.totals.inwardNet.source_entity_ids, 'Purchase taxable')}><PackageCheck size={22} /><span><small>Purchase taxable</small><strong>{money(current.totals.inwardNet.taxable_paise)}</strong><em>From {current.totals.inwardNet.document_count} purchase documents</em></span></button>
-        <button type="button" className="gst-metric gst-metric-amber" onClick={() => drill(current.booksItcRows.map(row => row.source_entity_id), 'Books ITC')}><ReceiptIndianRupee size={22} /><span><small>Books ITC</small><strong>{money(current.totals.booksItc.NET_APPROVED.total_paise)}</strong><em>Subject to CA review</em></span></button>
-        <button type="button" className="gst-metric gst-metric-rose" onClick={() => drill(balanceSources(current, 'total_paise'), 'Indicative liability')}><Landmark size={22} /><span><small>Indicative liability</small><strong>{money(current.totals.indicativeWorkingBalance.total_paise)}</strong><em>Before payment and adjustments</em></span></button>
+        <button type="button" className="gst-metric gst-metric-amber" onClick={() => drill(approvedBooksItcSourceIds(current), 'Books ITC')}><ReceiptIndianRupee size={22} /><span><small>Books ITC</small><strong>{money(taxTotalPaise(current.totals.booksItc.NET_APPROVED))}</strong><em>Subject to CA review</em></span></button>
+        <button type="button" className="gst-metric gst-metric-rose" onClick={() => drill(indicativeLiabilitySourceIds(current), 'Indicative liability')}><Landmark size={22} /><span><small>Indicative liability</small><strong>{money(taxTotalPaise(current.totals.indicativeWorkingBalance))}</strong><em>Before payment and adjustments</em></span></button>
         <button type="button" className={`gst-metric ${blockingIssueCount ? 'gst-metric-danger' : 'gst-metric-green'}`} onClick={() => changeTab('Validation Issues')}><AlertTriangle size={22} /><span><small>Validation issues</small><strong>{issueCount}</strong><em>{blockingIssueCount ? `${blockingIssueCount} blocking issues` : 'No blocking issues'}</em></span></button>
       </div>
       {blockingIssueCount > 0 && <aside className="gst-issues-banner"><AlertTriangle size={24} /><div><strong>{blockingIssueCount} blocking {blockingIssueCount === 1 ? 'issue must' : 'issues must'} be fixed before finalization</strong><p>Review and resolve validation issues to ensure accurate GST reporting.</p></div><button type="button" onClick={() => changeTab('Validation Issues')}>Review issues <ChevronRight size={16} /></button></aside>}</>}
       <section className="gst-section-card"><div className="gst-card-heading"><div><BarChart3 size={22} /><div><h2>Monthly comparison</h2><p>Independent monthly calculations for the selected period.</p></div></div><TableProperties size={19} aria-label="Columns available in table" /></div>
       <Table title="Independent monthly comparison (not a combined return period)" headers={['Month', 'Status', 'Sales documents', 'Net taxable outward', 'Output IGST', 'Output CGST', 'Output SGST', 'Output cess', 'Sales round-off', 'Note effect', 'Purchase documents', 'Purchase taxable', 'Purchase IGST', 'Purchase CGST', 'Purchase SGST', 'Purchase cess', 'Blocking errors', 'Warnings']} rows={visibleResults.map(r => {
         const o = r.totals.outwardNet, p = r.totals.inwardNet;
-        return [r.period.periodKey, savedResult?.savedStatus ?? r.status, metric(o.document_count, o.source_entity_ids, 'Sales documents', r, false), metric(o.taxable_paise, o.source_entity_ids, 'Outward Taxable', r), ...amounts.slice(1, 5).map(([key, label]) => metric(r.totals.outputLiability[key], outputSources(r, key), `Output ${label}`, r)), metric(o.round_off_paise, o.source_entity_ids, 'Outward round-off', r), metric(r.totals.outwardNotes.total_paise, r.totals.outwardNotes.source_entity_ids, 'Note effect', r), metric(p.document_count, p.source_entity_ids, 'Purchase documents', r, false), ...amountCells(p, p.source_entity_ids, 'Purchase', r).slice(0, 5), ...(['BLOCKING_ERROR', 'WARNING'] as const).map(severity => metric(r.issues.filter(i => i.severity === severity).length, r.issues.filter(i => i.severity === severity).map(i => i.source_entity_id), `${severity} sources`, r, false))];
+        return [r.period.periodKey, savedResult?.savedStatus ?? r.status, metric(o.document_count, o.source_entity_ids, 'Sales documents', r, false), metric(o.taxable_paise, o.source_entity_ids, 'Outward Taxable', r), ...amounts.slice(1, 5).map(([key, label]) => metric(r.totals.outputLiability[key], outputGstSourceIds(r), `Output ${label}`, r)), metric(o.round_off_paise, o.source_entity_ids, 'Outward round-off', r), metric(r.totals.outwardNotes.total_paise, r.totals.outwardNotes.source_entity_ids, 'Note effect', r), metric(p.document_count, p.source_entity_ids, 'Purchase documents', r, false), ...amountCells(p, p.source_entity_ids, 'Purchase', r).slice(0, 5), ...(['BLOCKING_ERROR', 'WARNING'] as const).map(severity => metric(r.issues.filter(i => i.severity === severity).length, r.issues.filter(i => i.severity === severity).map(i => i.source_entity_id), `${severity} sources`, r, false))];
       })} /></section>
       <section className="gst-section-card"><div className="gst-card-heading"><div><CircleDollarSign size={22} /><div><h2>ITC and liability by tax head</h2><p>Books ITC is subject to CA review and GSTR-2B reconciliation.</p></div></div></div><Table title="Monthly ITC and indicative balance by tax head" headers={['Month', 'Measure', 'IGST', 'CGST', 'SGST / UTGST', 'Cess']} rows={visibleResults.flatMap(r => [...itcStatuses, 'TOTAL_BOOKS_TAX', 'NET_APPROVED', 'INDICATIVE_BALANCE'].map(status => {
         const total = status === 'INDICATIVE_BALANCE' ? r.totals.indicativeWorkingBalance : r.totals.booksItc[status as keyof typeof r.totals.booksItc];
-        return [r.period.periodKey, status, ...amounts.slice(1, 5).map(([key, label]) => metric(total[key], status === 'INDICATIVE_BALANCE' ? balanceSources(r, key) : itcSources(r, status, key), `${status} ${label}`, r))];
+        return [r.period.periodKey, status, ...amounts.slice(1, 5).map(([key, label]) => metric(total[key], status === 'INDICATIVE_BALANCE' ? indicativeLiabilitySourceIds(r) : itcSources(r, status, key), `${status} ${label}`, r))];
       }))} /></section>
       {!immutable && frequency === 'QRMP' && (() => {
         const period = quarterPeriod(businessId, business?.gstin ?? '', financialYear, quarter);
@@ -418,7 +426,7 @@ export default function GstSummaryPage() {
               const purchase = component === 'PURCHASE_GROSS' ? r.totals.inwardGross : component === 'PURCHASE_NOTES' ? r.totals.inwardNotes : component === 'PURCHASE_NET' ? r.totals.inwardNet : null;
               const source = purchase ?? (component === 'OUTPUT_LIABILITY' ? r.totals.outputLiability : component === 'RCM_LIABILITY' ? r.totals.rcmLiability : component === 'INDICATIVE_BALANCE' ? r.totals.indicativeWorkingBalance : r.totals.booksItc[component as keyof typeof r.totals.booksItc]);
               total += source[key];
-              ids.push(...(purchase ? purchase.source_entity_ids : component === 'OUTPUT_LIABILITY' ? outputSources(r, key) : component === 'RCM_LIABILITY' ? r.inwardDocuments.filter(d => d.included && d.classification === 'RCM' && d[key] !== 0).map(d => d.source_entity_id) : component === 'INDICATIVE_BALANCE' ? balanceSources(r, key) : itcSources(r, component, key)));
+               ids.push(...(purchase ? purchase.source_entity_ids : component === 'OUTPUT_LIABILITY' ? outputGstSourceIds(r) : component === 'RCM_LIABILITY' ? r.inwardDocuments.filter(d => d.included && d.classification === 'RCM' && d[key] !== 0).map(d => d.source_entity_id) : component === 'INDICATIVE_BALANCE' ? indicativeLiabilitySourceIds(r) : itcSources(r, component, key)));
             }
             return Number.isSafeInteger(total) ? <button type="button" className={linkButton} aria-label={`Quarter ${component} ${label}: ${money(total)}. Show contributing sources`} onClick={() => { setFilter({ ids: [...new Set(ids)], label: `Quarter ${component} ${label}`, allMonths: true }); setTab('Source Transactions'); }}>{money(total)}</button> : 'Unsafe total: analysis unavailable';
           })])} />
@@ -508,7 +516,7 @@ export default function GstSummaryPage() {
       <form key={`${current.period.periodKey}-${current.sourceDataHash}`} onSubmit={e => submit(e, data => {
         const selected = String(data.get('head')); const table = String(data.get('table'));
         const measure = `${selected.toLowerCase()}_paise` as NonNullable<Parameters<GstMonthlyReportService['addAdjustment']>[0]['measure']>;
-        const head = (selected === 'TAXABLE' ? 'IGST' : selected) as ReviewGstItcInput['tax_head'];
+        const head = (selected === 'TAXABLE' ? null : selected) as ReviewGstItcInput['tax_head'] | null;
         const target = adjustmentFields.find(f => f.table_code === table && f.measure === measure);
         if (!target) throw new Error('Select a supported table and tax head from this working. No adjustment was created.');
         const calculated = target.calculated_paise;

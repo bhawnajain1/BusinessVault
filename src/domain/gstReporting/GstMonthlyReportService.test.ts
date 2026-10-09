@@ -117,7 +117,7 @@ describe('GST monthly persistence', () => {
     await setupProfile();
     const before = await db.sync_events.count();
     const input = { business_id: business.id, report_run_id: null, tax_period_key: '2026-08', report_type: 'GSTR3B_DRAFT' as const,
-      table_code: '3.1(a)', tax_head: 'CGST' as const, measure: 'taxable_paise' as const, original_paise: null, adjusted_paise: null,
+      table_code: '3.1(a)', tax_head: null, measure: 'taxable_paise' as const, original_paise: null, adjusted_paise: null,
       adjustment_paise: 100, reason: 'CA confirmed taxable difference', supporting_attachment_id: null, source: 'USER' as const,
       actor_id: null, device_id: 'test-device', supportingFile: { filename: 'support.txt', mimeType: 'text/plain', blob: new Blob(['evidence']) } };
     const adjustment = await service.addAdjustment(input);
@@ -351,7 +351,7 @@ describe('GST monthly persistence', () => {
     expect(sources.purchases.map((row) => row.id).sort()).toEqual(['native-return', 'purchase']);
     expect(sources.itcEntries.map((row) => row.id)).toEqual([reviewed.id]);
   });
-  it('upgrades an actual Dexie17 database through v20 while preserving pure nullable v15 defaults', async () => {
+  it('upgrades an actual Dexie17 database through v21 while preserving pure nullable v15 defaults', async () => {
     const name = `gst-real-upgrade-${Math.random()}`;
     const old = new Dexie(name);
     old.version(17).stores(STORES_V14);
@@ -365,7 +365,7 @@ describe('GST monthly persistence', () => {
     const upgraded = new BusinessVaultDB(name);
     try {
       await upgraded.open();
-      expect(upgraded.verno).toBe(20);
+      expect(upgraded.verno).toBe(21);
       const snapshot = migrateSnapshot(tables, 14).tables;
       for (const [table, rows] of Object.entries(snapshot)) expect(await upgraded.table(table).toArray()).toEqual(rows);
       expect(canonicalJson(tables)).toBe(frozen);
@@ -409,7 +409,7 @@ describe('GST monthly persistence', () => {
     await expect(service.addAdjustment({ ...input, table_code: '5.1', report_type: 'MONTHLY_GST_PACK' })).rejects.toThrow('Unsupported adjustment');
     expect(await db.gst_adjustments.count()).toBe(0);
     expect(await db.sync_events.count()).toBe(2);
-    await service.addAdjustment({ ...input, table_code: '5.1' });
+    await service.addAdjustment({ ...input, table_code: '5.1.INTEREST' });
     expect(await db.gst_adjustments.count()).toBe(1);
     expect(await db.sync_events.count()).toBe(3);
   });
@@ -433,8 +433,8 @@ describe('GST monthly persistence', () => {
     const workspace = await service.loadWorkspace(business.id, ['purchase']);
     expect(workspace.reviewPurchases.map((row) => row!.id)).toEqual(['purchase']);
   });
-  it('test112: preserves saved working and independent workbook totals across provider-only recovery on logical16/Dexie20', async () => {
-    expect(db.verno).toBe(20);
+  it('test112: preserves saved working and independent workbook totals across provider-only recovery on logical17/Dexie21', async () => {
+    expect(db.verno).toBe(21);
     await setupProfile();
     await seedPurchase();
     const metadata = { business_id: business.id, source_entity_type: 'PURCHASE', source_entity_id: 'purchase',
@@ -447,7 +447,7 @@ describe('GST monthly persistence', () => {
     await service.saveDocumentMetadata(metadata);
     await service.reviewItc(itc('ELIGIBLE_IN_BOOKS', '2026-08'));
     await service.addAdjustment({ business_id: business.id, report_run_id: null, tax_period_key: '2026-08', report_type: 'GSTR3B_DRAFT',
-      table_code: '5.1', tax_head: 'CGST', original_paise: null, adjusted_paise: null, adjustment_paise: 1,
+      table_code: '5.1.INTEREST', tax_head: 'CGST', original_paise: null, adjusted_paise: null, adjustment_paise: 1,
       reason: 'Synthetic external interest', note: 'External manual working', supporting_attachment_id: null, source: 'USER', actor_id: null, device_id: 'test-device' });
     const [before] = await service.calculateMonths(business.id, ['2026-08']);
     expect(before.issues.filter((row) => row.severity === 'BLOCKING_ERROR')).toEqual([]);
@@ -501,7 +501,7 @@ describe('GST monthly persistence', () => {
           expect(rows.reduce((sum, row) => sum + Math.round(Number(row['books_tax (INR)']) * 100), 0)).toBe(90);
           expect(rows.reduce((sum, row) => sum + Math.round(Number(row['approved (INR)']) * 100), 0)).toBe(approved);
         }
-        expect(workbook['GSTR3B Working'].find(row => row.table_code === '5.1' && row.measure === 'cgst_paise'))
+        expect(workbook['GSTR3B Working'].find(row => row.table_code === '5.1.INTEREST' && row.measure === 'cgst_paise'))
           .toMatchObject({ 'ca_adjustment (INR)': 0.01, 'final_working (INR)': 0.01 });
         expect(workbook.Metadata[0]).toMatchObject({ saved_report_run_id: run.id, saved_status: 'REVIEWED',
           source_data_hash: before.sourceDataHash, export_status: 'REVIEWED' });

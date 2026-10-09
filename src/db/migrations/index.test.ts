@@ -200,4 +200,9 @@ describe('GST snapshot migration', () => {
     expect(first.gstr2b_documents).toEqual(tables.gstr2b_documents);
     expect(second).toEqual(first);
   });
+
+  it('converts legacy taxable adjustments without retaining a tax head', () => {
+    const result = migrateSnapshot({ gst_adjustments: [{ id: 'taxable', tax_head: 'IGST', measure: 'taxable_paise' }] }, 16, 17);
+    expect(result.tables.gst_adjustments).toEqual([{ id: 'taxable', tax_head: null, measure: 'taxable_paise' }]);
+  });
 });

@@ -139,6 +139,18 @@ describe('monthly GST presentation exports', () => {
     }
   });
 
+  it('exports explicit tax totals rather than invoice values for GST-only summaries', async () => {
+    const result = fixture();
+    result.totals.outputLiability = amounts(10000, 1800);
+    result.totals.booksItc.NET_APPROVED = { ...zero(), igst_paise: 900 };
+    result.totals.indicativeWorkingBalance = { ...zero(), igst_paise: 900 };
+    const { workbook } = await reopen([result]);
+    const monthly = rows(workbook.getWorksheet('Monthly Summary')!);
+    expect(monthly.find(row => row.section === 'outputLiability')!['tax_total (INR)']).toBe(18);
+    expect(monthly.find(row => row.section === 'ITC:NET_APPROVED')!['tax_total (INR)']).toBe(9);
+    expect(monthly.find(row => row.section === 'indicativeWorkingBalance')!['tax_total (INR)']).toBe(9);
+  });
+
   it('preserves leading-zero identifiers, source IDs, injection guards, UTC dates and numeric money', async () => {
     const { workbook } = await reopen([fixture()]);
     const sheet = workbook.getWorksheet('Sales Register')!;

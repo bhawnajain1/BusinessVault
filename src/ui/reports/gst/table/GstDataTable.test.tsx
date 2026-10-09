@@ -25,6 +25,17 @@ describe('GstDataTable', () => {
     expect(rows[0][0]).toBe('Invoice 1');
   });
 
+  it('uses the supplied stable row ID and explicit column alignment', () => {
+    render(<GstDataTable title="Issues" columns={[
+      { id: 'message', header: 'Message', alignment: 'left', minWidth: 120, formatter: value => value, accessor: row => row[1] },
+      { id: 'amount', header: 'Amount', alignment: 'right', minWidth: 90, formatter: value => value, accessor: row => row[2] },
+    ]} rowId={row => String(row[0])} rows={[["issue-1", 'A descriptive issue message', '₹18.00']]} />);
+
+    const row = screen.getByText('A descriptive issue message').closest('tr')!;
+    expect(row.children[0].classList.contains('gst-table-left')).toBe(true);
+    expect(row.children[1].classList.contains('gst-table-right')).toBe(true);
+  });
+
   it('renders an intentional empty state', () => {
     render(<GstDataTable title="Validation issues" headers={['Severity', 'Issue']} rows={[]} />);
     expect(screen.getByText('No rows are available for the selected report period.')).toBeTruthy();

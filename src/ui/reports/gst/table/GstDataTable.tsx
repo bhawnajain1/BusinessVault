@@ -5,15 +5,19 @@ import './gstTable.css';
 type GstDataTableProps = {
   title: string;
   description?: string;
-  headers: string[];
+  headers?: string[];
+  columns?: GstTableColumn[];
   rows: ReactNode[][];
+  rowId?: (row: ReactNode[]) => string;
   pageSize?: number;
 };
+
+export type GstTableColumn = { id: string; header: string; alignment: 'left' | 'right'; minWidth: number; formatter: (value: ReactNode) => ReactNode; accessor: (row: ReactNode[]) => ReactNode };
 
 const DISPLAY_LABELS: Record<string, string> = {
   BLOCKING_ERROR: 'Blocking error',
   WARNING: 'Warning',
-  INFO: 'Information',
+  INFORMATION: 'Information',
   INCOMPLETE: 'Incomplete',
   READY_FOR_CA_REVIEW: 'Ready for CA review',
   FINALIZED_WORKING: 'Finalized working',
@@ -46,15 +50,28 @@ function displayCell(value: ReactNode, header: string): ReactNode {
   return isBadge ? <span className="gst-table-badge">{label}</span> : label;
 }
 
-export default function GstDataTable({ title, description, headers, rows, pageSize = 25 }: GstDataTableProps) {
+function stableValue(value: ReactNode): string {
+  if (value == null || typeof value === 'boolean') return String(value);
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) return value.map(stableValue).join('|');
+  if (typeof value === 'object' && 'props' in value) {
+    const element = value as { key: unknown; props: { children?: ReactNode; href?: string; 'aria-label'?: string } };
+    return `${element.key ?? ''}:${element.props.href ?? ''}:${element.props['aria-label'] ?? ''}:${stableValue(element.props.children ?? '')}`;
+  }
+  return String(value);
+}
+
+export default function GstDataTable({ title, description, headers = [], columns, rows, rowId = row => row.map(stableValue).join('\u001f'), pageSize = 25 }: GstDataTableProps) {
   const [page, setPage] = useState(0);
   const tableId = useId();
+  const tableColumns = columns ?? headers.map((header, index): GstTableColumn => ({ id: header, header,
+    alignment: /amount|taxable|igst|cgst|sgst|cess|rate|quantity|count|documents|recipients|rows|issued|cancelled|net/i.test(header) ? 'right' : 'left', minWidth: Math.max(110, header.length * 9), formatter: value => displayCell(value, header), accessor: row => row[index] }));
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   const currentPage = Math.min(page, pageCount - 1);
   const start = currentPage * pageSize;
   const visibleRows = rows.slice(start, start + pageSize);
-  const dense = headers.length > 9;
-  const minimumWidth = headers.length > 12 ? 1480 : headers.length > 8 ? 1180 : 860;
+  const dense = tableColumns.length > 9;
+  const minimumWidth = tableColumns.reduce((total, column) => total + column.minWidth, 0);
 
   useEffect(() => { setPage(0); }, [rows.length, title]);
 
@@ -66,9 +83,9 @@ export default function GstDataTable({ title, description, headers, rows, pageSi
     <div className="gst-table-scroll" tabIndex={0} role="region" aria-label={`${title}, horizontally scrollable`}>
       <table id={tableId} className={`gst-data-table ${dense ? 'gst-data-table-dense' : ''}`} style={{ minWidth: minimumWidth }}>
         <caption>{title}</caption>
-        <thead><tr>{headers.map(header => <th scope="col" key={header}>{header}</th>)}</tr></thead>
-        <tbody>{visibleRows.map((row, rowIndex) => <tr key={start + rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{displayCell(cell, headers[cellIndex])}</td>)}</tr>)}
-          {!rows.length && <tr><td colSpan={headers.length} className="gst-table-empty">No rows are available for the selected report period.</td></tr>}
+        <thead><tr>{tableColumns.map(column => <th scope="col" key={column.id} className={`gst-table-${column.alignment}`} style={{ minWidth: column.minWidth }}>{column.header}</th>)}</tr></thead>
+        <tbody>{visibleRows.map(row => <tr key={rowId(row)}>{tableColumns.map(column => <td key={column.id} className={`gst-table-${column.alignment}`}>{column.formatter(column.accessor(row))}</td>)}</tr>)}
+          {!rows.length && <tr><td colSpan={tableColumns.length} className="gst-table-empty">No rows are available for the selected report period.</td></tr>}
         </tbody>
       </table>
     </div>

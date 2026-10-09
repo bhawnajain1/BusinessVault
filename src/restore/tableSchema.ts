@@ -17,6 +17,7 @@ export type ColumnType =
   | 'number'
   | 'number_or_null'
   | 'paise'
+  | 'paise_or_null'
   | 'boolean_int'
   | 'boolean_int_or_null'
   | 'json';
@@ -721,7 +722,7 @@ export const TABLE_SPECS: TableSpec[] = [
     columns: [
       { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
       { name: 'report_run_id', type: 'string' }, { name: 'table_code', type: 'string' },
-      { name: 'tax_head', type: 'string' }, { name: 'original_paise', type: 'paise' },
+      { name: 'tax_head', type: 'string_or_null' }, { name: 'measure', type: 'string_or_null' }, { name: 'tax_period_key', type: 'string_or_null' }, { name: 'report_type', type: 'string_or_null' }, { name: 'adjustment_paise', type: 'paise' }, { name: 'note', type: 'string_or_null' }, { name: 'original_paise', type: 'paise' },
       { name: 'adjusted_paise', type: 'paise' }, { name: 'reason', type: 'string' },
       { name: 'supporting_attachment_id', type: 'string_or_null' },
       { name: 'source', type: 'string' }, { name: 'actor_id', type: 'string_or_null' },
@@ -844,6 +845,7 @@ for (const [store, fields] of Object.entries({ ...GST_V15_NULL_FIELDS,
   const spec = TABLE_SPECS.find((table) => table.store === store);
   if (!spec) continue;
   for (const name of fields) {
+    if (spec.columns.some(column => column.name === name)) continue;
     spec.columns.push({ name, type: name.endsWith('_paise') ? 'paise' :
       name === 'cess_rate_bps' || name === 'report_schema_version' ? 'number_or_null' : 'string_or_null' });
   }

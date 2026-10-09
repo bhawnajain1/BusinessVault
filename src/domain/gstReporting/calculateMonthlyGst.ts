@@ -50,8 +50,8 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       const sum = target[key] + (value[key] ?? 0);
       if (!Number.isSafeInteger(sum)) {
         issue('UNSAFE_AGGREGATE', 'BLOCKING_ERROR', 'REPORT', context, `Unsafe integer aggregate for ${key}.`, key);
-        // Never emit an inexact floating-point total as an apparently valid amount.
-        target[key] = 0;
+        // Never emit a plausible zero after an unsafe calculation failure.
+        target[key] = Number.NaN;
       } else target[key] = sum;
     }
   }
@@ -213,18 +213,26 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     if (!number) issue('MISSING_DOCUMENT_NUMBER', 'BLOCKING_ERROR', type, header.id, 'Canonical document number is required.', 'document_number');
     if (!lines.length) issue('MISSING_LINE_DATA', 'BLOCKING_ERROR', type, header.id, 'Rate/HSN allocation cannot be inferred from a document header.', null, number);
     let unsafe = false;
+    let invalidAmounts = false;
     for (const key of amountKeys) {
       const value = header[key];
       if (!Number.isSafeInteger(value)) { unsafe = true; issue('UNSAFE_MONEY', 'BLOCKING_ERROR', type, header.id, `Invalid integer paise: ${key}.`, key, number); continue; }
-      if (key !== 'round_off_paise' && value < 0 && sign > 0) issue('UNEXPECTED_NEGATIVE_AMOUNT', 'BLOCKING_ERROR', type, header.id, 'Positive document has a negative monetary component.', key, number);
+      if (key !== 'round_off_paise' && value < 0 && sign > 0) {
+        invalidAmounts = true;
+        issue('UNEXPECTED_NEGATIVE_AMOUNT', 'BLOCKING_ERROR', type, header.id, 'Positive document has a negative monetary component.', key, number);
+      }
+      // Credit/debit notes carry their own historic sign in some legacy rows.
+      // Only positive documents are forbidden from repairing a negative value.
       document[key] = key === 'round_off_paise'
-        ? sign * (header.total_paise < 0 ? -value : value) : sign * Math.abs(value);
+        ? sign * (header.total_paise < 0 ? -value : value)
+        : sign < 0 ? sign * Math.abs(value) : value;
     }
     if (sign < 0 && header.total_paise < 0) issue('LEGACY_NEGATIVE_NOTE', 'WARNING', type, header.id, 'Negative legacy note normalized once by document meaning.', null, number);
-    if (unsafe) { document.included = false; document.exclusion_reason = 'UNSAFE_MONEY'; return; }
+    if (unsafe || invalidAmounts) { document.included = false; document.exclusion_reason = unsafe ? 'UNSAFE_MONEY' : 'INVALID_POSITIVE_AMOUNT'; return; }
     const rawTaxSum = header.taxable_paise + header.igst_paise + header.cgst_paise + header.sgst_paise + header.cess_paise;
     if (rawTaxSum !== header.pre_round_total_paise || header.pre_round_total_paise + header.round_off_paise !== header.total_paise) {
       issue('HEADER_TOTAL_MISMATCH', 'BLOCKING_ERROR', type, header.id, 'Persisted pre-round or total/round-off invariant does not match.', null, number);
+      document.included = false; document.exclusion_reason = 'HEADER_TOTAL_MISMATCH';
     }
     if (gstin && document.recipient_category !== 'UIN' && !isValidGstin(gstin)) {
       document.classification = 'UNCLASSIFIED_INVALID_GSTIN';
@@ -327,10 +335,15 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       if (invalid) { unsupported = true; continue; }
       if (line.tax_rate_bps < 0 || (sign > 0 && (line.qty_micros < 0 || line.taxable_paise < 0 || taxKeys.some(key => line[key] < 0)))) {
         issue('INVALID_LINE_SIGN', 'BLOCKING_ERROR', type, header.id, 'Invalid line rate or amount sign.', null, number);
+        unsupported = true;
+        continue;
       }
-      for (const key of ['taxable_paise', ...taxKeys] as const) amounts[key] = sign * Math.abs(line[key]);
-      amounts.total_paise = amounts.pre_round_total_paise = sign * Math.abs(line.line_total_paise);
-      if (amounts.taxable_paise + taxKeys.reduce((total, key) => total + amounts[key], 0) !== amounts.total_paise) issue('LINE_TOTAL_MISMATCH', 'BLOCKING_ERROR', type, header.id, `Line ${line.id} total differs from taxable plus tax heads.`, null, number);
+      for (const key of ['taxable_paise', ...taxKeys] as const) amounts[key] = sign < 0 ? sign * Math.abs(line[key]) : line[key];
+      amounts.total_paise = amounts.pre_round_total_paise = sign < 0 ? sign * Math.abs(line.line_total_paise) : line.line_total_paise;
+      if (amounts.taxable_paise + taxKeys.reduce((total, key) => total + amounts[key], 0) !== amounts.total_paise) {
+        issue('LINE_TOTAL_MISMATCH', 'BLOCKING_ERROR', type, header.id, `Line ${line.id} total differs from taxable plus tax heads.`, null, number);
+        unsupported = true;
+      }
       add(lineTotals, amounts, header.id);
       const explicitTaxability = line.taxability ?? (['NIL_RATED', 'EXEMPT', 'NON_GST'].includes(special ?? '') ? special : overseas || sez ? 'ZERO_RATED' : null);
       const taxability = explicitTaxability ?? (line.tax_rate_bps > 0 ? 'TAXABLE' : 'UNKNOWN');
@@ -353,8 +366,12 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       normalizedLines.push({ source: line, amounts, taxability });
     }
     for (const key of ['taxable_paise', ...taxKeys] as const) {
-      if (lineTotals[key] !== document[key]) issue('LINE_HEADER_MISMATCH', 'BLOCKING_ERROR', type, header.id, `Line sum differs from header ${key}.`, key, number, { [key]: document[key] - lineTotals[key] });
+      if (lineTotals[key] !== document[key]) {
+        issue('LINE_HEADER_MISMATCH', 'BLOCKING_ERROR', type, header.id, `Line sum differs from header ${key}.`, key, number, { [key]: document[key] - lineTotals[key] });
+        unsupported = true;
+      }
     }
+    if (unsupported) { document.included = false; document.exclusion_reason ??= 'INVALID_LINE_OR_HEADER_EVIDENCE'; }
     const taxabilities = new Set(normalizedLines.map(line => line.taxability));
     if (taxabilities.size === 1 && ['NIL_RATED', 'EXEMPT', 'NON_GST'].includes([...taxabilities][0])) classification = [...taxabilities][0] as GstClassification;
     // Explicit historical taxability allocates mixed documents by line, not header.
@@ -1137,7 +1154,6 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     field('4(C)', key, booksItc.NET_APPROVED[key], 'APPROVED_BOOKS_ITC', rows.filter(r => r.approved_paise).map(r => r.source_entity_id), null, booksItc.NET_APPROVED[key]);
     const restricted = rows.filter(r => r.status === 'INELIGIBLE' && ['SECTION_16_4', 'POS_RESTRICTION'].includes(r.reason_code ?? ''));
     field('4(D)(2)', key, sum(restricted.map(r => ({ [key]: r.books_tax_paise })))[key], 'APPROVED_BOOKS_ITC', restricted.map(r => r.source_entity_id));
-    field('5.1', key, null, 'NOT_AVAILABLE', []); field('6.1', key, null, 'NOT_AVAILABLE', []);
     for (const table of ['5.1.INTEREST', '5.1.LATE_FEE', '6.1.CASH', '6.1.CREDIT', '6.1.PAYMENT']) field(table, key, null, 'NOT_AVAILABLE', []);
   }
   for (const interstate of [false, true]) for (const category of ['NIL_EXEMPT', 'NON_GST']) {
@@ -1148,10 +1164,12 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   for (const adjustment of [...sources.adjustments].sort((a, b) => a.id.localeCompare(b.id))) {
     if (adjustment.business_id !== businessId || !periodContainsKey(adjustment.tax_period_key ?? '')) continue;
     remember('GST_ADJUSTMENT', adjustment.id, adjustment, adjustment.entity_version);
-    const key = adjustment.measure ?? `${adjustment.tax_head.toLowerCase()}_paise` as GstAmountKey;
+    const key = adjustment.measure ?? (adjustment.tax_head ? `${adjustment.tax_head.toLowerCase()}_paise` as GstAmountKey : null);
     const target = fields.find(f => f.table_code === adjustment.table_code && f.measure === key);
     const delta = adjustment.adjustment_paise;
-    if (!target || adjustment.report_type !== 'GSTR3B_DRAFT' || !Number.isSafeInteger(delta) || !adjustment.reason.trim()) {
+    if (!key || !target || adjustment.report_type !== 'GSTR3B_DRAFT' || !Number.isSafeInteger(delta) || !adjustment.reason.trim()
+      || adjustment.measure === 'taxable_paise' && adjustment.tax_head !== null
+      || adjustment.measure !== 'taxable_paise' && adjustment.tax_head !== key.slice(0, -6).toUpperCase()) {
       issue('INVALID_CA_ADJUSTMENT', 'BLOCKING_ERROR', 'GST_ADJUSTMENT', adjustment.id, 'Adjustment requires a supported Draft 3B table, explicit integer delta, period and reason.'); continue;
     }
     const next = target.ca_adjustment_paise + delta!;

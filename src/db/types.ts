@@ -1062,7 +1062,8 @@ export interface GstAdjustment {
   adjustment_paise?: number | null;
   note?: string | null;
   table_code: string;
-  tax_head: 'IGST' | 'CGST' | 'SGST' | 'CESS';
+  /** Null only for an explicit taxable-value adjustment. */
+  tax_head: 'IGST' | 'CGST' | 'SGST' | 'CESS' | null;
   measure?: 'taxable_paise' | 'igst_paise' | 'cgst_paise' | 'sgst_paise' | 'cess_paise' | null;
   original_paise: number | null;
   adjusted_paise: number | null;

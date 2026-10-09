@@ -17,6 +17,7 @@ import {
   STORES_V14,
   STORES_V15,
   STORES_V16,
+  STORES_V17,
 } from './schema';
 import { GST_V15_NULL_FIELDS, GST_V16_NULL_FIELDS } from './migrations/index';
 import { ulid } from 'ulid';
@@ -669,6 +670,14 @@ export class BusinessVaultDB extends Dexie {
     // Index-only upgrade: durable CSV shape remains logical schema 16.
     this.version(20).stores({ ...STORES_V16,
       gst_notes: `${STORES_V16.gst_notes}, [business_id+original_source_entity_type+original_source_entity_id]`,
+    });
+
+    this.version(21).stores(STORES_V17).upgrade(async tx => {
+      await tx.table('gst_adjustments').toCollection().modify((row: Record<string, unknown>) => {
+        row.measure ??= row.tax_head ? `${String(row.tax_head).toLowerCase()}_paise` : null;
+        if (row.measure === 'taxable_paise') row.tax_head = null;
+        else row.tax_head ??= null;
+      });
     });
 
     // After any sync_event insert commits, kick the sync worker so the write
