@@ -57,6 +57,10 @@ const ACC_INVENTORY_CODE = '1400';
 
 // ---------- Public input types ----------
 export interface CreateInvoiceLineInput {
+  uqc_code?: string | null;
+  goods_or_service?: InvoiceLine['goods_or_service'];
+  taxability?: InvoiceLine['taxability'];
+  cess_rate_bps?: number | null;
   item_id: string;
   description?: string;
   hsn: string;
@@ -382,6 +386,7 @@ export class InvoiceService {
         this.db.businesses,
         this.db.invoice_lines,
         this.db.items,
+        this.db.units,
         this.db.item_stock,
         this.db.stock_movements,
         this.db.accounts,
@@ -477,6 +482,25 @@ export class InvoiceService {
 
         // 2. invoice_lines rows + one sync event per line so restore can
         //    rehydrate the ledger. Handlers live at eventHandlers.ts.
+        for (const [index, line] of invoiceLines.entries()) {
+          const inputLine = input.lines[index];
+          const item = await this.db.items.get(line.item_id);
+          const unit = item?.business_id === input.business_id ? await this.db.units.get(item.unit_id) : undefined;
+          line.uqc_code = inputLine.uqc_code ?? (unit?.business_id === input.business_id ? unit.code : null);
+          line.goods_or_service = inputLine.goods_or_service ?? (item?.business_id === input.business_id ? (item.is_service ? 'SERVICE' : 'GOODS') : null);
+          line.taxability = inputLine.taxability ?? (line.tax_rate_bps > 0 ? 'TAXABLE' : null);
+          line.cess_rate_bps = inputLine.cess_rate_bps ?? (item?.business_id === input.business_id ? item.cess_rate_bps : null);
+          line.snapshot_source = 'NATIVE';
+          const historical = existingInvoiceLines[index];
+          if (input.replaceInvoiceId && historical?.item_id === line.item_id) {
+            line.uqc_code = inputLine.uqc_code ?? historical.uqc_code ?? line.uqc_code;
+            line.goods_or_service = inputLine.goods_or_service ?? historical.goods_or_service ?? line.goods_or_service;
+            line.taxability = inputLine.taxability ?? historical.taxability ?? line.taxability;
+            line.cess_rate_bps = inputLine.cess_rate_bps ?? historical.cess_rate_bps ?? line.cess_rate_bps;
+            line.snapshot_source = historical.snapshot_source === 'LEGACY_INFERRED' || !historical.snapshot_source ||
+              (historical.uqc_code == null && inputLine.uqc_code == null) ? 'LEGACY_INFERRED' : 'NATIVE';
+          }
+        }
         if (input.replaceInvoiceId) {
           await this.db.invoice_lines.bulkPut(invoiceLines);
         } else {

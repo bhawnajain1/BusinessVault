@@ -106,6 +106,8 @@ export type RefType =
   // invoice creation) is the immutable historical reference.
   | 'signature'
   | 'gstr2b_import'
+  | 'gst_report_run'
+  | 'gst_adjustment'
   | 'logo';
 
 export type SyncJobKind =
@@ -366,7 +368,15 @@ export interface Invoice {
   entity_version: number;
 }
 
-export interface InvoiceLine {
+export interface GstLineSnapshot {
+  uqc_code?: string | null;
+  goods_or_service?: 'GOODS' | 'SERVICE' | null;
+  taxability?: 'TAXABLE' | 'ZERO_RATED' | 'NIL_RATED' | 'EXEMPT' | 'NON_GST' | null;
+  cess_rate_bps?: number | null;
+  snapshot_source?: 'NATIVE' | 'LEGACY_INFERRED' | null;
+}
+
+export interface InvoiceLine extends GstLineSnapshot {
   id: string;
   business_id: string;
   invoice_id: string;
@@ -433,7 +443,7 @@ export interface Purchase {
   entity_version: number;
 }
 
-export interface PurchaseLine {
+export interface PurchaseLine extends GstLineSnapshot {
   id: string;
   business_id: string;
   purchase_id: string;
@@ -772,7 +782,7 @@ export interface SalesReturn {
 // One returned line. Financially active iff parent SalesReturn.status='posted'
 // AND parent.deleted_at is null. Anything else is excluded from
 // available_to_return and invoice_line_return_summary math.
-export interface SalesReturnItem {
+export interface SalesReturnItem extends GstLineSnapshot {
   id: string;
   business_id: string;
   sales_return_id: string;
@@ -949,6 +959,10 @@ export interface GstDocumentMetadata {
   original_document_number: string | null;
   original_document_date: string | null;
   original_return_period: string | null;
+  reporting_period_override?: string | null;
+  original_source_entity_type?: GstSourceEntityType | null;
+  original_source_entity_id?: string | null;
+  previously_reported_values_json?: string | null;
   amendment_kind: string | null;
   tax_on_advance_applicable: 0 | 1 | null;
   classification_source: 'USER_CAPTURED' | 'MIGRATED_INFERENCE' | 'IMPORTED' | null;
@@ -962,8 +976,10 @@ export type GstReportStatus =
   | 'INCOMPLETE'
   | 'RECONCILIATION_PENDING'
   | 'READY_FOR_REVIEW'
+  | 'READY_FOR_CA_REVIEW'
   | 'REVIEWED'
   | 'FINALIZED'
+  | 'FINALIZED_WORKING'
   | 'FILED_EXTERNALLY_UNVERIFIED'
   | 'FILED_CONFIRMED';
 
@@ -975,11 +991,17 @@ export interface GstReportRun {
     | 'GSTR1_PREPARATION'
     | 'GSTR1A_ADJUSTMENT'
     | 'GSTR2B_RECONCILIATION'
-    | 'GSTR3B_DRAFT';
+    | 'GSTR3B_DRAFT'
+    | 'PURCHASE_REGISTER'
+    | 'MONTHLY_GST_PACK';
   financial_year: string;
   tax_period_key: string;
   period_start: string;
   period_end: string;
+  period_type?: 'MONTH' | 'QUARTER' | null;
+  next_period_start?: string | null;
+  report_schema_version?: number | null;
+  reviewed_at?: string | null;
   filing_frequency: 'MONTHLY' | 'QRMP';
   rule_set_version: string;
   status: GstReportStatus;
@@ -1025,7 +1047,11 @@ export interface GstReportRow {
 export interface GstAdjustment {
   id: string;
   business_id: string;
-  report_run_id: string;
+  report_run_id: string | null;
+  tax_period_key?: string | null;
+  report_type?: GstReportRun['report_type'] | null;
+  adjustment_paise?: number | null;
+  note?: string | null;
   table_code: string;
   tax_head: 'IGST' | 'CGST' | 'SGST' | 'CESS';
   original_paise: number | null;
@@ -1142,7 +1168,14 @@ export interface GstItcLedgerEntry {
   source_entity_type: GstSourceEntityType;
   source_entity_id: string;
   tax_period_key: string;
-  category: 'IMPORT_GOODS' | 'IMPORT_SERVICES' | 'RCM' | 'ISD' | 'OTHER_ITC';
+  category: 'IMPORT_GOODS' | 'IMPORT_SERVICES' | 'RCM' | 'ISD' | 'OTHER_ITC' | null;
+  books_tax_paise?: number | null;
+  source_period_key?: string | null;
+  reversal_period_key?: string | null;
+  reclaim_period_key?: string | null;
+  reason?: string | null;
+  reviewed_at?: string | null;
+  reviewed_by_device_id?: string | null;
   tax_head: 'IGST' | 'CGST' | 'SGST' | 'CESS';
   original_eligible_paise: number | null;
   temporarily_reversed_paise: number | null;
@@ -1150,6 +1183,8 @@ export interface GstItcLedgerEntry {
   reclaimable_paise: number | null;
   reclaimed_paise: number | null;
   status:
+    | 'UNREVIEWED'
+    | 'ELIGIBLE_IN_BOOKS'
     | 'PENDING_REVIEW'
     | 'ELIGIBLE'
     | 'INELIGIBLE'

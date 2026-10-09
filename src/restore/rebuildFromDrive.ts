@@ -824,6 +824,7 @@ function tableNames(): string[] {
     // §20 additions.
     'sales_returns',
     'sales_return_items',
+    'legacy_reversal_audit',
     'attachments',
     'audit_log',
     'gst_profiles',
@@ -1405,14 +1406,27 @@ async function loadGstr2bAttachmentBlobs(
   const attachments = new Map<string, Record<string, unknown>>();
   const imports = new Map<string, Record<string, unknown>>();
   for (const value of snapshotTables.attachments ?? []) {
-    if (value.business_id === businessId && value.ref_type === 'gstr2b_import') {
+    if (value.business_id === businessId && ['gstr2b_import', 'gst_report_run'].includes(String(value.ref_type))) {
       attachments.set(String(value.id), value);
     }
   }
   for (const value of snapshotTables.gstr2b_imports ?? []) {
     if (value.business_id === businessId) imports.set(String(value.id), value);
   }
+  const reportRuns = new Map<string, Record<string, unknown>>();
+  for (const value of snapshotTables.gst_report_runs ?? []) {
+    if (value.business_id === businessId) reportRuns.set(String(value.id), value);
+  }
   for (const event of events) {
+    if (event.entity_type === 'gst_report_run') {
+      const payload = event.payload as Record<string, unknown>;
+      const run = (payload.row ?? payload) as Record<string, unknown>;
+      if (run.business_id === businessId && run.id) reportRuns.set(String(run.id), run);
+      const attachment = payload.attachment as Record<string, unknown> | undefined;
+      if (attachment?.business_id === businessId && attachment.ref_type === 'gst_report_run') {
+        attachments.set(String(attachment.id), attachment);
+      }
+    }
     if (event.entity_type !== 'gstr2b_import' || !['create', 'created'].includes(event.operation)) continue;
     const payload = event.payload as Record<string, unknown>;
     const imported = payload.import as Record<string, unknown> | undefined;
@@ -1426,6 +1440,9 @@ async function loadGstr2bAttachmentBlobs(
   const requiredAttachmentIds = new Set<string>();
   for (const imported of imports.values()) {
     if (imported.original_attachment_id) requiredAttachmentIds.add(String(imported.original_attachment_id));
+  }
+  for (const run of reportRuns.values()) {
+    if (run.source_artifact_attachment_id) requiredAttachmentIds.add(String(run.source_artifact_attachment_id));
   }
   if (requiredAttachmentIds.size === 0) return new Map();
 
@@ -1443,6 +1460,9 @@ async function loadGstr2bAttachmentBlobs(
     }
     const blob = await provider.downloadAttachment({ path: logicalPath });
     const actualHash = await sha256Blob(blob);
+    if (attachment.size_bytes !== blob.size) {
+      throw new BackupIntegrityError('GST attachment size mismatch', { attachmentId, logicalPath });
+    }
     const expectedHash = String(attachment.checksum ?? '');
     if (!expectedHash || actualHash !== expectedHash) {
       throw new BackupIntegrityError('GSTR-2B source attachment checksum mismatch', {
@@ -1533,6 +1553,24 @@ function expectedCountsAfterJournal(
 
   for (const event of events) {
     const operation = event.operation as string;
+    const aggregate = event.payload as Record<string, unknown>;
+    if (event.entity_type.startsWith('gst_') && aggregate.row) {
+      const additions: Array<[string, Record<string, unknown>]> = [
+        [JOURNAL_ENTITY_STORE[event.entity_type], aggregate.row as Record<string, unknown>],
+      ];
+      for (const child of Array.isArray(aggregate.rows) ? aggregate.rows : []) additions.push(['gst_report_rows', child]);
+      if (aggregate.attachment) additions.push(['attachments', aggregate.attachment as Record<string, unknown>]);
+      if (aggregate.audit) additions.push(['audit_log', aggregate.audit as Record<string, unknown>]);
+      for (const [store, row] of additions) {
+        const id = String(row.id ?? '');
+        const storeIds = ids.get(store);
+        if (id && storeIds && !storeIds.has(id)) {
+          storeIds.add(id);
+          counts[store] = (counts[store] ?? 0) + 1;
+        }
+      }
+      continue;
+    }
     if (event.entity_type === 'gstr2b_import' && (operation === 'create' || operation === 'created')) {
       const payload = event.payload as Record<string, unknown>;
       const imported = payload.import as Record<string, unknown> | undefined;

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 export const DB_NAME = 'businessvault';
 
@@ -216,4 +216,13 @@ export const STORES_V14: Record<string, string> = {
     'id, business_id, gstr2b_import_id, gstr2b_document_id, [business_id+book_source_type+book_source_id], [business_id+status], updated_at',
   gst_itc_ledger:
     'id, business_id, [business_id+tax_period_key], [business_id+source_entity_type+source_entity_id], [business_id+tax_head], [business_id+status], updated_at',
+};
+
+// Logical snapshot v15 / Dexie v18. Reporting sidecars do not reprice history.
+export const STORES_V15: Record<string, string> = {
+  ...STORES_V14,
+  purchases: `${STORES_V14.purchases}, [business_id+reverses_purchase_id], [business_id+financial_year]`,
+  gst_document_metadata: `${STORES_V14.gst_document_metadata}, [business_id+reporting_period_override]`,
+  gst_adjustments: `${STORES_V14.gst_adjustments}, [business_id+tax_period_key]`,
+  gst_itc_ledger: `${STORES_V14.gst_itc_ledger}, [business_id+source_period_key], [business_id+reversal_period_key], [business_id+reclaim_period_key], [business_id+related_prior_entry_id]`,
 };

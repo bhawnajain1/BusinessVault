@@ -1100,8 +1100,8 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       throw new Error(`attachment path must be attachments/<subdir>/<file> — got '${input.path}'`);
     }
     const subdir = parts[1];
-    if (!['purchases', 'expenses', 'products', 'gstr2b'].includes(subdir)) {
-      throw new Error(`attachment subdir must be purchases|expenses|products|gstr2b — got '${subdir}'`);
+    if (!['purchases', 'expenses', 'products', 'gstr2b', 'gst'].includes(subdir)) {
+      throw new Error(`attachment subdir must be purchases|expenses|products|gstr2b|gst — got '${subdir}'`);
     }
 
     // Ensure intermediate folders exist.

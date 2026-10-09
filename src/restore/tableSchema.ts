@@ -9,6 +9,8 @@
  * reorder or rename columns without a schema migration.
  */
 
+import { GST_V15_NULL_FIELDS } from '../db/migrations/index';
+
 export type ColumnType =
   | 'string'
   | 'string_or_null'
@@ -626,6 +628,15 @@ export const TABLE_SPECS: TableSpec[] = [
     ],
   },
   {
+    file: 'legacy_reversal_audit.csv', store: 'legacy_reversal_audit', pk: 'credit_note_invoice_id',
+    columns: [
+      { name: 'credit_note_invoice_id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'original_invoice_id', type: 'string' }, { name: 'classification', type: 'string' },
+      { name: 'materialized_sales_return_id', type: 'string_or_null' }, { name: 'evidence', type: 'json' },
+      { name: 'examined_at', type: 'string' }, { name: 'migration_version', type: 'number' },
+    ],
+  },
+  {
     file: 'gst_aato.csv',
     store: 'gst_aato',
     pk: 'id',
@@ -809,6 +820,20 @@ export const TABLE_SPECS: TableSpec[] = [
     ],
   },
 ];
+
+// Keep the additive v15 columns nullable: absence is not evidence about history.
+for (const [store, fields] of Object.entries(GST_V15_NULL_FIELDS)) {
+  const spec = TABLE_SPECS.find((table) => table.store === store);
+  if (!spec) continue;
+  for (const name of fields) {
+    spec.columns.push({ name, type: name.endsWith('_paise') ? 'paise' :
+      name === 'cess_rate_bps' || name === 'report_schema_version' ? 'number_or_null' : 'string_or_null' });
+  }
+}
+for (const [store, name] of [['gst_adjustments', 'report_run_id'], ['gst_itc_ledger', 'category']]) {
+  const column = TABLE_SPECS.find((table) => table.store === store)?.columns.find((col) => col.name === name);
+  if (column) column.type = 'string_or_null';
+}
 
 export function findTableSpecByFile(file: string): TableSpec | undefined {
   return TABLE_SPECS.find((s) => s.file === file);

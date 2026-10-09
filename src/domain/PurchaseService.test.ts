@@ -320,6 +320,25 @@ describe('PurchaseService', () => {
     );
     expect(payables.totals.outstanding_paise).toBe(replacement.total_paise);
   });
+  it('keeps inferred provenance when a legacy purchase edit fills UQC from the current unit', async () => {
+    const db = freshDb();
+    const svc = new PurchaseService({ db, now: () => '2026-08-19T10:00:00Z' });
+    const input = { businessId: BIZ, deviceId: DEV, billNumber: 'BILL-LEGACY-SNAPSHOT', billDate: '2026-08-19',
+      supplierId: 'sup-1', supplierStateCode: '29', isInterstate: false, financialYear: '2026-27', accounts: ACCOUNTS,
+      lines: [{ itemId: 'item-1', warehouseId: 'wh-1', qtyMicros: 1_000_000, unitCostPaise: 1000, taxRateBps: 1800 }] };
+    const original = await svc.create(input);
+    const oldLine = (await db.purchase_lines.where('purchase_id').equals(original.id).toArray())[0];
+    await db.purchase_lines.update(oldLine.id, { uqc_code: null, snapshot_source: null });
+    await db.table('items').put({ id: 'item-1', business_id: BIZ, unit_id: 'unit', is_service: 0 });
+    await db.units.put({ id: 'unit', business_id: BIZ, code: 'NOS', name: 'Numbers', decimal_places: 0,
+      created_at: '2026-08-19T00:00:00Z', updated_at: '2026-08-19T00:00:00Z', entity_version: 1 });
+    const replacement = await svc.update(original.id, input);
+    expect((await db.purchase_lines.where('purchase_id').equals(replacement.id).toArray())[0]).toMatchObject({ uqc_code: 'NOS', snapshot_source: 'LEGACY_INFERRED', taxable_paise: oldLine.taxable_paise });
+    await db.units.update('unit', { code: 'KGS' });
+    const next = await svc.update(replacement.id, input);
+    expect((await db.purchase_lines.where('purchase_id').equals(next.id).toArray())[0]).toMatchObject({ uqc_code: 'NOS', snapshot_source: 'LEGACY_INFERRED' });
+    await db.delete();
+  });
 
   it('cancels an unpaid bill and removes it from payables while preserving journals', async () => {
     const db = freshDb();

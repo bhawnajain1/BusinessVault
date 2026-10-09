@@ -18,7 +18,7 @@ const REPORTS: ReadonlyArray<{ to: string; title: string; blurb: string }> = [
   },
   {
     to: '/reports/gst',
-    title: 'GST Summary',
+    title: 'GST Reports',
     blurb: 'GST summary, GSTR-1 preparation, and Purchase Register workpapers.',
   },
   {

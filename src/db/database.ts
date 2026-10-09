@@ -15,7 +15,9 @@ import {
   STORES_V12,
   STORES_V13,
   STORES_V14,
+  STORES_V15,
 } from './schema';
+import { GST_V15_NULL_FIELDS } from './migrations/index';
 import { ulid } from 'ulid';
 import { pokeSyncWorker } from '../sync/pokeChannel';
 import type {
@@ -635,6 +637,13 @@ export class BusinessVaultDB extends Dexie {
     // numbering independent from snapshot schema versions and add GST stores
     // only at the next Dexie version.
     this.version(17).stores(STORES_V14);
+    this.version(18).stores(STORES_V15).upgrade(async (tx) => {
+      for (const [table, fields] of Object.entries(GST_V15_NULL_FIELDS)) {
+        await tx.table(table).toCollection().modify((row: Record<string, unknown>) => {
+          for (const field of fields) if (row[field] === undefined) row[field] = null;
+        });
+      }
+    });
 
     // After any sync_event insert commits, kick the sync worker so the write
     // lands in the local backup folder within a few hundred ms instead of

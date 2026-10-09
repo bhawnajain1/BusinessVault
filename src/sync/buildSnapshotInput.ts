@@ -119,6 +119,9 @@ export async function buildSnapshotInput(
           after: row.after == null ? '' : JSON.stringify(row.after),
         };
       }
+      if (spec.store === 'legacy_reversal_audit') {
+        return { ...r, evidence: r.evidence == null ? '' : JSON.stringify(r.evidence) };
+      }
       if (spec.store === 'attachments') {
         // Never embed the blob bytes in CSV — they ship out-of-band via
         // the `attachment_upload` provider job and land on the row as

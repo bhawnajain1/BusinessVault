@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ulid } from 'ulid';
 import { db } from '../../db';
-import type { Business, Customer, Item } from '../../db/types';
+import type { Business, Customer, Item, GstLineSnapshot } from '../../db/types';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { InvoiceService, type CreateInvoiceLineInput } from '../../domain/InvoiceService';
 import {
@@ -20,7 +20,7 @@ import { appendSyncEvent } from '../../domain/syncEventLog';
 import { resolveDefaultInvoiceTerms } from '../../domain/defaults';
 import { resolveCustomerItemPrice } from '../../domain/customerItemPricing';
 
-interface LineDraft {
+interface LineDraft extends GstLineSnapshot {
   key: string;
   item_id: string;
   description: string;
@@ -197,6 +197,10 @@ export default function InvoiceForm() {
           item_id: l.item_id,
           description: l.description,
           hsn: l.hsn,
+          uqc_code: l.uqc_code,
+          goods_or_service: l.goods_or_service,
+          taxability: l.taxability,
+          cess_rate_bps: l.cess_rate_bps,
           qtyStr: (l.qty_micros / 1_000_000).toString(),
           unitPriceStr: (l.unit_price_paise / 100).toString(),
           taxRatePctStr: (l.tax_rate_bps / 100).toString(),
@@ -286,9 +290,10 @@ export default function InvoiceForm() {
       const taxable = bankersRound((unitPaise * qtyMicros) / 1_000_000);
       const rateBps = Math.round(Number(l.taxRatePctStr || '0') * 100);
       const split = splitTax(taxable, rateBps, interstate);
+      const cess = bankersRound((taxable * (l.cess_rate_bps ?? 0)) / 10_000);
       const lineTotal =
-        taxable + split.cgst_paise + split.sgst_paise + split.igst_paise;
-      return { l, qtyMicros, unitPaise, taxable, rateBps, split, lineTotal };
+        taxable + split.cgst_paise + split.sgst_paise + split.igst_paise + cess;
+      return { l, qtyMicros, unitPaise, taxable, rateBps, split, cess, lineTotal };
     });
   }, [lines, interstate]);
 
@@ -299,9 +304,10 @@ export default function InvoiceForm() {
         cgst: acc.cgst + c.split.cgst_paise,
         sgst: acc.sgst + c.split.sgst_paise,
         igst: acc.igst + c.split.igst_paise,
+        cess: acc.cess + c.cess,
         preRoundTotal: acc.preRoundTotal + c.lineTotal,
       }),
-      { taxable: 0, cgst: 0, sgst: 0, igst: 0, preRoundTotal: 0 },
+      { taxable: 0, cgst: 0, sgst: 0, igst: 0, cess: 0, preRoundTotal: 0 },
     );
     let roundOff = 0;
     if (roundOffMode === 'auto') {
@@ -360,6 +366,10 @@ export default function InvoiceForm() {
               item_id: itemId,
               description: it.description,
               hsn: it.hsn,
+              uqc_code: undefined,
+              goods_or_service: it.is_service ? 'SERVICE' : 'GOODS',
+              taxability: null,
+              cess_rate_bps: it.cess_rate_bps,
               unitPriceStr: (rememberedPrice / 100).toString(),
               taxRatePctStr: (it.tax_rate_bps / 100).toString(),
               warehouse_id: r.warehouse_id || defaultWarehouseId,
@@ -447,6 +457,10 @@ export default function InvoiceForm() {
         item_id: c.l.item_id,
         description: c.l.description,
         hsn: c.l.hsn,
+        uqc_code: c.l.uqc_code,
+        goods_or_service: c.l.goods_or_service,
+        taxability: c.l.taxability,
+        cess_rate_bps: c.l.cess_rate_bps,
         warehouse_id: c.l.warehouse_id || defaultWarehouseId,
         qty_micros: c.qtyMicros,
         unit_price_paise: c.unitPaise,
@@ -455,6 +469,7 @@ export default function InvoiceForm() {
         cgst_paise: c.split.cgst_paise,
         sgst_paise: c.split.sgst_paise,
         igst_paise: c.split.igst_paise,
+        cess_paise: c.cess,
         line_total_paise: c.lineTotal,
       }));
 
@@ -822,6 +837,19 @@ export default function InvoiceForm() {
                       onChange={(e) => setLineField(l.key, 'hsn', e.target.value)}
                       className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring"
                     />
+                    <label className="block mt-1 text-[12px]">GST taxability
+                      <select
+                        value={l.taxability ?? ''}
+                        onChange={(e) => setLines((rows) => rows.map((row) => row.key === l.key ? { ...row, taxability: e.target.value as GstLineSnapshot['taxability'] || null } : row))}
+                        className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg"
+                      >
+                        <option value="">Unspecified (zero rate needs review)</option>
+                        {['TAXABLE', 'ZERO_RATED', 'NIL_RATED', 'EXEMPT', 'NON_GST'].map((value) => <option key={value}>{value}</option>)}
+                      </select>
+                    </label>
+                    <label className="block mt-1 text-[12px]">Cess %
+                      <input type="number" min="0" step="0.01" value={(l.cess_rate_bps ?? 0) / 100} onChange={e => setLineField(l.key, 'cess_rate_bps', Math.max(0, Math.round(Number(e.target.value) * 100)))} className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg" />
+                    </label>
                   </td>
                   <td className="px-2 py-2">
                     <select
@@ -871,7 +899,7 @@ export default function InvoiceForm() {
                   <td className="px-2 py-2 text-right">
                     ₹
                     {(
-                      (c.split.cgst_paise + c.split.sgst_paise + c.split.igst_paise) /
+                      (c.split.cgst_paise + c.split.sgst_paise + c.split.igst_paise + c.cess) /
                       100
                     ).toFixed(2)}
                   </td>
@@ -932,6 +960,7 @@ export default function InvoiceForm() {
             {totals.cgst > 0 && <Row label="CGST" paise={totals.cgst} />}
             {totals.sgst > 0 && <Row label="SGST" paise={totals.sgst} />}
             {totals.igst > 0 && <Row label="IGST" paise={totals.igst} />}
+            {totals.cess > 0 && <Row label="Cess" paise={totals.cess} />}
             {roundOffMode !== 'none' && (
               <Row label="Subtotal" paise={totals.preRoundTotal} />
             )}

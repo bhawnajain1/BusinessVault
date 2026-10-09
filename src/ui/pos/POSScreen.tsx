@@ -23,7 +23,7 @@ import type {
 import { InvoiceService, type CreateInvoiceLineInput } from '../../domain/InvoiceService';
 import { PaymentService } from '../../domain/PaymentService';
 import { allocateInvoiceNumber } from '../../domain/invoiceNumbering';
-import { splitTax, isInterstate, roundOffToNearestRupee } from '../../domain/gst';
+import { bankersRound, splitTax, isInterstate, roundOffToNearestRupee } from '../../domain/gst';
 import { fromMoney } from '../../domain/money';
 import type { Money } from '../../domain/money';
 import InvoicePrint, { type PrintablePayment } from './InvoicePrint';
@@ -37,6 +37,7 @@ interface CartLine {
   qty: number;
   unitPricePaise: number;
   discountPaise: number;
+  cessRateBps: number;
 }
 
 interface PaymentSplit {
@@ -52,6 +53,7 @@ interface ComputedLine {
   cgst: number;
   sgst: number;
   igst: number;
+  cess: number;
   lineTotal: number;
   rateBps: number;
 }
@@ -62,6 +64,7 @@ interface Totals {
   cgst: number;
   sgst: number;
   igst: number;
+  cess: number;
   subtotalBeforeRound: number;
   roundOff: number;
   total: number;
@@ -225,6 +228,7 @@ export default function POSScreen(): JSX.Element {
             qty: l.qty_micros / 1_000_000,
             unitPricePaise: l.unit_price_paise,
             discountPaise: l.discount_paise,
+            cessRateBps: l.cess_rate_bps ?? 0,
           } satisfies CartLine;
         })
         .filter((x): x is CartLine => x !== null);
@@ -265,6 +269,7 @@ export default function POSScreen(): JSX.Element {
           qty,
           unitPricePaise: item.sale_price_paise,
           discountPaise: 0,
+          cessRateBps: item.cess_rate_bps ?? 0,
         },
       ];
     });
@@ -362,7 +367,8 @@ export default function POSScreen(): JSX.Element {
       cgst_paise: c.cgst,
       sgst_paise: c.sgst,
       igst_paise: c.igst,
-      cess_paise: 0,
+      cess_rate_bps: c.cart.cessRateBps,
+      cess_paise: c.cess,
       line_total_paise: c.lineTotal,
       track_inventory: c.cart.item.track_inventory === 1,
     }));
@@ -729,6 +735,9 @@ export default function POSScreen(): JSX.Element {
                           {c.cart.item.hsn ? ` · HSN ${c.cart.item.hsn}` : ''}
                           {` · ${rateBpsLabel(c.rateBps)} GST`}
                         </div>
+                        <label className="block text-xs text-slate-600 mt-1">Cess %
+                          <input type="number" min="0" step="0.01" value={c.cart.cessRateBps / 100} onChange={e => updateLine(c.cart.key, { cessRateBps: Math.max(0, Math.round(Number(e.target.value) * 100)) })} className="w-20 border border-slate-300 rounded px-1 py-1" />
+                        </label>
                       </td>
                       <td className="text-right px-3 py-2">
                         <input
@@ -791,6 +800,8 @@ export default function POSScreen(): JSX.Element {
               <div className="text-right font-mono">
                 ₹{fromMoney(totals.gst as Money)}
               </div>
+              <div className="text-slate-600">Cess</div>
+              <div className="text-right font-mono">₹{fromMoney(totals.cess as Money)}</div>
               <div className="text-slate-600">Round off</div>
               <div className="text-right font-mono">
                 ₹{fromMoney(totals.roundOff as Money)}
@@ -958,7 +969,7 @@ async function searchItems(businessId: string, raw: string): Promise<Item[]> {
   return scanned;
 }
 
-function computeTotals(
+export function computeTotals(
   cart: CartLine[],
   business: Business | null,
   customer: Customer | null,
@@ -972,32 +983,36 @@ function computeTotals(
   let cgst = 0;
   let sgst = 0;
   let igst = 0;
+  let cess = 0;
   const computed: ComputedLine[] = [];
 
   for (const c of cart) {
     const qtyMicros = Math.round(c.qty * 1_000_000);
-    const grossPaise = Math.round((c.unitPricePaise * qtyMicros) / 1_000_000);
+    const grossPaise = bankersRound((c.unitPricePaise * qtyMicros) / 1_000_000);
     const taxable = Math.max(0, grossPaise - c.discountPaise);
     const rateBps = c.item.tax_rate_bps ?? 0;
     const split = splitTax(taxable, rateBps, interstate);
-    const lineTotal = taxable + split.cgst_paise + split.sgst_paise + split.igst_paise;
+    const lineCess = bankersRound(taxable * c.cessRateBps / 10_000);
+    const lineTotal = taxable + split.cgst_paise + split.sgst_paise + split.igst_paise + lineCess;
     net += taxable;
     cgst += split.cgst_paise;
     sgst += split.sgst_paise;
     igst += split.igst_paise;
+    cess += lineCess;
     computed.push({
       cart: c,
       taxable,
       cgst: split.cgst_paise,
       sgst: split.sgst_paise,
       igst: split.igst_paise,
+      cess: lineCess,
       lineTotal,
       rateBps,
     });
   }
 
   const gst = cgst + sgst + igst;
-  const subtotal = net + gst;
+  const subtotal = net + gst + cess;
   const { final_paise: total, round_off_paise: roundOff } = roundOffToNearestRupee(subtotal);
 
   return {
@@ -1006,6 +1021,7 @@ function computeTotals(
     cgst,
     sgst,
     igst,
+    cess,
     subtotalBeforeRound: subtotal,
     roundOff,
     total,

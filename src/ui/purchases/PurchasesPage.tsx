@@ -9,8 +9,10 @@ import type {
   PurchaseStatus,
   Supplier,
   Warehouse,
+  GstLineSnapshot,
 } from '../../db/types';
 import { createPurchaseService } from '../../domain/PurchaseService';
+import { bankersRound } from '../../domain/gst';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Drawer from '../components/Drawer';
@@ -22,7 +24,7 @@ import { log } from '../../lib/log';
 
 const STATUSES: PurchaseStatus[] = ['draft', 'received', 'partial', 'paid', 'cancelled'];
 
-interface EditorLine {
+interface EditorLine extends GstLineSnapshot {
   itemId: string;
   description: string;
   hsn: string;
@@ -288,6 +290,10 @@ export default function PurchasesPage() {
         itemId: l.item_id,
         description: l.description ?? '',
         hsn: l.hsn ?? '',
+        uqc_code: l.uqc_code,
+        goods_or_service: l.goods_or_service,
+        taxability: l.taxability,
+        cess_rate_bps: l.cess_rate_bps,
         qty: String(l.qty_micros / 1_000_000),
         unitCostRupees: (l.unit_cost_paise / 100).toFixed(2),
         taxRatePct: (l.tax_rate_bps / 100).toString(),
@@ -343,6 +349,10 @@ export default function PurchasesPage() {
       itemId: it.id,
       description: it.name,
       hsn: it.hsn ?? '',
+      uqc_code: undefined,
+      goods_or_service: it.is_service ? 'SERVICE' : 'GOODS',
+      taxability: null,
+      cess_rate_bps: it.cess_rate_bps ?? 0,
       unitCostRupees: (it.purchase_price_paise / 100).toFixed(2),
       taxRatePct: (it.tax_rate_bps / 100).toString(),
     });
@@ -357,14 +367,18 @@ export default function PurchasesPage() {
   }
 
   const subtotalPaise = lines.reduce((acc, l) => {
-    return acc + Math.round(Number(l.qty) * Number(l.unitCostRupees) * 100);
+    return acc + bankersRound(unitsToMicros(l.qty) * rupeesToPaise(l.unitCostRupees) / 1_000_000);
   }, 0);
   const taxPaise = lines.reduce((acc, l) => {
-    const base = Math.round(Number(l.qty) * Number(l.unitCostRupees) * 100);
+    const base = bankersRound(unitsToMicros(l.qty) * rupeesToPaise(l.unitCostRupees) / 1_000_000);
     const bps = pctToBps(l.taxRatePct);
-    return acc + Math.round((base * bps) / 10_000);
+    return acc + bankersRound((base * bps) / 10_000);
   }, 0);
-  const totalPaise = subtotalPaise + taxPaise;
+  const cessPaise = lines.reduce((sum, l) => {
+    const base = bankersRound(unitsToMicros(l.qty) * rupeesToPaise(l.unitCostRupees) / 1_000_000);
+    return sum + bankersRound(base * (l.cess_rate_bps ?? 0) / 10_000);
+  }, 0);
+  const totalPaise = subtotalPaise + taxPaise + cessPaise;
 
   async function save() {
     if (!businessId || !deviceId || !business) return;
@@ -411,6 +425,10 @@ export default function PurchasesPage() {
             itemId: l.itemId,
             description: l.description,
             hsn: l.hsn,
+            uqcCode: l.uqc_code,
+            goodsOrService: l.goods_or_service,
+            taxability: l.taxability,
+            cessRateBps: l.cess_rate_bps ?? undefined,
             warehouseId: wh.id,
             qtyMicros: unitsToMicros(l.qty),
             unitCostPaise: rupeesToPaise(l.unitCostRupees),
@@ -667,6 +685,17 @@ export default function PurchasesPage() {
                 <div className="col-span-1 text-right text-fg">
                   <Money paise={Math.round(Number(l.qty) * Number(l.unitCostRupees) * 100)} />
                 </div>
+                <label className="col-span-12 sm:col-span-4">
+                  <span className="block text-[12px] text-fg-muted mb-0.5">GST taxability (explicit classification)</span>
+                  <select value={l.taxability ?? ''} onChange={(e) => updateLine(idx, { taxability: e.target.value as GstLineSnapshot['taxability'] || null })} className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg">
+                    <option value="">Unspecified (zero rate needs review)</option>
+                    {['TAXABLE', 'ZERO_RATED', 'NIL_RATED', 'EXEMPT', 'NON_GST'].map((value) => <option key={value}>{value}</option>)}
+                  </select>
+                </label>
+                <label className="col-span-12 sm:col-span-2">
+                  <span className="block text-[12px] text-fg-muted mb-0.5">Cess %</span>
+                  <input type="number" min="0" step="0.01" value={(l.cess_rate_bps ?? 0) / 100} onChange={e => updateLine(idx, { cess_rate_bps: Math.max(0, Math.round(Number(e.target.value) * 100)) })} className="w-full h-7 rounded-md border border-border bg-surface px-2 text-[12px] text-fg" />
+                </label>
                 <div className="col-span-1 text-right">
                   <button
                     type="button"
@@ -686,6 +715,7 @@ export default function PurchasesPage() {
         <div className="mt-4 flex flex-col items-end text-sm gap-1 text-fg">
           <div>Subtotal: <Money paise={subtotalPaise} /></div>
           <div>GST: <Money paise={taxPaise} /></div>
+          <div>Cess: <Money paise={cessPaise} /></div>
           <div className="font-semibold">Total: <Money paise={totalPaise} /></div>
         </div>
 

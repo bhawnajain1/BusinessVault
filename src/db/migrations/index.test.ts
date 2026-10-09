@@ -178,6 +178,7 @@ describe('GST snapshot migration', () => {
     const result = migrateSnapshot(
       { invoices: [{ id: 'invoice-1' }], gstr2b_documents: [] },
       13,
+      14,
     );
 
     expect(result.toVersion).toBe(14);

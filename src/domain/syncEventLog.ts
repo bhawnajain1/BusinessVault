@@ -18,6 +18,7 @@ export interface AppendEventInput {
   payload: unknown;
   timestamp?: string;
   idempotencyKey?: string;
+  entityVersion?: number;
 }
 
 /**
@@ -43,7 +44,7 @@ export async function appendSyncEvent(
   }
 
   const timestamp = input.timestamp ?? new Date().toISOString();
-  const entityVersion = await nextEntityVersion(
+  const entityVersion = input.entityVersion ?? await nextEntityVersion(
     db,
     input.businessId,
     input.entityType,

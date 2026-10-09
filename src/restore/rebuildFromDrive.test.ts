@@ -1084,6 +1084,47 @@ describe('rebuildFromDrive', () => {
     expect(report.unhandledEvents).toBe(0);
   });
 
+  it('restores saved GST working JSON, aggregate child/audit counts and rejects corrupt bytes before wipe', async () => {
+    const runId = 'monthly-gst-run';
+    const attachmentId = 'monthly-gst-attachment';
+    const logicalPath = `attachments/gst/report-runs/${runId}/working.json`;
+    const json = '{"schema":"businessvault.gst-working.v1","sourceDataHash":"unchanged-source-hash"}';
+    const bytes = new TextEncoder().encode(json);
+    const checksum = await sha256Hex(bytes);
+    const run = { id: runId, business_id: BID, gstin_snapshot: business.gstin, report_type: 'MONTHLY_GST_PACK',
+      financial_year: '2026-27', tax_period_key: '2026-08', period_start: '2026-08-01', period_end: '2026-08-31',
+      next_period_start: '2026-09-01', period_type: 'MONTH', report_schema_version: 1, filing_frequency: 'MONTHLY',
+      rule_set_version: 'synthetic-v1', status: 'FINALIZED_WORKING', generated_at: NOW, generated_by_device_id: 'device_test',
+      source_data_hash: 'unchanged-source-hash', source_artifact_attachment_id: attachmentId, totals_json: '{"cgst_paise":90}',
+      imported_file_hash: null, finalized_at: NOW, reviewed_at: NOW, filed_at: null, arn: null,
+      filing_acknowledgment_attachment_id: null, supersedes_report_run_id: null, ...commonAudit() };
+    const attachment = { id: attachmentId, business_id: BID, ref_type: 'gst_report_run', ref_id: runId, filename: 'working.json',
+      mime_type: 'application/json', size_bytes: bytes.length, checksum, blob: null, drive_file_id: null,
+      logical_path: logicalPath, created_at: NOW, updated_at: NOW };
+    const row = { id: 'monthly-gst-child', business_id: BID, report_run_id: runId, section_code: 'MONTHLY_GST_PACK', row_key: '2026-08',
+      source_entity_type: null, source_entity_id: null, source_entity_version: null, classification_reason: null,
+      taxable_paise: null, cgst_paise: null, sgst_paise: null, igst_paise: null, cess_paise: null,
+      invoice_value_paise: null, quantity_micros: null, payload_json: json, ...commonAudit() };
+    const auditRow = { id: 'monthly-gst-audit', business_id: BID, device_id: 'device_test', actor: 'device_test',
+      action: 'gst_report_run.saved', entity_type: 'gst_report_run', entity_id: runId, before: null, after: run, at: NOW };
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.uploadAttachment({ path: logicalPath, blob: new Blob([json], { type: 'application/json' }), mimeType: 'application/json' });
+    await producer.writeJournalEvents([{ event_id: 'monthly-gst-event', business_id: BID, device_id: 'device_test',
+      entity_type: 'gst_report_run', entity_id: runId, operation: 'create', entity_version: 1, timestamp: '2026-08-20T10:00:00Z',
+      payload: { row: run, rows: [row], audit: auditRow, attachment }, payload_hash: 'synthetic-hash', previous_hash: null, sync_status: 'LOCAL_ONLY' }]);
+    const report = await rebuildFromDrive(new LocalFolderStorageProvider(), { db, providerConfig: { kind: 'local-folder', rootPath: root } });
+    expect(report.countReconciliation.exact).toBe(true);
+    expect((await db.gst_report_runs.get(runId))?.source_data_hash).toBe('unchanged-source-hash');
+    expect((await db.gst_report_rows.get(row.id))?.payload_json).toBe(json);
+    expect(await db.audit_log.get(auditRow.id)).toMatchObject({ entity_id: runId });
+    expect(await new Response((await db.attachments.get(attachmentId))!.blob!).text()).toBe(json);
+    await fs.writeFile(path.join(root, 'BusinessVault - Acme Traders', logicalPath), 'corrupt');
+    await expect(rebuildFromDrive(new LocalFolderStorageProvider(), { db, providerConfig: { kind: 'local-folder', rootPath: root }, confirmDataLoss: true })).rejects.toBeInstanceOf(BackupIntegrityError);
+    expect(await new Response((await db.attachments.get(attachmentId))!.blob!).text()).toBe(json);
+  });
+
   it('restores and verifies original GSTR-2B attachment bytes from a snapshot', async () => {
     const sourceBytes = new TextEncoder().encode('{"redacted":"portal source"}');
     const sourceHash = await sha256Hex(sourceBytes);

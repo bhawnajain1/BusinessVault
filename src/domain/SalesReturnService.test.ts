@@ -211,6 +211,22 @@ beforeEach(async () => {
 });
 
 describe('SalesReturnService.createSalesReturn', () => {
+  it('split returns reverse the invoice total once and preserve historical GST snapshots', async () => {
+    const inv = await makeInvoice('INV-SPLIT-000001');
+    const line = (await db.invoice_lines.where('invoice_id').equals(inv.id).toArray())[0];
+    await db.invoice_lines.update(line.id, { uqc_code: 'NOS', goods_or_service: 'GOODS', taxability: 'TAXABLE', cess_rate_bps: 0, snapshot_source: 'NATIVE' });
+    const first = await retSvc.createSalesReturn({ business_id: businessId, device_id: deviceId,
+      original_invoice_id: inv.id, return_date: '2026-08-20', reason: 'First portion',
+      lines: [{ original_invoice_line_id: line.id, qty_micros: 3_000_000 }] });
+    await db.items.update(itemId, { tax_rate_bps: 2800, name: 'Changed current master' });
+    const final = await retSvc.createSalesReturn({ business_id: businessId, device_id: deviceId,
+      original_invoice_id: inv.id, return_date: '2026-09-01', reason: 'Remaining portion',
+      lines: [{ original_invoice_line_id: line.id, qty_micros: 7_000_000 }] });
+    expect(first.total_paise + final.total_paise).toBe(inv.total_paise);
+    expect(final.total_paise).toBe(82_600);
+    const returned = (await db.sales_return_items.where('sales_return_id').equals(final.id).toArray())[0];
+    expect(returned).toMatchObject({ uqc_code: 'NOS', tax_rate_bps: 1800, goods_or_service: 'GOODS', taxability: 'TAXABLE', snapshot_source: 'NATIVE' });
+  });
   it('T1: creates a partial per-line return, preserves original invoice totals, and reduces balance', async () => {
     const inv = await makeInvoice('INV-000001');
     const originalLines = await db.invoice_lines

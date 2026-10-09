@@ -53,6 +53,8 @@ import type {
   AuditLogEntry,
 } from '../db/types';
 import { log } from '../lib/log';
+import { canonicalJson } from '../journal/event';
+import { normalizeGstSourceRow } from '../db/repos/gstReporting';
 
 export interface HandlerContext {
   db: BusinessVaultDB;
@@ -80,7 +82,16 @@ const put =
     },
   ) =>
   async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
-    const row = asRecord(evt.payload, evt.event_id) as unknown as T;
+    const payload = asRecord(evt.payload, evt.event_id);
+    if (GST_AGGREGATE_STORES[evt.entity_type] && !payload.row) {
+      await replayGstFlat(evt, ctx, false);
+      return;
+    }
+    if (payload.row && evt.entity_type.startsWith('gst_')) {
+      await replayGstAggregate(evt, ctx);
+      return;
+    }
+    const row = payload as unknown as T;
     const businessId = (row as { business_id?: string }).business_id;
     if (businessId && businessId !== ctx.businessId) {
       throw new Error(`event ${evt.event_id}: row belongs to another business`);
@@ -105,6 +116,14 @@ const merge =
   ) =>
   async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
     const patch = asRecord(evt.payload, evt.event_id);
+    if (GST_AGGREGATE_STORES[evt.entity_type] && !patch.row) {
+      await replayGstFlat(evt, ctx, true);
+      return;
+    }
+    if (patch.row && evt.entity_type.startsWith('gst_')) {
+      await replayGstAggregate(evt, ctx);
+      return;
+    }
     const id = String(patch.id ?? evt.entity_id ?? '');
     if (!id) throw new Error(`event ${evt.event_id}: ${entityType} update has no id`);
     const existing = await table(ctx.db).get(id);
@@ -156,6 +175,116 @@ const merge =
       },
     ));
   };
+
+const GST_AGGREGATE_STORES: Record<string, string> = {
+  gst_profile: 'gst_profiles', gst_aato: 'gst_aato',
+  gst_document_metadata: 'gst_document_metadata', gst_itc_ledger: 'gst_itc_ledger',
+  gst_adjustment: 'gst_adjustments', gst_report_run: 'gst_report_runs',
+  gst_report_row: 'gst_report_rows',
+};
+
+const immutableGstRun = (row: { status?: unknown } | undefined) =>
+  !!row && ['REVIEWED', 'FINALIZED_WORKING', 'FINALIZED', 'FILED_CONFIRMED'].includes(String(row.status));
+
+async function guardGstRow(ctx: HandlerContext, store: string, row: Record<string, unknown>, existing: Record<string, unknown> | undefined) {
+  if (row.business_id !== ctx.businessId || (existing && existing.business_id !== ctx.businessId)) throw new Error('GST row ownership conflict');
+  if (existing) {
+    for (const field of store === 'gst_report_rows' || store === 'gst_adjustments' ? ['report_run_id'] :
+      store === 'gst_document_metadata' || store === 'gst_itc_ledger' ? ['source_entity_type', 'source_entity_id'] : []) {
+      if (existing[field] !== row[field]) throw new Error('GST row parent identity conflict');
+    }
+  }
+  const same = existing && canonicalJson(normalizeGstSourceRow(store, existing)) === canonicalJson(normalizeGstSourceRow(store, row));
+  if (existing && Number(existing.entity_version) > Number(row.entity_version)) return false;
+  if (existing && Number(existing.entity_version) === Number(row.entity_version)) {
+    if (!same) throw new Error('Changed equal-version GST row is immutable');
+    return false;
+  }
+  if (existing && (immutableGstRun(existing) || ['gst_adjustments', 'gst_itc_ledger'].includes(store))) throw new Error('Saved GST row is immutable');
+  if (row.report_run_id) {
+    const parent = await ctx.db.gst_report_runs.get(String(row.report_run_id));
+    if (parent && parent.business_id !== ctx.businessId) throw new Error('GST report parent ownership conflict');
+    if (existing && immutableGstRun(parent)) throw new Error('Saved GST working child is immutable');
+  }
+  return true;
+}
+
+async function replayGstFlat(evt: SyncEvent, ctx: HandlerContext, merge: boolean) {
+  const payload = asRecord(evt.payload, evt.event_id);
+  const store = GST_AGGREGATE_STORES[evt.entity_type];
+  const id = String(payload.id ?? evt.entity_id);
+  if (id !== evt.entity_id) throw new Error('Invalid GST event identity');
+  const existing = await ctx.db.table(store).get(id);
+  const row = { ...(merge ? existing : {}), ...payload, id, entity_version: evt.entity_version ?? payload.entity_version };
+  if (await guardGstRow(ctx, store, row, existing)) await ctx.db.table(store).put(row);
+}
+
+async function replayGstAggregate(evt: SyncEvent, ctx: HandlerContext): Promise<void> {
+  const payload = asRecord(evt.payload, evt.event_id);
+  const row = asRecord(payload.row, evt.event_id);
+  const store = GST_AGGREGATE_STORES[evt.entity_type];
+  if (!store || row.business_id !== ctx.businessId || row.id !== evt.entity_id ||
+      row.entity_version !== evt.entity_version) throw new Error('Invalid GST aggregate identity or version');
+  const children = (payload.rows ?? []) as unknown[];
+  if (!Array.isArray(children)) throw new Error('Invalid GST report rows');
+  const rows = children.map((child) => {
+    const value = asRecord(child, evt.event_id);
+    if (evt.entity_type !== 'gst_report_run' || value.business_id !== ctx.businessId ||
+        value.report_run_id !== row.id || typeof value.id !== 'string') throw new Error('Invalid GST report child');
+    return value;
+  });
+  const audit = payload.audit ? asRecord(payload.audit, evt.event_id) : null;
+  if (audit && (audit.business_id !== ctx.businessId || audit.entity_id !== row.id ||
+      audit.entity_type !== evt.entity_type || typeof audit.id !== 'string')) throw new Error('Invalid GST audit');
+  const attachment = payload.attachment ? asRecord(payload.attachment, evt.event_id) : null;
+  if (attachment && (evt.entity_type !== 'gst_report_run' || attachment.business_id !== ctx.businessId ||
+      attachment.ref_id !== row.id || attachment.ref_type !== 'gst_report_run' ||
+      attachment.id !== row.source_artifact_attachment_id)) throw new Error('Invalid GST attachment');
+  const table = ctx.db.table(store);
+  const existing = await table.get(String(row.id));
+  if (existing?.business_id && existing.business_id !== ctx.businessId) throw new Error('GST row ownership conflict');
+  if (existing && existing.entity_version > evt.entity_version) return;
+  const existingRows = await ctx.db.gst_report_rows.bulkGet(rows.map((value) => String(value.id)));
+  const existingAudit = audit ? await ctx.db.audit_log.get(String(audit.id)) : undefined;
+  const localAttachment = attachment ? await ctx.db.attachments.get(String(attachment.id)) : undefined;
+  for (const [index, child] of existingRows.entries()) {
+    if (child && (child.business_id !== ctx.businessId || child.report_run_id !== rows[index].report_run_id)) {
+      throw new Error('GST child ownership or parent conflict');
+    }
+  }
+  if (existingAudit && (existingAudit.business_id !== ctx.businessId || existingAudit.entity_id !== row.id ||
+      existingAudit.entity_type !== evt.entity_type)) throw new Error('GST audit ownership or parent conflict');
+  if (localAttachment && (localAttachment.business_id !== ctx.businessId || localAttachment.ref_id !== row.id ||
+      localAttachment.ref_type !== 'gst_report_run' || localAttachment.checksum !== attachment!.checksum)) {
+    throw new Error('GST attachment ownership, parent or checksum conflict');
+  }
+  const same = (table: string, left: Record<string, unknown>, right: Record<string, unknown>) =>
+    canonicalJson(normalizeGstSourceRow(table, left)) === canonicalJson(normalizeGstSourceRow(table, right));
+  if (existing && existing.entity_version === evt.entity_version) {
+    const storedRows = evt.entity_type === 'gst_report_run'
+      ? await ctx.db.gst_report_rows.where('report_run_id').equals(String(row.id)).toArray() : [];
+    const attachmentMetadata = (value: Record<string, unknown>) => {
+      const { blob: _blob, drive_file_id: _drive, updated_at: _updated, ...rest } = value;
+      return rest;
+    };
+    if (!same(store, existing, row) || storedRows.length !== rows.length ||
+        existingRows.some((value, index) => !value || !same('gst_report_rows', value as unknown as Record<string, unknown>, rows[index])) ||
+        (audit && (!existingAudit || !same('audit_log', existingAudit as unknown as Record<string, unknown>, audit))) ||
+        (attachment && (!localAttachment || !same('attachments', attachmentMetadata(localAttachment as unknown as Record<string, unknown>), attachmentMetadata(attachment))))) {
+      throw new Error('Changed equal-version GST aggregate is immutable');
+    }
+    return;
+  }
+  if (existing && ['REVIEWED', 'FINALIZED_WORKING', 'FINALIZED'].includes(existing.status)) throw new Error('Saved GST working is immutable');
+  await guardGstRow(ctx, store, row, existing);
+  for (const [index, child] of rows.entries()) await guardGstRow(ctx, 'gst_report_rows', child, existingRows[index] as unknown as Record<string, unknown> | undefined);
+  await table.put(row);
+  if (rows.length) await ctx.db.gst_report_rows.bulkPut(rows as unknown as GstReportRow[]);
+  if (audit) await ctx.db.audit_log.put(audit as unknown as AuditLogEntry);
+  if (attachment) {
+    await ctx.db.attachments.put({ ...attachment, blob: localAttachment?.blob ?? null } as unknown as Attachment);
+  }
+}
 
 const replayGstr2bImport = async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
   const payload = asRecord(evt.payload, evt.event_id);

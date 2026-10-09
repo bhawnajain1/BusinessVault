@@ -17,6 +17,8 @@ import type {
   Supplier,
 } from '../db/types';
 import { fromMoney, type Money } from '../domain/money';
+import { GstMonthlyReportService } from '../domain/gstReporting/GstMonthlyReportService';
+import { GST_WORKING_DISCLAIMER } from '../domain/gstReporting/exports';
 import {
   balanceSheet,
   profitAndLoss,
@@ -129,7 +131,7 @@ export async function buildBusinessExcelExport(
   const bs = await balanceSheet(businessId, asOf, { db, financialYearStart: fromDate });
   buildBalanceSheetSheet(wb, bs);
 
-  buildGstSummarySheet(wb, invoices, invoiceLines, items);
+  await buildGstSummarySheet(wb, businessId, db, business, fromDate, toDate);
 
   const trial = await trialBalance(businessId, asOf, { db });
   buildTrialBalanceSheet(wb, trial);
@@ -453,73 +455,46 @@ function buildBalanceSheetSheet(
   addSheet(wb, 'Balance Sheet', ['Section', 'Account', 'Amount'], rows);
 }
 
-function buildGstSummarySheet(
+async function buildGstSummarySheet(
   wb: ExcelJS.Workbook,
-  invoices: Invoice[],
-  lines: InvoiceLine[],
-  items: Item[],
-): void {
-  type Slab = { rate: number; taxable: number; cgst: number; sgst: number; igst: number; cess: number; count: number };
-  const bySlab = new Map<number, Slab>();
-  const itemById = new Map(items.map((i) => [i.id, i]));
-
-  const invById = new Map(invoices.map((i) => [i.id, i]));
-
-  for (const line of lines) {
-    const inv = invById.get(line.invoice_id);
-    if (
-      !inv ||
-      inv.status === 'cancelled' ||
-      inv.status === 'draft' ||
-      inv.deleted_at
-    ) continue;
-    const rate = line.tax_rate_bps > 0 ? line.tax_rate_bps : (itemById.get(line.item_id)?.tax_rate_bps ?? 0);
-    const s = bySlab.get(rate) ?? { rate, taxable: 0, cgst: 0, sgst: 0, igst: 0, cess: 0, count: 0 };
-    s.taxable += line.taxable_paise;
-    s.cgst += line.cgst_paise;
-    s.sgst += line.sgst_paise;
-    s.igst += line.igst_paise;
-    s.cess += line.cess_paise;
-    s.count += 1;
-    bySlab.set(rate, s);
+  businessId: string,
+  db: BusinessVaultDB,
+  business: Business | undefined,
+  fromDate: Date,
+  toDate: Date,
+): Promise<void> {
+  if (!Number.isFinite(fromDate.valueOf()) || !Number.isFinite(toDate.valueOf()) || fromDate > toDate) throw new Error('Invalid GST export date range');
+  const months: string[] = [];
+  const last = toDateString(toDate).slice(0, 7);
+  let cursor = new Date(Date.UTC(fromDate.getUTCFullYear(), fromDate.getUTCMonth(), 1));
+  while (toDateString(cursor).slice(0, 7) <= last) {
+    months.push(toDateString(cursor).slice(0, 7));
+    cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 1));
   }
-
-  const cols = ['tax_rate_pct', 'line_count', 'taxable', 'cgst', 'sgst', 'igst', 'cess', 'total_tax'];
+  const service = new GstMonthlyReportService(db);
+  const workspace = await service.loadWorkspace(businessId);
+  const cols = ['Tax Period', 'section', 'document_count', 'line_count', 'taxable', 'cgst', 'sgst', 'igst', 'cess', 'total', 'round_off', 'status', 'source_data_hash', 'notes'];
   const rows: Array<Record<string, unknown>> = [];
-  const slabs = Array.from(bySlab.values()).sort((a, b) => a.rate - b.rate);
-  let totTaxable = 0;
-  let totCgst = 0;
-  let totSgst = 0;
-  let totIgst = 0;
-  let totCess = 0;
-  for (const s of slabs) {
-    rows.push({
-      tax_rate_pct: s.rate / 100,
-      line_count: s.count,
-      taxable: rupees(s.taxable),
-      cgst: rupees(s.cgst),
-      sgst: rupees(s.sgst),
-      igst: rupees(s.igst),
-      cess: rupees(s.cess),
-      total_tax: rupees(s.cgst + s.sgst + s.igst + s.cess),
-    });
-    totTaxable += s.taxable;
-    totCgst += s.cgst;
-    totSgst += s.sgst;
-    totIgst += s.igst;
-    totCess += s.cess;
+  for (const month of months) {
+    const profile = workspace.profiles.find(row => row.active && row.effective_from <= `${month}-01` && (!row.effective_to || row.effective_to > `${month}-01`));
+    const [result] = await service.calculateMonths(businessId, [month], profile?.filing_frequency ?? 'MONTHLY');
+    for (const section of ['outwardGross', 'outwardNotes', 'outwardNet', 'inwardGross', 'inwardNotes', 'inwardNet'] as const) {
+      const values = result.totals[section];
+      const exact = (paise: number) => {
+        const value = Number(fromMoney(paise as Money).replace(/,/g, ''));
+        if (!Number.isSafeInteger(paise) || Math.abs(paise) > 999_999_999_999_999 || Math.round(value * 100) !== paise) throw new Error('GST XLSX precision exceeded; use GST Reports CSV or JSON for exact paise.');
+        return value;
+      };
+      rows.push({ 'Tax Period': month, section, document_count: values.document_count, line_count: values.detail_row_count,
+        taxable: exact(values.taxable_paise), cgst: exact(values.cgst_paise), sgst: exact(values.sgst_paise), igst: exact(values.igst_paise), cess: exact(values.cess_paise),
+        total: exact(values.total_paise), round_off: exact(values.round_off_paise), status: result.status, source_data_hash: result.sourceDataHash,
+        notes: `${business?.name ?? ''}. Complete calendar-month working, including boundary months of ${toDateString(fromDate)} to ${toDateString(toDate)}; not an exact-date GST period. Open GST Reports for registers, issues and reconciliations. ${GST_WORKING_DISCLAIMER}` });
+    }
   }
-  rows.push({
-    tax_rate_pct: 'TOTAL',
-    line_count: lines.length,
-    taxable: rupees(totTaxable),
-    cgst: rupees(totCgst),
-    sgst: rupees(totSgst),
-    igst: rupees(totIgst),
-    cess: rupees(totCess),
-    total_tax: rupees(totCgst + totSgst + totIgst + totCess),
-  });
   addSheet(wb, 'GST Summary', cols, rows);
+  const sheet = wb.getWorksheet('GST Summary')!;
+  for (const key of ['taxable', 'cgst', 'sgst', 'igst', 'cess', 'total', 'round_off']) sheet.getColumn(key).numFmt = '#,##0.00;[Red](#,##0.00);"-"';
+  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: sheet.rowCount, column: cols.length } };
 }
 
 function buildTrialBalanceSheet(

@@ -388,6 +388,31 @@ const migration_v13_to_v14: Migration = {
   },
 };
 
+export const GST_V15_NULL_FIELDS: Record<string, readonly string[]> = {
+  invoice_lines: ['uqc_code', 'goods_or_service', 'taxability', 'cess_rate_bps', 'snapshot_source'],
+  purchase_lines: ['uqc_code', 'goods_or_service', 'taxability', 'cess_rate_bps', 'snapshot_source'],
+  sales_return_items: ['uqc_code', 'goods_or_service', 'taxability', 'cess_rate_bps', 'snapshot_source'],
+  gst_document_metadata: ['reporting_period_override', 'original_source_entity_type', 'original_source_entity_id', 'previously_reported_values_json'],
+  gst_itc_ledger: ['books_tax_paise', 'source_period_key', 'reversal_period_key', 'reclaim_period_key', 'reason', 'reviewed_at', 'reviewed_by_device_id'],
+  gst_adjustments: ['tax_period_key', 'report_type', 'adjustment_paise', 'note'],
+  gst_report_runs: ['period_type', 'next_period_start', 'report_schema_version', 'reviewed_at'],
+};
+
+const migration_v14_to_v15: Migration = {
+  from: 14, to: 15, describe: 'v14 to v15: nullable historical GST snapshots and monthly working sidecars',
+  apply(tables) {
+    const result = { ...tables };
+    for (const [table, fields] of Object.entries(GST_V15_NULL_FIELDS)) {
+      result[table] = (tables[table] ?? []).map((row) => {
+        const next = { ...row };
+        for (const field of fields) if (next[field] === undefined) next[field] = null;
+        return next;
+      });
+    }
+    return result;
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
@@ -403,6 +428,7 @@ export const MIGRATIONS: Migration[] = [
   migration_v11_to_v12,
   migration_v12_to_v13,
   migration_v13_to_v14,
+  migration_v14_to_v15,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

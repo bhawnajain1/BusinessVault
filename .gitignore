@@ -12,3 +12,8 @@ dist-ssr
 coverage
 .turbo
 *.log
+
+# Taxpayer workbooks and unredacted fixtures must stay local.
+docs/fixtures/private/
+tests/fixtures/private/
+src/domain/gstReporting/fixtures/private/

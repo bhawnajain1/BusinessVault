@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { coerceRow, findTableSpecByFile, TABLE_SPECS } from './tableSchema';
+import { GST_V15_NULL_FIELDS, migrateSnapshot } from '../db/migrations/index';
+import { SCHEMA_VERSION } from '../db/schema';
 
 const gstStores = [
   'gst_profiles',
@@ -15,6 +17,19 @@ const gstStores = [
 ];
 
 describe('GST snapshot table schema', () => {
+  it('v15 migration is pure, nullable and never reprices historical amounts', () => {
+    const original = { invoice_lines: [{ id: 'line', taxable_paise: 123, hsn: '01234567' }], gst_adjustments: [{ id: 'adjustment', adjusted_paise: 99 }] };
+    const copy = JSON.stringify(original);
+    const migrated = migrateSnapshot(original, 14).tables;
+    expect(SCHEMA_VERSION).toBe(15);
+    expect(JSON.stringify(original)).toBe(copy);
+    expect(migrated.invoice_lines[0]).toMatchObject({ taxable_paise: 123, hsn: '01234567', uqc_code: null, snapshot_source: null });
+    expect(migrateSnapshot(migrated, 14).tables).toEqual(migrated);
+    for (const [store, fields] of Object.entries(GST_V15_NULL_FIELDS)) {
+      const spec = TABLE_SPECS.find((row) => row.store === store)!;
+      for (const field of fields) expect(coerceRow({}, spec)[field]).toBeNull();
+    }
+  });
   it('includes the requirements-critical fields in durable GST CSV tables', () => {
     const columns = (file: string) =>
       findTableSpecByFile(file)!.columns.map(({ name }) => name);

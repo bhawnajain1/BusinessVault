@@ -21,6 +21,10 @@ export interface PurchaseServiceDeps {
 }
 
 export interface PurchaseLineInput {
+  snapshotSource?: PurchaseLine['snapshot_source'];
+  uqcCode?: string | null;
+  goodsOrService?: PurchaseLine['goods_or_service'];
+  taxability?: PurchaseLine['taxability'];
   itemId: string;
   description?: string;
   hsn?: string;
@@ -402,6 +406,7 @@ export class PurchaseService {
         db.stock_movements,
         db.item_stock,
         db.items,
+        db.units,
         db.journal_entries,
         db.journal_lines,
         db.sync_events,
@@ -436,6 +441,14 @@ export class PurchaseService {
 
         await db.purchases.add(purchase);
         for (const c of computed) {
+          const inputLine = input.lines[c.line.line_no - 1];
+          const item = await db.items.get(c.line.item_id);
+          const unit = item?.business_id === input.businessId ? await db.units.get(item.unit_id) : undefined;
+          c.line.uqc_code = inputLine.uqcCode ?? (unit?.business_id === input.businessId ? unit.code : null);
+          c.line.goods_or_service = inputLine.goodsOrService ?? (item?.business_id === input.businessId ? (item.is_service ? 'SERVICE' : 'GOODS') : null);
+          c.line.taxability = inputLine.taxability ?? (c.line.tax_rate_bps > 0 ? 'TAXABLE' : null);
+          c.line.cess_rate_bps = inputLine.cessRateBps ?? 0;
+          c.line.snapshot_source = inputLine.snapshotSource ?? 'NATIVE';
           await db.purchase_lines.add(c.line);
         }
 
@@ -759,8 +772,17 @@ export class PurchaseService {
     if (payments.some((payment) => payment.allocations.some((allocation) => allocation.bill_id === purchaseId))) {
       throw new Error('Cannot edit a bill referenced by a payment; reverse or migrate the payment first.');
     }
+    const historicalLines = await this.db.purchase_lines.where('purchase_id').equals(purchaseId).toArray();
+    const lines = input.lines.map((line, index) => {
+      const old = historicalLines.find((row) => row.line_no === index + 1 && row.item_id === line.itemId);
+      if (!old) return line;
+      return { ...line, uqcCode: line.uqcCode ?? old.uqc_code, goodsOrService: line.goodsOrService ?? old.goods_or_service,
+        taxability: line.taxability ?? old.taxability, cessRateBps: line.cessRateBps ?? old.cess_rate_bps ?? undefined,
+        snapshotSource: old.snapshot_source === 'LEGACY_INFERRED' || !old.snapshot_source ||
+          (old.uqc_code == null && line.uqcCode == null) ? 'LEGACY_INFERRED' as const : 'NATIVE' as const };
+    });
     const reversed = await this.reversePurchasePosting(purchaseId, input.deviceId, 'edit');
-    const reissued = await this.create(input);
+    const reissued = await this.create({ ...input, lines });
     const now = this.now();
     await this.db.transaction('rw', [this.db.purchases, this.db.sync_events], async () => {
       const original = await this.db.purchases.get(purchaseId);

@@ -461,6 +461,11 @@ export class SalesReturnService {
             item_id: orig.item_id,
             description: orig.description,
             hsn: orig.hsn,
+            uqc_code: orig.uqc_code ?? null,
+            goods_or_service: orig.goods_or_service ?? null,
+            taxability: orig.taxability ?? null,
+            cess_rate_bps: orig.cess_rate_bps ?? null,
+            snapshot_source: orig.snapshot_source ?? null,
             warehouse_id: orig.warehouse_id,
             line_no: lineNo++,
             qty_micros: req.qty_micros,
@@ -503,7 +508,9 @@ export class SalesReturnService {
         // A full return reverses the invoice's rounded total, not merely the
         // sum of prorated tax fields. Preserve that round-off difference in
         // the return so a paid rounded invoice is refunded in full.
-        const totalPaise = isFullReturn ? inv.total_paise : grossLines;
+        const priorReturnTotal = existingReturns.filter((row) => row.status === 'posted' && !row.deleted_at)
+          .reduce((sum, row) => sum + row.total_paise, 0);
+        const totalPaise = isFullReturn ? inv.total_paise - priorReturnTotal : grossLines;
         const roundOffPaise = totalPaise - grossLines;
 
         if (totalPaise <= 0) {

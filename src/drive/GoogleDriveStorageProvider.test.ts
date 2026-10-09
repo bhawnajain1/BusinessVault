@@ -764,6 +764,13 @@ describe('GoogleDriveStorageProvider — attachments', () => {
     const restored = await provider.downloadAttachment({ path: 'attachments/gstr2b/import-1/source.xlsx' });
     expect(new TextDecoder().decode(await blobBytes(restored))).toBe('source-bytes');
   });
+  it('round-trips a nested monthly GST working attachment', async () => {
+    const { provider } = await connected();
+    const path = 'attachments/gst/report-runs/run-1/working.json';
+    await provider.uploadAttachment({ path, blob: new Blob(['{"schema":"businessvault.gst-working.v1"}']), mimeType: 'application/json' });
+    expect((await provider.restoreBusiness()).attachmentIndex).toContainEqual(expect.objectContaining({ path }));
+    expect(new TextDecoder().decode(await blobBytes(await provider.downloadAttachment({ path })))).toBe('{"schema":"businessvault.gst-working.v1"}');
+  });
 });
 
 describe('GoogleDriveStorageProvider — restoreBusiness', () => {

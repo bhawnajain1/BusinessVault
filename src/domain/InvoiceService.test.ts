@@ -596,6 +596,23 @@ describe('InvoiceService — cess and round-off posting (regression)', () => {
 });
 
 describe('InvoiceService.updateInvoice', () => {
+  it('marks master fallback during a legacy edit as inferred rather than native history', async () => {
+    const input = { business_id: businessId, device_id: deviceId, invoice_number: 'INV-INFERRED-1',
+      invoice_date: '2026-08-19', customer_id: customerId, customer_state_code: '29', place_of_supply: '29',
+      is_interstate: false, financial_year: '2026-27', lines: [intrastateLine()] };
+    const inv = await service.createInvoice(input);
+    const original = (await db.invoice_lines.where('invoice_id').equals(inv.id).toArray())[0];
+    await db.invoice_lines.update(original.id, { uqc_code: null, goods_or_service: null, taxability: null, snapshot_source: null });
+    const item = (await db.items.get(original.item_id))!;
+    await db.units.put({ id: item.unit_id, business_id: businessId, code: 'NOS', name: 'Numbers', decimal_places: 0,
+      created_at: '2026-08-19T00:00:00Z', updated_at: '2026-08-19T00:00:00Z', entity_version: 1 });
+    await service.updateInvoice(inv.id, input);
+    const edited = (await db.invoice_lines.where('invoice_id').equals(inv.id).toArray())[0];
+    expect(edited).toMatchObject({ uqc_code: 'NOS', snapshot_source: 'LEGACY_INFERRED', taxable_paise: original.taxable_paise });
+    await db.units.update(item.unit_id, { code: 'KGS' });
+    await service.updateInvoice(inv.id, input);
+    expect((await db.invoice_lines.where('invoice_id').equals(inv.id).toArray())[0]).toMatchObject({ uqc_code: 'NOS', snapshot_source: 'LEGACY_INFERRED' });
+  });
   it('edits the existing invoice row under the same invoice_number', async () => {
     const inv = await service.createInvoice({
       business_id: businessId,
