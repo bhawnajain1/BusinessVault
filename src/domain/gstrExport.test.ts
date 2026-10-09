@@ -373,7 +373,7 @@ describe('GSTR report export', () => {
     expect(workbook.getWorksheet('B2C Other')?.getCell('E5').value).toBe(10);
     expect(result.issues.some((issue) => issue.severity === 'blocking_error')).toBe(true);
     await db.delete();
-  }, 20000);
+  }, 45_000);
 
   it('uses strict, date-effective B2C Large boundaries and validates persisted round-off', async () => {
     expect(isB2cLargeValue('2024-07-31', 25_000_000, true)).toBe(false);

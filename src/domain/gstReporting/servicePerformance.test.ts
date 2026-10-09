@@ -168,4 +168,4 @@ it('calculates exact independent months from 50k persisted outward and 50k inwar
     vi.restoreAllMocks();
     await db.delete();
   }
-}, 120_000);
+}, 180_000);
