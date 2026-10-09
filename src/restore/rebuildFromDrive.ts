@@ -54,6 +54,7 @@ import { accountingSelfCheck } from '../domain/AccountingService';
 import { InventoryService } from '../domain/InventoryService';
 import { rebuildInvoiceLineReturnSummary } from '../domain/invoiceLineReturnSummary';
 import { log } from '../lib/log';
+import { metaDb } from '../lib/device';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -401,6 +402,14 @@ export async function rebuildFromDrive(
     );
   }
 
+  const gstr2bAttachmentBlobs = await loadGstr2bAttachmentBlobs(
+    provider,
+    snapshotHandle,
+    snapshotTables,
+    events,
+    selected.businessId,
+  );
+
   // §8: suppress low-stock alerts across the entire rebuild — a snapshot
   // restore represents "loading history", not "user just sold something",
   // and every item that happens to be below reorder in the restored data
@@ -409,11 +418,12 @@ export async function rebuildFromDrive(
   // post-commit dispatcher. We restore it in a `finally` so a mid-restore
   // throw doesn't leave the flag stuck on and mute future real writes.
   const dbWithFlag = opts.db as unknown as { __bvSuppressLowStock?: boolean };
-  dbWithFlag.__bvSuppressLowStock = true;
   const diagnostics: string[] = [];
   let replayed = 0;
   let unhandled = 0;
   const previousState = await captureSelectedBusinessState(opts.db, selected.businessId);
+  const previousCurrentBusiness = await metaDb().settings.get('current_business_id');
+  dbWithFlag.__bvSuppressLowStock = true;
   try {
     // Replace only the selected business under one transaction. Other local
     // businesses may have independent unsynced work and must remain untouched.
@@ -505,6 +515,14 @@ export async function rebuildFromDrive(
           .join(' | ')}`,
       );
     }
+
+    for (const [attachmentId, blob] of gstr2bAttachmentBlobs) {
+      const attachment = await opts.db.attachments.get(attachmentId);
+      if (!attachment || attachment.business_id !== selected.businessId) {
+        throw new Error(`GSTR-2B source attachment ${attachmentId} was not restored`);
+      }
+      await opts.db.attachments.put({ ...attachment, blob });
+    }
     log.info('restore.replay.complete', 'restore: journal replay complete', {
       businessId: selected.businessId,
       eventCount: events.length,
@@ -521,16 +539,6 @@ export async function rebuildFromDrive(
     log.info('restore.derived.complete', 'restore: derived caches rebuilt', {
       businessId: selected.businessId,
     });
-  } catch (err) {
-    // Snapshot replacement commits before replay so large restores do not hit
-    // IndexedDB's transaction lifetime limit. If replay or derived rebuild
-    // fails, restore the pre-restore rows before surfacing the failure.
-    await restoreSelectedBusinessState(opts.db, selected.businessId, previousState);
-    throw err;
-  } finally {
-    dbWithFlag.__bvSuppressLowStock = false;
-  }
-
   // 8. run validators (spec §27)
   progress('Verifying accounting and inventory', 90);
   const issues: DiagnosticIssue[] = [];
@@ -629,7 +637,6 @@ export async function rebuildFromDrive(
       restoredCounts: counts,
       mismatches: countReconciliation.mismatches,
     });
-    await restoreSelectedBusinessState(opts.db, selected.businessId, previousState);
     throw new BackupIntegrityError(
       'Restore count verification failed. Local data was left unchanged.',
       { sourceCounts, restoredCounts: counts, mismatches: countReconciliation.mismatches },
@@ -680,6 +687,19 @@ export async function rebuildFromDrive(
     gstReconciled,
     diagnostics: report,
   };
+  } catch (err) {
+    // The snapshot transaction commits before replay, so keep rollback active
+    // through validation and report setup as well as replay and cache rebuild.
+    await restoreSelectedBusinessState(opts.db, selected.businessId, previousState);
+    if (previousCurrentBusiness) {
+      await metaDb().settings.put(previousCurrentBusiness);
+    } else {
+      await metaDb().settings.delete('current_business_id');
+    }
+    throw err;
+  } finally {
+    dbWithFlag.__bvSuppressLowStock = false;
+  }
 }
 
 /**
@@ -806,6 +826,16 @@ function tableNames(): string[] {
     'sales_return_items',
     'attachments',
     'audit_log',
+    'gst_profiles',
+    'gst_aato',
+    'gst_document_metadata',
+    'gst_report_runs',
+    'gst_report_rows',
+    'gst_adjustments',
+    'gstr2b_imports',
+    'gstr2b_documents',
+    'gst_matches',
+    'gst_itc_ledger',
     'sync_events',
   ];
 }
@@ -1365,6 +1395,82 @@ function countSnapshotTables(
   return counts;
 }
 
+async function loadGstr2bAttachmentBlobs(
+  provider: CustomerStorageProvider,
+  snapshotHandle: SnapshotHandle | undefined,
+  snapshotTables: SnapshotTables,
+  events: SyncEvent[],
+  businessId: string,
+): Promise<Map<string, Blob>> {
+  const attachments = new Map<string, Record<string, unknown>>();
+  const imports = new Map<string, Record<string, unknown>>();
+  for (const value of snapshotTables.attachments ?? []) {
+    if (value.business_id === businessId && value.ref_type === 'gstr2b_import') {
+      attachments.set(String(value.id), value);
+    }
+  }
+  for (const value of snapshotTables.gstr2b_imports ?? []) {
+    if (value.business_id === businessId) imports.set(String(value.id), value);
+  }
+  for (const event of events) {
+    if (event.entity_type !== 'gstr2b_import' || !['create', 'created'].includes(event.operation)) continue;
+    const payload = event.payload as Record<string, unknown>;
+    const imported = payload.import as Record<string, unknown> | undefined;
+    if (imported?.business_id === businessId && imported.id) imports.set(String(imported.id), imported);
+    const attachment = payload.attachment as Record<string, unknown> | undefined;
+    if (attachment?.business_id === businessId && attachment.ref_type === 'gstr2b_import' && attachment.id) {
+      attachments.set(String(attachment.id), attachment);
+    }
+  }
+
+  const requiredAttachmentIds = new Set<string>();
+  for (const imported of imports.values()) {
+    if (imported.original_attachment_id) requiredAttachmentIds.add(String(imported.original_attachment_id));
+  }
+  if (requiredAttachmentIds.size === 0) return new Map();
+
+  const descriptor = await provider.restoreBusiness({ snapshotHandle });
+  const paths = new Set(descriptor.attachmentIndex.map((item) => item.path));
+  const blobs = new Map<string, Blob>();
+  for (const attachmentId of requiredAttachmentIds) {
+    const attachment = attachments.get(attachmentId);
+    if (!attachment || typeof attachment.logical_path !== 'string') {
+      throw new BackupIntegrityError('GSTR-2B source attachment metadata is missing', { attachmentId });
+    }
+    const logicalPath = attachment.logical_path;
+    if (!paths.has(logicalPath)) {
+      throw new BackupIntegrityError('GSTR-2B source attachment is missing from backup', { attachmentId, logicalPath });
+    }
+    const blob = await provider.downloadAttachment({ path: logicalPath });
+    const actualHash = await sha256Blob(blob);
+    const expectedHash = String(attachment.checksum ?? '');
+    if (!expectedHash || actualHash !== expectedHash) {
+      throw new BackupIntegrityError('GSTR-2B source attachment checksum mismatch', {
+        attachmentId,
+        logicalPath,
+        expected: expectedHash || null,
+        actual: actualHash,
+      });
+    }
+    const imported = [...imports.values()].find((row) => row.original_attachment_id === attachmentId);
+    if (imported && imported.sha256 !== actualHash) {
+      throw new BackupIntegrityError('GSTR-2B imported-file checksum does not match source attachment', {
+        attachmentId,
+        importId: imported.id,
+        expected: imported.sha256,
+        actual: actualHash,
+      });
+    }
+    blobs.set(attachmentId, blob);
+  }
+  return blobs;
+}
+
+async function sha256Blob(blob: Blob): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 const JOURNAL_ENTITY_STORE: Record<string, string> = {
   business: 'businesses',
   customer: 'customers',
@@ -1387,7 +1493,32 @@ const JOURNAL_ENTITY_STORE: Record<string, string> = {
   journal_line: 'journal_lines',
   sales_return: 'sales_returns',
   sales_return_item: 'sales_return_items',
+  gst_profile: 'gst_profiles',
+  gst_aato: 'gst_aato',
+  gst_document_metadata: 'gst_document_metadata',
+  gst_report_run: 'gst_report_runs',
+  gst_report_row: 'gst_report_rows',
+  gst_adjustment: 'gst_adjustments',
+  gstr2b_import: 'gstr2b_imports',
+  gstr2b_document: 'gstr2b_documents',
+  gst_match: 'gst_matches',
+  gst_match_run: 'gst_matches',
+  gst_itc_ledger: 'gst_itc_ledger',
 };
+
+const GST_ROW_ENTITY_TYPES = new Set([
+  'gst_profile',
+  'gst_aato',
+  'gst_document_metadata',
+  'gst_report_run',
+  'gst_report_row',
+  'gst_adjustment',
+  'gstr2b_import',
+  'gstr2b_document',
+  'gst_match',
+  'gst_match_run',
+  'gst_itc_ledger',
+]);
 
 function expectedCountsAfterJournal(
   snapshotTables: SnapshotTables,
@@ -1401,6 +1532,72 @@ function expectedCountsAfterJournal(
   }
 
   for (const event of events) {
+    const operation = event.operation as string;
+    if (event.entity_type === 'gstr2b_import' && (operation === 'create' || operation === 'created')) {
+      const payload = event.payload as Record<string, unknown>;
+      const imported = payload.import as Record<string, unknown> | undefined;
+      const importId = String(imported?.id ?? event.entity_id ?? '');
+      const importIds = ids.get('gstr2b_imports');
+      if (importId && importIds && !importIds.has(importId)) {
+        importIds.add(importId);
+        counts.gstr2b_imports = (counts.gstr2b_imports ?? 0) + 1;
+      }
+
+      const documentIds = ids.get('gstr2b_documents');
+      for (const value of Array.isArray(payload.documents) ? payload.documents : []) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const documentId = String((value as Record<string, unknown>).id ?? '');
+        if (documentId && documentIds && !documentIds.has(documentId)) {
+          documentIds.add(documentId);
+          counts.gstr2b_documents = (counts.gstr2b_documents ?? 0) + 1;
+        }
+      }
+
+      const attachment = payload.attachment;
+      const attachmentId = attachment && typeof attachment === 'object' && !Array.isArray(attachment)
+        ? String((attachment as Record<string, unknown>).id ?? '')
+        : '';
+      const attachmentIds = ids.get('attachments');
+      if (attachmentId && attachmentIds && !attachmentIds.has(attachmentId)) {
+        attachmentIds.add(attachmentId);
+        counts.attachments = (counts.attachments ?? 0) + 1;
+      }
+      const audit = payload.audit as Record<string, unknown> | undefined;
+      const auditId = String(audit?.id ?? '');
+      const auditIds = ids.get('audit_log');
+      if (auditId && auditIds && !auditIds.has(auditId)) {
+        auditIds.add(auditId);
+        counts.audit_log = (counts.audit_log ?? 0) + 1;
+      }
+      continue;
+    }
+
+    if (event.entity_type === 'gst_match_run' && (operation === 'create' || operation === 'created')) {
+      const payload = event.payload as Record<string, unknown>;
+      const matchIds = ids.get('gst_matches');
+      const replaceIds = Array.isArray(payload.replace_match_ids) ? payload.replace_match_ids : [];
+      for (const value of replaceIds) {
+        const id = String(value);
+        if (matchIds?.delete(id)) counts.gst_matches = Math.max(0, (counts.gst_matches ?? 0) - 1);
+      }
+      for (const value of Array.isArray(payload.matches) ? payload.matches : []) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const id = String((value as Record<string, unknown>).id ?? '');
+        if (id && matchIds && !matchIds.has(id)) {
+          matchIds.add(id);
+          counts.gst_matches = (counts.gst_matches ?? 0) + 1;
+        }
+      }
+      const audit = payload.audit as Record<string, unknown> | undefined;
+      const auditId = String(audit?.id ?? '');
+      const auditIds = ids.get('audit_log');
+      if (auditId && auditIds && !auditIds.has(auditId)) {
+        auditIds.add(auditId);
+        counts.audit_log = (counts.audit_log ?? 0) + 1;
+      }
+      continue;
+    }
+
     const store = JOURNAL_ENTITY_STORE[event.entity_type];
     if (!store) continue;
     const storeIds = ids.get(store);
@@ -1419,9 +1616,11 @@ function expectedCountsAfterJournal(
       event.entity_type === 'purchase_line' ||
       event.entity_type === 'journal_entry' ||
       event.entity_type === 'journal_line' ||
-      event.entity_type === 'stock_movement';
-    const addsRow = event.operation === 'create' ||
-      (event.operation === 'update' && putsOnUpdate);
+      event.entity_type === 'stock_movement' ||
+      GST_ROW_ENTITY_TYPES.has(event.entity_type);
+    const addsRow = operation === 'create' ||
+      operation === 'created' ||
+      ((operation === 'update' || operation === 'updated') && putsOnUpdate);
     if (addsRow && !storeIds.has(id) && event.entity_type !== 'invoice') {
       storeIds.add(id);
       counts[store] = (counts[store] ?? 0) + 1;

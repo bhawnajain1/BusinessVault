@@ -718,7 +718,7 @@ describe('GoogleDriveStorageProvider — external-edit classification (spec §21
 });
 
 describe('GoogleDriveStorageProvider — attachments', () => {
-  it('rejects paths outside attachments/{purchases,expenses,products}', async () => {
+  it('rejects paths outside supported attachment folders', async () => {
     const { provider } = await connected();
     await expect(
       provider.uploadAttachment({
@@ -747,6 +747,22 @@ describe('GoogleDriveStorageProvider — attachments', () => {
     const back = await provider.downloadAttachment({ path: 'attachments/purchases/inv-1.pdf' });
     const bytes = await blobBytes(back);
     expect(new TextDecoder().decode(bytes)).toBe('hello');
+  });
+
+  it('uploads and recursively indexes a GST import source attachment', async () => {
+    const { provider } = await connected();
+    await provider.uploadAttachment({
+      path: 'attachments/gstr2b/import-1/source.xlsx',
+      blob: new Blob(['source-bytes']),
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+
+    const descriptor = await provider.restoreBusiness();
+    expect(descriptor.attachmentIndex).toContainEqual(expect.objectContaining({
+      path: 'attachments/gstr2b/import-1/source.xlsx',
+    }));
+    const restored = await provider.downloadAttachment({ path: 'attachments/gstr2b/import-1/source.xlsx' });
+    expect(new TextDecoder().decode(await blobBytes(restored))).toBe('source-bytes');
   });
 });
 

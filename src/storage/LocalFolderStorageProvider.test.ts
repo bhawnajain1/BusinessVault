@@ -482,11 +482,19 @@ describe('LocalFolderStorageProvider', () => {
       blob: new Blob([new TextEncoder().encode('A')]),
       mimeType: 'text/plain',
     });
+    await p.uploadAttachment({
+      path: 'attachments/gstr2b/import-1/source.json',
+      blob: new Blob(['{}']),
+      mimeType: 'application/json',
+    });
 
     const desc = await p.restoreBusiness();
     expect(desc.businessId).toBe('biz_1');
     expect(desc.journalFiles.map((j) => `${j.year}-${j.month}`)).toEqual(['2026-8', '2026-9']);
-    expect(desc.attachmentIndex.map((a) => a.path)).toEqual(['attachments/a.txt']);
+    expect(desc.attachmentIndex.map((a) => a.path)).toEqual([
+      'attachments/a.txt',
+      'attachments/gstr2b/import-1/source.json',
+    ]);
   });
 
   it('connectionStatus reflects lifecycle', async () => {

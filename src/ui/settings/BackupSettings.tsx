@@ -422,7 +422,7 @@ export default function BackupSettings({ businessId, onPrepareBusiness, onReconn
     if (!ok) return;
     setBusy('switch');
     try {
-      const res = await connectDrive({ businessId, prompt: 'consent' });
+      const res = await connectDrive({ businessId, prompt: 'select_account' });
       const provider = await buildDriveProvider(businessId);
       const init = await provider.initializeBusiness({
         businessId,

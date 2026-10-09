@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Blob as NodeBlob } from 'node:buffer';
 import { ulid } from 'ulid';
 import { db } from '../db';
 import type { Business, SyncEvent } from '../db/types';
@@ -79,6 +80,7 @@ function makeEvent(overrides: Partial<SyncEvent> = {}): SyncEvent {
 
 class FakeProvider implements CustomerStorageProvider {
   writes: number = 0;
+  uploadedAttachments: Array<{ path: string; text: string }> = [];
   seenEventIds: Set<string> = new Set();
   writeShouldThrow: null | string = null;
   reconnectCount: number = 0;
@@ -132,7 +134,11 @@ class FakeProvider implements CustomerStorageProvider {
   async listSnapshots(): Promise<never[]> {
     return [];
   }
-  async uploadAttachment(): Promise<UploadAttachmentResult> {
+  async uploadAttachment(input?: { path: string; blob: Blob }): Promise<UploadAttachmentResult> {
+    if (input) this.uploadedAttachments.push({
+      path: input.path,
+      text: await (input.blob as NodeBlob).text(),
+    });
     return { providerFileId: 'file123' };
   }
   async downloadAttachment(): Promise<Blob> {
@@ -251,6 +257,47 @@ describe('startSyncWorker — batching', () => {
       .equals('SYNCED')
       .count();
     expect(synced).toBe(250);
+  });
+
+  it('loads attachment bytes by id for a durable upload job', async () => {
+    const provider = new FakeProvider();
+    await db.attachments.add({
+      id: 'gst-source-attachment',
+      business_id: BUSINESS_ID,
+      ref_type: 'gstr2b_import',
+      ref_id: 'gst-import',
+      filename: 'gstr2b.json',
+      mime_type: 'application/json',
+      size_bytes: 11,
+      checksum: 'checksum',
+      blob: new NodeBlob(['source-data']),
+      drive_file_id: null,
+      logical_path: 'attachments/gstr2b/import-1.json',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await enqueue({
+      businessId: BUSINESS_ID,
+      kind: 'attachment_upload',
+      payload: { attachmentId: 'gst-source-attachment' },
+    });
+    const handle = startSyncWorker({
+      businessId: BUSINESS_ID,
+      provider,
+      onStateChange: () => {},
+      batchWindowMs: 0,
+      autoStart: false,
+    });
+
+    await handle.tick();
+    await handle.stopAsync();
+
+    expect(provider.uploadedAttachments).toEqual([{
+      path: 'attachments/gstr2b/import-1.json',
+      text: 'source-data',
+    }]);
+    expect(await db.attachments.get('gst-source-attachment')).toMatchObject({ drive_file_id: 'file123' });
+    expect((await db.sync_queue.toArray())[0]).toMatchObject({ status: 'done' });
   });
 
   it('binds work to one business and coalesces concurrent ticks', async () => {

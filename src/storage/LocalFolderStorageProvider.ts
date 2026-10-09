@@ -1214,11 +1214,21 @@ export class LocalFolderStorageProvider implements CustomerStorageProvider {
     const attachmentIndex: RestoreDescriptor['attachmentIndex'] = [];
     const attRoot = `${business.folderPath}/attachments`;
     if (await fs.exists(attRoot)) {
-      for (const e of await fs.list(attRoot)) {
-        if (e.kind !== 'file') continue;
-        const rel = `attachments/${e.name}`;
-        attachmentIndex.push({ path: rel, providerFileId: `${business.folderPath}/${rel}` });
-      }
+      const walk = async (absolutePath: string, relativePath: string): Promise<void> => {
+        for (const entry of await fs.list(absolutePath)) {
+          const absoluteChild = `${absolutePath}/${entry.name}`;
+          const relativeChild = `${relativePath}/${entry.name}`;
+          if (entry.kind === 'directory') {
+            await walk(absoluteChild, relativeChild);
+          } else {
+            attachmentIndex.push({
+              path: relativeChild,
+              providerFileId: `${business.folderPath}/${relativeChild}`,
+            });
+          }
+        }
+      };
+      await walk(attRoot, 'attachments');
     }
 
     return {

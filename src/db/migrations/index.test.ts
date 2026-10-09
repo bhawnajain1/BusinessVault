@@ -159,3 +159,44 @@ describe('business profile migration', () => {
     ]);
   });
 });
+
+describe('GST snapshot migration', () => {
+  const gstStores = [
+    'gst_profiles',
+    'gst_aato',
+    'gst_document_metadata',
+    'gst_report_runs',
+    'gst_report_rows',
+    'gst_adjustments',
+    'gstr2b_imports',
+    'gstr2b_documents',
+    'gst_matches',
+    'gst_itc_ledger',
+  ];
+
+  it('adds empty GST stores when restoring a v13 snapshot', () => {
+    const result = migrateSnapshot(
+      { invoices: [{ id: 'invoice-1' }], gstr2b_documents: [] },
+      13,
+    );
+
+    expect(result.toVersion).toBe(14);
+    expect(result.appliedSteps.map((step) => `${step.from}->${step.to}`)).toEqual(['13->14']);
+    for (const store of gstStores) expect(result.tables[store]).toEqual([]);
+    expect(result.tables.invoices).toEqual([{ id: 'invoice-1' }]);
+  });
+
+  it('preserves existing GST rows and is idempotent', () => {
+    const tables = {
+      gstr2b_imports: [{ id: 'import-1', business_id: 'biz-1' }],
+      gstr2b_documents: [{ id: 'doc-1', business_id: 'biz-1', search_normalized_document_number: 'A-1' }],
+    };
+
+    const first = migrateSnapshot(tables, 13, 14).tables;
+    const second = migrateSnapshot(first, 13, 14).tables;
+
+    expect(first.gstr2b_imports).toEqual(tables.gstr2b_imports);
+    expect(first.gstr2b_documents).toEqual(tables.gstr2b_documents);
+    expect(second).toEqual(first);
+  });
+});

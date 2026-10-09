@@ -218,10 +218,9 @@ export async function reconnectWithUserGesture(
   if (kind === 'google-drive') {
     try {
       const { connectDrive } = await import('../drive/connectDrive');
-      // Popup — needs the user gesture we're already inside of. `consent`
-      // re-prompts so a revoked token / expired session doesn't silently
-      // fall through to the "not connected" branch.
-      await connectDrive({ businessId: business.id, prompt: 'consent' });
+      // Popup — needs the user gesture we're already inside of. Let the user
+      // choose the Google account when reconnecting Drive.
+      await connectDrive({ businessId: business.id, prompt: 'select_account' });
       const { buildDriveProvider } = await import('../ui/onboarding/driveGlue');
       const provider = await buildDriveProvider(business.id);
       await provider.initializeBusiness({

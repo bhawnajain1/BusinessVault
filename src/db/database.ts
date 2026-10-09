@@ -14,6 +14,7 @@ import {
   STORES_V11,
   STORES_V12,
   STORES_V13,
+  STORES_V14,
 } from './schema';
 import { ulid } from 'ulid';
 import { pokeSyncWorker } from '../sync/pokeChannel';
@@ -31,6 +32,16 @@ import type {
   Device,
   DriveFileMap,
   Expense,
+  GstAdjustment,
+  GstAato,
+  GstDocumentMetadata,
+  GstItcLedgerEntry,
+  GstMatch,
+  GstProfile,
+  GstReportRow,
+  GstReportRun,
+  Gstr2bDocument,
+  Gstr2bImport,
   Invoice,
   InvoiceLine,
   InvoiceLineReturnSummary,
@@ -87,6 +98,16 @@ export class BusinessVaultDB extends Dexie {
   invoice_line_return_summary!: Table<InvoiceLineReturnSummary, string>;
   customer_item_prices!: Table<CustomerItemPrice, string>;
   legacy_reversal_audit!: Table<LegacyReversalAudit, string>;
+  gst_profiles!: Table<GstProfile, string>;
+  gst_aato!: Table<GstAato, string>;
+  gst_document_metadata!: Table<GstDocumentMetadata, string>;
+  gst_report_runs!: Table<GstReportRun, string>;
+  gst_report_rows!: Table<GstReportRow, string>;
+  gst_adjustments!: Table<GstAdjustment, string>;
+  gstr2b_imports!: Table<Gstr2bImport, string>;
+  gstr2b_documents!: Table<Gstr2bDocument, string>;
+  gst_matches!: Table<GstMatch, string>;
+  gst_itc_ledger!: Table<GstItcLedgerEntry, string>;
 
   constructor(name: string = DB_NAME) {
     super(name);
@@ -609,6 +630,11 @@ export class BusinessVaultDB extends Dexie {
           });
         }
       });
+
+    // Dexie versions 14 and 16 are existing data-repair upgrades. Keep their
+    // numbering independent from snapshot schema versions and add GST stores
+    // only at the next Dexie version.
+    this.version(17).stores(STORES_V14);
 
     // After any sync_event insert commits, kick the sync worker so the write
     // lands in the local backup folder within a few hundred ms instead of

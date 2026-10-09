@@ -367,6 +367,27 @@ const migration_v12_to_v13: Migration = {
   },
 };
 
+const migration_v13_to_v14: Migration = {
+  from: 13,
+  to: 14,
+  describe: 'v13 → v14: adds durable GST reporting and GSTR-2B tables',
+  apply(tables) {
+    return {
+      ...tables,
+      gst_profiles: tables.gst_profiles ?? [],
+      gst_aato: tables.gst_aato ?? [],
+      gst_document_metadata: tables.gst_document_metadata ?? [],
+      gst_report_runs: tables.gst_report_runs ?? [],
+      gst_report_rows: tables.gst_report_rows ?? [],
+      gst_adjustments: tables.gst_adjustments ?? [],
+      gstr2b_imports: tables.gstr2b_imports ?? [],
+      gstr2b_documents: tables.gstr2b_documents ?? [],
+      gst_matches: tables.gst_matches ?? [],
+      gst_itc_ledger: tables.gst_itc_ledger ?? [],
+    };
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
@@ -381,6 +402,7 @@ export const MIGRATIONS: Migration[] = [
   migration_v10_to_v11,
   migration_v11_to_v12,
   migration_v12_to_v13,
+  migration_v13_to_v14,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

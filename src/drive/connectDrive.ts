@@ -88,10 +88,10 @@ export async function connectDrive(args: ConnectDriveArgs): Promise<ConnectDrive
     prompt: args.prompt ?? '(silent)',
   });
 
-  // If we already have a token for this business, use its email as a hint so
-  // GIS re-authenticates the same account (avoids account-switch surprises).
+  // Interactive connections let Google show the account picker. Only use a
+  // stored account hint for silent/non-picker flows.
   const existing = await loadTokens(args.businessId);
-  const hint = args.hint ?? existing?.email;
+  const hint = args.prompt === 'select_account' ? undefined : args.hint ?? existing?.email;
 
   const token = await requestGisAccessToken({
     clientId: env.googleClientId,

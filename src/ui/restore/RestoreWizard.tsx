@@ -172,7 +172,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       log.info('restore', 'connecting Google Drive (GIS popup)');
       const result = await connectDrive({
         businessId: RESTORE_BUSINESS_ID,
-        prompt: 'consent',
+        prompt: 'select_account',
       });
       const api = createDriveApiClient({ businessId: RESTORE_BUSINESS_ID });
       const provider = new GoogleDriveStorageProvider({ driveApi: api });

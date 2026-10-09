@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 export const DB_NAME = 'businessvault';
 
@@ -190,4 +190,30 @@ export const STORES_V12: Record<string, string> = {
 // v13: optional MSME / Udyam registration number on business profiles.
 export const STORES_V13: Record<string, string> = {
   ...STORES_V12,
+};
+
+// Snapshot schema v14 / Dexie schema v17: durable GST reporting and GSTR-2B
+// records. Dexie repair versions 14 and 16 remain independent of snapshots.
+export const STORES_V14: Record<string, string> = {
+  ...STORES_V13,
+  gst_profiles:
+    'id, business_id, [business_id+gstin], [business_id+active], updated_at',
+  gst_aato:
+    'id, business_id, [business_id+financial_year], [business_id+confirmed_at], updated_at',
+  gst_document_metadata:
+    'id, business_id, [business_id+source_entity_type+source_entity_id], [business_id+document_type], updated_at',
+  gst_report_runs:
+    'id, business_id, [business_id+report_type+tax_period_key], [business_id+status], updated_at',
+  gst_report_rows:
+    'id, business_id, report_run_id, [business_id+report_run_id+section_code], [business_id+source_entity_type+source_entity_id]',
+  gst_adjustments:
+    'id, business_id, [business_id+report_run_id], [business_id+source], [business_id+supporting_attachment_id], updated_at',
+  gstr2b_imports:
+    'id, business_id, [business_id+tax_period_key], [business_id+sha256], [business_id+is_latest], updated_at',
+  gstr2b_documents:
+    'id, business_id, gstr2b_import_id, [business_id+gstr2b_import_id], [business_id+filing_period], [business_id+supplier_gstin], [business_id+search_normalized_document_number]',
+  gst_matches:
+    'id, business_id, gstr2b_import_id, gstr2b_document_id, [business_id+book_source_type+book_source_id], [business_id+status], updated_at',
+  gst_itc_ledger:
+    'id, business_id, [business_id+tax_period_key], [business_id+source_entity_type+source_entity_id], [business_id+tax_head], [business_id+status], updated_at',
 };

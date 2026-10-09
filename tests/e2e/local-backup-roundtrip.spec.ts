@@ -281,6 +281,7 @@ async function seed(db: BusinessVaultDB) {
     stock_movements: movements, accounts: rows.accounts, journal_entries: journalEntries, journal_lines: journalLines,
     advances, sales_returns: salesReturns, sales_return_items: salesReturnItems, attachments, audit_log: auditLogs,
   };
+  for (const spec of TABLE_SPECS) tableRows[spec.store] ??= [];
   const tables = Object.entries(tableRows) as Array<[string, unknown[]]>;
   await db.transaction('rw', TABLE_SPECS.map((spec) => (db as unknown as Record<string, unknown>)[spec.store]) as never, async () => {
     for (const [store, values] of tables) {

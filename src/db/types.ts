@@ -30,7 +30,17 @@ export type EntityType =
   | 'advance'
   | 'sales_return'
   | 'sales_return_item'
-  | 'customer_item_price';
+  | 'customer_item_price'
+  | 'gst_profile'
+  | 'gst_aato'
+  | 'gst_document_metadata'
+  | 'gst_report_run'
+  | 'gst_report_row'
+  | 'gst_adjustment'
+  | 'gstr2b_import'
+  | 'gstr2b_document'
+  | 'gst_match'
+  | 'gst_itc_ledger';
 
 export type EventOperation =
   | 'created'
@@ -95,6 +105,7 @@ export type RefType =
   // points at the CURRENT generation; invoice.signature_attachment_id (set at
   // invoice creation) is the immutable historical reference.
   | 'signature'
+  | 'gstr2b_import'
   | 'logo';
 
 export type SyncJobKind =
@@ -303,7 +314,7 @@ export interface Invoice {
   cess_paise: number; // money: integer paise
   round_off_paise: number; // money: integer paise (signed)
   // Rounding treatment chosen for this invoice. 'auto' = compute round_off so
-  // total lands on nearest ₹1 (banker's rounding); 'none' = 0; 'manual' = user
+  // total lands on nearest ₹1 (half-up); 'none' = 0; 'manual' = user
   // entered a specific round_off. Rows created before v6 default to 'auto'.
   round_off_mode: 'auto' | 'none' | 'manual';
   // Sum of taxable+cgst+sgst+igst+cess BEFORE round_off. Persisted so an
@@ -843,4 +854,313 @@ export interface DebugLogEntry {
   source: string; // module tag, e.g. 'sync', 'invoice', 'provider'
   msg: string;
   ctx?: Record<string, unknown> | null;
+}
+
+// ---------------------------------------------------------------------------
+// Durable GST reporting and GSTR-2B records (snapshot schema v14).
+// ---------------------------------------------------------------------------
+
+export interface GstProfile {
+  id: string;
+  business_id: string;
+  gstin: string;
+  legal_name: string;
+  state_code: string;
+  registration_type: 'REGULAR' | 'COMPOSITION' | 'UNREGISTERED' | 'OTHER';
+  registration_start_date: string | null;
+  registration_end_date: string | null;
+  filing_frequency: 'MONTHLY' | 'QRMP';
+  gst_reporting_enabled: 0 | 1;
+  effective_from: string;
+  effective_to: string | null;
+  active: 0 | 1;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export interface GstAato {
+  id: string;
+  business_id: string;
+  financial_year: string;
+  aato_paise: number | null;
+  source: 'USER_CONFIRMED' | 'BUSINESSVAULT_CALCULATED' | 'IMPORTED';
+  confirmed_at: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export type GstSourceEntityType =
+  | 'INVOICE'
+  | 'SALES_RETURN'
+  | 'PURCHASE'
+  | 'PURCHASE_RETURN'
+  | 'EXPENSE'
+  | 'ADVANCE'
+  | 'GST_NOTE';
+
+export type GstDocumentType =
+  | 'TAX_INVOICE'
+  | 'BILL_OF_SUPPLY'
+  | 'CREDIT_NOTE'
+  | 'DEBIT_NOTE'
+  | 'RECEIPT_VOUCHER'
+  | 'REFUND_VOUCHER'
+  | 'ADVANCE_ADJUSTMENT'
+  | 'IMPORT_BILL_OF_ENTRY';
+
+export interface GstDocumentMetadata {
+  id: string;
+  business_id: string;
+  source_entity_type: GstSourceEntityType;
+  source_entity_id: string;
+  document_type: GstDocumentType;
+  supply_category:
+    | 'DOMESTIC'
+    | 'EXPORT_WITH_PAYMENT'
+    | 'EXPORT_WITHOUT_PAYMENT'
+    | 'SEZ_WITH_PAYMENT'
+    | 'SEZ_WITHOUT_PAYMENT'
+    | 'DEEMED_EXPORT'
+    | 'NIL_RATED'
+    | 'EXEMPT'
+    | 'NON_GST'
+    | null;
+  recipient_category:
+    | 'REGISTERED'
+    | 'UNREGISTERED'
+    | 'COMPOSITION'
+    | 'UIN'
+    | 'SEZ'
+    | 'OVERSEAS'
+    | 'UNKNOWN'
+    | null;
+  place_of_supply_state_code: string | null;
+  reverse_charge: 0 | 1 | null;
+  ecommerce_operator_gstin: string | null;
+  ecommerce_reporting_type: string | null;
+  section_9_5_role: 'NONE' | 'SUPPLIER' | 'ECO' | null;
+  section_52_tcs: 0 | 1 | null;
+  shipping_bill_number: string | null;
+  shipping_bill_date: string | null;
+  port_code: string | null;
+  original_document_number: string | null;
+  original_document_date: string | null;
+  original_return_period: string | null;
+  amendment_kind: string | null;
+  tax_on_advance_applicable: 0 | 1 | null;
+  classification_source: 'USER_CAPTURED' | 'MIGRATED_INFERENCE' | 'IMPORTED' | null;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export type GstReportStatus =
+  | 'DRAFT'
+  | 'INCOMPLETE'
+  | 'RECONCILIATION_PENDING'
+  | 'READY_FOR_REVIEW'
+  | 'REVIEWED'
+  | 'FINALIZED'
+  | 'FILED_EXTERNALLY_UNVERIFIED'
+  | 'FILED_CONFIRMED';
+
+export interface GstReportRun {
+  id: string;
+  business_id: string;
+  gstin_snapshot: string;
+  report_type:
+    | 'GSTR1_PREPARATION'
+    | 'GSTR1A_ADJUSTMENT'
+    | 'GSTR2B_RECONCILIATION'
+    | 'GSTR3B_DRAFT';
+  financial_year: string;
+  tax_period_key: string;
+  period_start: string;
+  period_end: string;
+  filing_frequency: 'MONTHLY' | 'QRMP';
+  rule_set_version: string;
+  status: GstReportStatus;
+  generated_at: string;
+  generated_by_device_id: string;
+  source_data_hash: string | null;
+  source_artifact_attachment_id: string | null;
+  imported_file_hash: string | null;
+  totals_json: string | null;
+  finalized_at: string | null;
+  filed_at: string | null;
+  arn: string | null;
+  filing_acknowledgment_attachment_id: string | null;
+  supersedes_report_run_id: string | null;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export interface GstReportRow {
+  id: string;
+  business_id: string;
+  report_run_id: string;
+  section_code: string;
+  row_key: string;
+  source_entity_type: string | null;
+  source_entity_id: string | null;
+  source_entity_version: number | null;
+  classification_reason: string | null;
+  taxable_paise: number | null;
+  igst_paise: number | null;
+  cgst_paise: number | null;
+  sgst_paise: number | null;
+  cess_paise: number | null;
+  invoice_value_paise: number | null;
+  quantity_micros: number | null;
+  payload_json: string | null;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export interface GstAdjustment {
+  id: string;
+  business_id: string;
+  report_run_id: string;
+  table_code: string;
+  tax_head: 'IGST' | 'CGST' | 'SGST' | 'CESS';
+  original_paise: number | null;
+  adjusted_paise: number | null;
+  reason: string;
+  supporting_attachment_id: string | null;
+  source: 'USER' | 'GST_PORTAL' | 'IMPORT';
+  actor_id: string | null;
+  device_id: string;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export interface Gstr2bImport {
+  id: string;
+  business_id: string;
+  gstin_snapshot: string;
+  tax_period_key: string;
+  source_type: 'GSTR2B_EXCEL' | 'GSTR2B_JSON' | 'IMS_JSON';
+  original_attachment_id: string | null;
+  sha256: string;
+  imported_at: string;
+  portal_generated_at: string | null;
+  recomputed_at: string | null;
+  schema_adapter_version: string;
+  parse_status: 'PENDING' | 'PARSED' | 'FAILED';
+  parse_errors_json: string | null;
+  supersedes_import_id: string | null;
+  is_latest: 0 | 1;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export interface Gstr2bDocument {
+  id: string;
+  business_id: string;
+  gstr2b_import_id: string;
+  source_section: string | null;
+  supplier_gstin: string | null;
+  supplier_name: string | null;
+  document_type: string | null;
+  canonical_document_number: string | null;
+  search_normalized_document_number: string | null;
+  document_date: string | null;
+  original_document_number: string | null;
+  original_document_date: string | null;
+  filing_period: string | null;
+  place_of_supply_state_code: string | null;
+  reverse_charge: 0 | 1 | null;
+  taxable_paise: number | null;
+  igst_paise: number | null;
+  cgst_paise: number | null;
+  sgst_paise: number | null;
+  cess_paise: number | null;
+  invoice_value_paise: number | null;
+  itc_availability: string | null;
+  itc_unavailable_reason: string | null;
+  ims_status: 'ACCEPTED' | 'REJECTED' | 'PENDING' | 'NO_ACTION' | 'UNKNOWN' | null;
+  declared_itc_reduction_paise: number | null;
+  ims_remark: string | null;
+  bill_of_entry_number: string | null;
+  bill_of_entry_date: string | null;
+  port_code: string | null;
+  raw_payload_json: string | null;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export interface GstMatch {
+  id: string;
+  business_id: string;
+  gstr2b_import_id: string;
+  gstr2b_document_id: string | null;
+  book_source_type: string | null;
+  book_source_id: string | null;
+  status:
+    | 'EXACT_MATCH'
+    | 'USER_CONFIRMED_MATCH'
+    | 'PROBABLE_MATCH'
+    | 'BOOKS_ONLY'
+    | 'GSTR2B_ONLY'
+    | 'VALUE_MISMATCH'
+    | 'TAX_HEAD_MISMATCH'
+    | 'GSTIN_MISMATCH'
+    | 'DATE_MISMATCH'
+    | 'DOCUMENT_TYPE_MISMATCH'
+    | 'DUPLICATE_IN_BOOKS'
+    | 'DUPLICATE_IN_GSTR2B'
+    | 'CREDIT_NOTE_MISMATCH'
+    | 'ITC_NOT_AVAILABLE'
+    | 'IMS_REJECTED'
+    | 'IMS_PENDING'
+    | 'RCM_REVIEW_REQUIRED';
+  confidence_bps: number;
+  taxable_difference_paise: number | null;
+  igst_difference_paise: number | null;
+  cgst_difference_paise: number | null;
+  sgst_difference_paise: number | null;
+  cess_difference_paise: number | null;
+  confirmed_at: string | null;
+  confirmed_by_device_id: string | null;
+  confirmation_note: string | null;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export interface GstItcLedgerEntry {
+  id: string;
+  business_id: string;
+  source_entity_type: GstSourceEntityType;
+  source_entity_id: string;
+  tax_period_key: string;
+  category: 'IMPORT_GOODS' | 'IMPORT_SERVICES' | 'RCM' | 'ISD' | 'OTHER_ITC';
+  tax_head: 'IGST' | 'CGST' | 'SGST' | 'CESS';
+  original_eligible_paise: number | null;
+  temporarily_reversed_paise: number | null;
+  permanently_reversed_paise: number | null;
+  reclaimable_paise: number | null;
+  reclaimed_paise: number | null;
+  status:
+    | 'PENDING_REVIEW'
+    | 'ELIGIBLE'
+    | 'INELIGIBLE'
+    | 'TEMPORARILY_REVERSED'
+    | 'PERMANENTLY_REVERSED'
+    | 'RECLAIMABLE'
+    | 'RECLAIMED';
+  reason_code: string | null;
+  related_prior_entry_id: string | null;
+  user_confirmation: 0 | 1 | null;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
 }

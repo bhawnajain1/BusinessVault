@@ -13,7 +13,10 @@ export type ColumnType =
   | 'string'
   | 'string_or_null'
   | 'number'
+  | 'number_or_null'
+  | 'paise'
   | 'boolean_int'
+  | 'boolean_int_or_null'
   | 'json';
 
 export interface ColumnSpec {
@@ -605,6 +608,206 @@ export const TABLE_SPECS: TableSpec[] = [
       { name: 'at', type: 'string' },
     ],
   },
+  {
+    file: 'gst_profiles.csv',
+    store: 'gst_profiles',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'gstin', type: 'string' }, { name: 'legal_name', type: 'string' },
+      { name: 'state_code', type: 'string' }, { name: 'registration_type', type: 'string' },
+      { name: 'registration_start_date', type: 'string_or_null' },
+      { name: 'registration_end_date', type: 'string_or_null' },
+      { name: 'filing_frequency', type: 'string' },
+      { name: 'gst_reporting_enabled', type: 'boolean_int' },
+      { name: 'effective_from', type: 'string' },
+      { name: 'effective_to', type: 'string_or_null' }, { name: 'active', type: 'boolean_int' },
+      ...COMMON_AUDIT,
+    ],
+  },
+  {
+    file: 'gst_aato.csv',
+    store: 'gst_aato',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'financial_year', type: 'string' }, { name: 'aato_paise', type: 'paise' },
+      { name: 'source', type: 'string' }, { name: 'confirmed_at', type: 'string_or_null' },
+      { name: 'notes', type: 'string_or_null' }, ...COMMON_AUDIT,
+    ],
+  },
+  {
+    file: 'gst_document_metadata.csv',
+    store: 'gst_document_metadata',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'source_entity_type', type: 'string' }, { name: 'source_entity_id', type: 'string' },
+      { name: 'document_type', type: 'string' }, { name: 'supply_category', type: 'string_or_null' },
+      { name: 'recipient_category', type: 'string_or_null' },
+      { name: 'place_of_supply_state_code', type: 'string_or_null' },
+      { name: 'reverse_charge', type: 'boolean_int_or_null' },
+      { name: 'ecommerce_operator_gstin', type: 'string_or_null' },
+      { name: 'ecommerce_reporting_type', type: 'string_or_null' },
+      { name: 'section_9_5_role', type: 'string_or_null' },
+      { name: 'section_52_tcs', type: 'boolean_int_or_null' },
+      { name: 'shipping_bill_number', type: 'string_or_null' },
+      { name: 'shipping_bill_date', type: 'string_or_null' },
+      { name: 'port_code', type: 'string_or_null' },
+      { name: 'original_document_number', type: 'string_or_null' },
+      { name: 'original_document_date', type: 'string_or_null' },
+      { name: 'original_return_period', type: 'string_or_null' },
+      { name: 'amendment_kind', type: 'string_or_null' },
+      { name: 'tax_on_advance_applicable', type: 'boolean_int_or_null' },
+      { name: 'classification_source', type: 'string_or_null' }, ...COMMON_AUDIT,
+    ],
+  },
+  {
+    file: 'gst_report_runs.csv',
+    store: 'gst_report_runs',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'gstin_snapshot', type: 'string' }, { name: 'report_type', type: 'string' },
+      { name: 'financial_year', type: 'string' }, { name: 'tax_period_key', type: 'string' },
+      { name: 'period_start', type: 'string' }, { name: 'period_end', type: 'string' },
+      { name: 'filing_frequency', type: 'string' }, { name: 'rule_set_version', type: 'string' },
+      { name: 'status', type: 'string' }, { name: 'generated_at', type: 'string' },
+      { name: 'generated_by_device_id', type: 'string' },
+      { name: 'source_data_hash', type: 'string_or_null' },
+      { name: 'source_artifact_attachment_id', type: 'string_or_null' },
+      { name: 'imported_file_hash', type: 'string_or_null' },
+      { name: 'totals_json', type: 'string_or_null' },
+      { name: 'finalized_at', type: 'string_or_null' },
+      { name: 'filed_at', type: 'string_or_null' }, { name: 'arn', type: 'string_or_null' },
+      { name: 'filing_acknowledgment_attachment_id', type: 'string_or_null' },
+      { name: 'supersedes_report_run_id', type: 'string_or_null' },
+      ...COMMON_AUDIT,
+    ],
+  },
+  {
+    file: 'gst_report_rows.csv',
+    store: 'gst_report_rows',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'report_run_id', type: 'string' }, { name: 'section_code', type: 'string' },
+      { name: 'row_key', type: 'string' }, { name: 'source_entity_type', type: 'string_or_null' },
+      { name: 'source_entity_id', type: 'string_or_null' },
+      { name: 'source_entity_version', type: 'number_or_null' },
+      { name: 'classification_reason', type: 'string_or_null' },
+      { name: 'taxable_paise', type: 'paise' }, { name: 'igst_paise', type: 'paise' },
+      { name: 'cgst_paise', type: 'paise' }, { name: 'sgst_paise', type: 'paise' },
+      { name: 'cess_paise', type: 'paise' }, { name: 'invoice_value_paise', type: 'paise' },
+      { name: 'quantity_micros', type: 'number_or_null' },
+      { name: 'payload_json', type: 'string_or_null' }, ...COMMON_AUDIT,
+    ],
+  },
+  {
+    file: 'gst_adjustments.csv',
+    store: 'gst_adjustments',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'report_run_id', type: 'string' }, { name: 'table_code', type: 'string' },
+      { name: 'tax_head', type: 'string' }, { name: 'original_paise', type: 'paise' },
+      { name: 'adjusted_paise', type: 'paise' }, { name: 'reason', type: 'string' },
+      { name: 'supporting_attachment_id', type: 'string_or_null' },
+      { name: 'source', type: 'string' }, { name: 'actor_id', type: 'string_or_null' },
+      { name: 'device_id', type: 'string' },
+      { name: 'created_at', type: 'string' }, { name: 'updated_at', type: 'string' },
+      { name: 'entity_version', type: 'number' },
+    ],
+  },
+  {
+    file: 'gstr2b_imports.csv',
+    store: 'gstr2b_imports',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'gstin_snapshot', type: 'string' }, { name: 'tax_period_key', type: 'string' },
+      { name: 'source_type', type: 'string' },
+      { name: 'original_attachment_id', type: 'string_or_null' },
+      { name: 'sha256', type: 'string' }, { name: 'imported_at', type: 'string' },
+      { name: 'portal_generated_at', type: 'string_or_null' },
+      { name: 'recomputed_at', type: 'string_or_null' },
+      { name: 'schema_adapter_version', type: 'string' }, { name: 'parse_status', type: 'string' },
+      { name: 'parse_errors_json', type: 'string_or_null' },
+      { name: 'supersedes_import_id', type: 'string_or_null' },
+      { name: 'is_latest', type: 'boolean_int' },
+      ...COMMON_AUDIT,
+    ],
+  },
+  {
+    file: 'gstr2b_documents.csv',
+    store: 'gstr2b_documents',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'gstr2b_import_id', type: 'string' }, { name: 'source_section', type: 'string_or_null' },
+      { name: 'supplier_gstin', type: 'string_or_null' },
+      { name: 'supplier_name', type: 'string_or_null' }, { name: 'document_type', type: 'string_or_null' },
+      { name: 'canonical_document_number', type: 'string_or_null' },
+      { name: 'search_normalized_document_number', type: 'string_or_null' },
+      { name: 'document_date', type: 'string_or_null' },
+      { name: 'original_document_number', type: 'string_or_null' },
+      { name: 'original_document_date', type: 'string_or_null' },
+      { name: 'filing_period', type: 'string_or_null' },
+      { name: 'place_of_supply_state_code', type: 'string_or_null' },
+      { name: 'reverse_charge', type: 'boolean_int_or_null' },
+      { name: 'taxable_paise', type: 'paise' }, { name: 'igst_paise', type: 'paise' },
+      { name: 'cgst_paise', type: 'paise' }, { name: 'sgst_paise', type: 'paise' },
+      { name: 'cess_paise', type: 'paise' }, { name: 'invoice_value_paise', type: 'paise' },
+      { name: 'itc_availability', type: 'string_or_null' },
+      { name: 'itc_unavailable_reason', type: 'string_or_null' },
+      { name: 'ims_status', type: 'string_or_null' },
+      { name: 'declared_itc_reduction_paise', type: 'paise' },
+      { name: 'ims_remark', type: 'string_or_null' },
+      { name: 'bill_of_entry_number', type: 'string_or_null' },
+      { name: 'bill_of_entry_date', type: 'string_or_null' },
+      { name: 'port_code', type: 'string_or_null' },
+      { name: 'raw_payload_json', type: 'string_or_null' }, ...COMMON_AUDIT,
+    ],
+  },
+  {
+    file: 'gst_matches.csv',
+    store: 'gst_matches',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'gstr2b_import_id', type: 'string' }, { name: 'gstr2b_document_id', type: 'string_or_null' },
+      { name: 'book_source_type', type: 'string_or_null' },
+      { name: 'book_source_id', type: 'string_or_null' }, { name: 'status', type: 'string' },
+      { name: 'confidence_bps', type: 'number' },
+      { name: 'taxable_difference_paise', type: 'paise' },
+      { name: 'igst_difference_paise', type: 'paise' },
+      { name: 'cgst_difference_paise', type: 'paise' },
+      { name: 'sgst_difference_paise', type: 'paise' },
+      { name: 'cess_difference_paise', type: 'paise' },
+      { name: 'confirmed_at', type: 'string_or_null' },
+      { name: 'confirmed_by_device_id', type: 'string_or_null' },
+      { name: 'confirmation_note', type: 'string_or_null' }, ...COMMON_AUDIT,
+    ],
+  },
+  {
+    file: 'gst_itc_ledger.csv',
+    store: 'gst_itc_ledger',
+    pk: 'id',
+    columns: [
+      { name: 'id', type: 'string' }, { name: 'business_id', type: 'string' },
+      { name: 'source_entity_type', type: 'string' }, { name: 'source_entity_id', type: 'string' },
+      { name: 'tax_period_key', type: 'string' }, { name: 'category', type: 'string' },
+      { name: 'tax_head', type: 'string' },
+      { name: 'original_eligible_paise', type: 'paise' },
+      { name: 'temporarily_reversed_paise', type: 'paise' },
+      { name: 'permanently_reversed_paise', type: 'paise' },
+      { name: 'reclaimable_paise', type: 'paise' }, { name: 'reclaimed_paise', type: 'paise' },
+      { name: 'status', type: 'string' }, { name: 'reason_code', type: 'string_or_null' },
+      { name: 'related_prior_entry_id', type: 'string_or_null' },
+      { name: 'user_confirmation', type: 'boolean_int_or_null' },
+      ...COMMON_AUDIT,
+    ],
+  },
 ];
 
 export function findTableSpecByFile(file: string): TableSpec | undefined {
@@ -663,8 +866,47 @@ export function coerceRow(
         }
         break;
       }
+      case 'number_or_null': {
+        if (v === '') {
+          out[col.name] = null;
+        } else {
+          const n = Number(v);
+          if (!Number.isFinite(n)) {
+            throw new Error(
+              `coerceRow: '${col.name}' is not a finite number: ${JSON.stringify(v)}`,
+            );
+          }
+          out[col.name] = n;
+        }
+        break;
+      }
+      case 'paise': {
+        if (v === '') {
+          out[col.name] = null;
+        } else {
+          const n = Number(v);
+          if (!Number.isInteger(n)) {
+            throw new Error(
+              `coerceRow: '${col.name}' must be integer paise: ${JSON.stringify(v)}`,
+            );
+          }
+          if (!Number.isSafeInteger(n)) {
+            throw new Error(
+              `coerceRow: '${col.name}' must be a safe integer paise value: ${JSON.stringify(v)}`,
+            );
+          }
+          out[col.name] = n;
+        }
+        break;
+      }
       case 'boolean_int': {
         if (v === '' || v === '0' || v === 'false') out[col.name] = 0;
+        else out[col.name] = 1;
+        break;
+      }
+      case 'boolean_int_or_null': {
+        if (v === '') out[col.name] = null;
+        else if (v === '0' || v === 'false') out[col.name] = 0;
         else out[col.name] = 1;
         break;
       }

@@ -21,6 +21,7 @@ import type {
   Attachment,
   AuditLogEntry,
 } from '../db/types';
+import { TABLE_SPECS } from '../restore/tableSchema';
 
 (globalThis as unknown as { Blob: typeof NodeBlob }).Blob = NodeBlob;
 process.env.NODE_ENV = 'test';
@@ -309,5 +310,40 @@ describe('buildSnapshotInput', () => {
     const auditText = await auditBlob.text();
     expect(auditText).toContain('invoice_number');
     expect(auditText).not.toContain('[object Object]');
+  });
+
+  it('includes stable snapshot mappings and CSVs for every durable GST store', async () => {
+    const expectedStores = [
+      'gst_profiles',
+      'gst_aato',
+      'gst_document_metadata',
+      'gst_report_runs',
+      'gst_report_rows',
+      'gst_adjustments',
+      'gstr2b_imports',
+      'gstr2b_documents',
+      'gst_matches',
+      'gst_itc_ledger',
+    ];
+    const specsByStore = new Map(TABLE_SPECS.map((spec) => [spec.store, spec]));
+
+    for (const store of expectedStores) {
+      const spec = specsByStore.get(store);
+      expect(spec, `${store} must have a snapshot table mapping`).toBeDefined();
+      expect(spec!.file).toBe(`${store}.csv`);
+      expect(spec!.columns.map((column) => column.name)).toContain('business_id');
+    }
+    const importColumns = specsByStore.get('gstr2b_documents')!.columns.map((column) => column.name);
+    expect(importColumns).toContain('canonical_document_number');
+    expect(importColumns).toContain('search_normalized_document_number');
+    expect(importColumns).not.toContain('normalized_document_number');
+
+    const input = await buildSnapshotInput(db, BID, BNAME, 'ondemand', '2026-08-26');
+    expect(new Set(input.files.map((file) => file.name))).toEqual(
+      new Set(TABLE_SPECS.map((spec) => spec.file)),
+    );
+    for (const store of expectedStores) {
+      expect(input.files.find((file) => file.name === `${store}.csv`)).toBeDefined();
+    }
   });
 });

@@ -79,7 +79,7 @@ interface SnapshotPayload {
 }
 
 interface AttachmentPayload {
-  input: UploadAttachmentInput;
+  input?: UploadAttachmentInput;
   attachmentId?: string;
 }
 
@@ -372,7 +372,21 @@ export function startSyncWorker(deps: StartWorkerDeps): StopHandle {
           jobId: job.id,
           attachmentId: p.attachmentId,
         });
-        const res = await deps.provider.uploadAttachment(p.input);
+        const attachment = p.attachmentId ? await db.attachments.get(p.attachmentId) : undefined;
+        if (p.attachmentId && (!attachment || attachment.business_id !== businessId)) {
+          throw new Error(`attachment ${p.attachmentId} was not found for this business`);
+        }
+        const uploadInput = p.input ?? (attachment?.blob
+          ? {
+              path: attachment.logical_path,
+              blob: attachment.blob,
+              mimeType: attachment.mime_type,
+            }
+          : null);
+        if (!uploadInput) {
+          throw new Error(`attachment ${p.attachmentId ?? ''} has no local file bytes to upload`);
+        }
+        const res = await deps.provider.uploadAttachment(uploadInput);
         if (p.attachmentId) {
           await db.attachments.update(p.attachmentId, {
             drive_file_id: res.providerFileId,

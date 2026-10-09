@@ -39,6 +39,18 @@ import type {
   SalesReturn,
   SalesReturnItem,
   CustomerItemPrice,
+  GstProfile,
+  GstAato,
+  GstDocumentMetadata,
+  GstReportRun,
+  GstReportRow,
+  GstAdjustment,
+  Gstr2bDocument,
+  Gstr2bImport,
+  GstMatch,
+  GstItcLedgerEntry,
+  Attachment,
+  AuditLogEntry,
 } from '../db/types';
 import { log } from '../lib/log';
 
@@ -89,7 +101,7 @@ const merge =
       get(id: string): Promise<T | undefined>;
       put(v: T): Promise<unknown>;
     },
-    options: { recordMissing?: boolean } = {},
+    options: { recordMissing?: boolean; upsertIfMissing?: boolean } = {},
   ) =>
   async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
     const patch = asRecord(evt.payload, evt.event_id);
@@ -97,6 +109,10 @@ const merge =
     if (!id) throw new Error(`event ${evt.event_id}: ${entityType} update has no id`);
     const existing = await table(ctx.db).get(id);
     if (!existing) {
+      if (options.upsertIfMissing && patch.business_id === ctx.businessId) {
+        await table(ctx.db).put(patch as unknown as T);
+        return;
+      }
       const message = `${entityType}:update ${id}: existing row not found`;
       if (options.recordMissing !== false) ctx.diagnostics.push(message);
       log.warn('restore.event.merge-missing', 'restore: update target not found', {
@@ -141,11 +157,161 @@ const merge =
     ));
   };
 
+const replayGstr2bImport = async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
+  const payload = asRecord(evt.payload, evt.event_id);
+  const imported = asRecord(payload.import, evt.event_id);
+  const documents = payload.documents;
+  const attachment = payload.attachment;
+  const supersededImports = payload.superseded_imports;
+  const audit = payload.audit;
+  if (payload.business_id !== ctx.businessId) {
+    throw new Error(`event ${evt.event_id}: aggregate belongs to another business`);
+  }
+  if (imported.business_id !== ctx.businessId || typeof imported.id !== 'string') {
+    throw new Error(`event ${evt.event_id}: import belongs to another business or has no id`);
+  }
+  if (!Array.isArray(documents)) {
+    throw new Error(`event ${evt.event_id}: documents is not an array`);
+  }
+  const checkedDocuments = documents.map((value) => {
+    const row = asRecord(value, evt.event_id);
+    if (row.business_id !== ctx.businessId || typeof row.id !== 'string') {
+      throw new Error(`event ${evt.event_id}: document belongs to another business or has no id`);
+    }
+    if (row.gstr2b_import_id !== imported.id) {
+      throw new Error(`event ${evt.event_id}: document references a different import`);
+    }
+    return row as unknown as Gstr2bDocument;
+  });
+  const checkedSupersededImports = (supersededImports === undefined ? [] : supersededImports);
+  if (!Array.isArray(checkedSupersededImports)) {
+    throw new Error(`event ${evt.event_id}: superseded imports is not an array`);
+  }
+  const checkedSuperseded = checkedSupersededImports.map((value) => {
+    const row = asRecord(value, evt.event_id);
+    if (row.business_id !== ctx.businessId || typeof row.id !== 'string' || row.is_latest !== 0) {
+      throw new Error(`event ${evt.event_id}: superseded import is invalid or belongs to another business`);
+    }
+    return row as unknown as Gstr2bImport;
+  });
+  let checkedAttachment: Attachment | null = null;
+  if (attachment !== null && attachment !== undefined) {
+    const row = asRecord(attachment, evt.event_id);
+    if (row.business_id !== ctx.businessId || typeof row.id !== 'string') {
+      throw new Error(`event ${evt.event_id}: attachment belongs to another business or has no id`);
+    }
+    if (row.ref_type !== 'gstr2b_import' || row.ref_id !== imported.id) {
+      throw new Error(`event ${evt.event_id}: attachment references a different import`);
+    }
+    checkedAttachment = { ...row, blob: null } as unknown as Attachment;
+  }
+  let checkedAudit: AuditLogEntry | null = null;
+  if (audit !== null && audit !== undefined) {
+    const row = asRecord(audit, evt.event_id);
+    if (row.business_id !== ctx.businessId || row.entity_id !== imported.id || row.entity_type !== 'gstr2b_import') {
+      throw new Error(`event ${evt.event_id}: audit row belongs to another business or import`);
+    }
+    checkedAudit = row as unknown as AuditLogEntry;
+  }
+
+  // Validate the full aggregate before the first write so a bad child cannot
+  // leave a partially applied import if this handler is invoked outside a tx.
+  await ctx.db.gstr2b_imports.bulkPut(checkedSuperseded);
+  await ctx.db.gstr2b_imports.put(imported as unknown as Gstr2bImport);
+  await ctx.db.gstr2b_documents.bulkPut(checkedDocuments);
+  if (checkedAttachment) await ctx.db.attachments.put(checkedAttachment);
+  if (checkedAudit) await ctx.db.audit_log.put(checkedAudit);
+};
+
+const replayGstMatchRun = async (evt: SyncEvent, ctx: HandlerContext): Promise<void> => {
+  const payload = asRecord(evt.payload, evt.event_id);
+  const importId = String(payload.gstr2b_import_id ?? '');
+  if (payload.business_id !== ctx.businessId || !importId) {
+    throw new Error(`event ${evt.event_id}: GST match run has invalid business or import id`);
+  }
+  const imported = await ctx.db.gstr2b_imports.get(importId);
+  if (!imported || imported.business_id !== ctx.businessId) {
+    throw new Error(`event ${evt.event_id}: GST match run import does not exist for this business`);
+  }
+  const replaceIds = payload.replace_match_ids ?? [];
+  const matches = payload.matches;
+  if (!Array.isArray(replaceIds) || !replaceIds.every((id) => typeof id === 'string')) {
+    throw new Error(`event ${evt.event_id}: GST match replacement ids are invalid`);
+  }
+  if (!Array.isArray(matches)) throw new Error(`event ${evt.event_id}: GST matches is not an array`);
+  const checkedMatches = matches.map((value) => {
+    const row = asRecord(value, evt.event_id);
+    if (row.business_id !== ctx.businessId || row.gstr2b_import_id !== importId || typeof row.id !== 'string') {
+      throw new Error(`event ${evt.event_id}: GST match belongs to another business or import, or has no id`);
+    }
+    return row as unknown as GstMatch;
+  });
+  const auditValue = payload.audit;
+  const auditRow = auditValue == null ? null : asRecord(auditValue, evt.event_id);
+  if (auditRow && (auditRow.business_id !== ctx.businessId || auditRow.entity_type !== 'gstr2b_import' || auditRow.entity_id !== importId)) {
+    throw new Error(`event ${evt.event_id}: GST match audit row has invalid scope`);
+  }
+
+  for (const id of replaceIds as string[]) {
+    const existing = await ctx.db.gst_matches.get(id);
+    if (existing && (existing.business_id !== ctx.businessId || existing.gstr2b_import_id !== importId)) {
+      throw new Error(`event ${evt.event_id}: GST match replacement belongs to another business or import`);
+    }
+  }
+  await ctx.db.gst_matches.bulkDelete(replaceIds as string[]);
+  await ctx.db.gst_matches.bulkPut(checkedMatches);
+  if (auditRow) await ctx.db.audit_log.put(auditRow as unknown as AuditLogEntry);
+};
+
 const HANDLERS: Record<string, EventHandler> = {
   'business:create': put((db) => db.businesses),
   'business:created': put((db) => db.businesses),
   'business:update': merge('business', (db) => db.businesses),
   'business:updated': merge('business', (db) => db.businesses),
+
+  'gst_profile:create': put<GstProfile>((db) => db.gst_profiles),
+  'gst_profile:created': put<GstProfile>((db) => db.gst_profiles),
+  'gst_profile:update': merge<GstProfile>('gst_profile', (db) => db.gst_profiles, { upsertIfMissing: true }),
+  'gst_profile:updated': merge<GstProfile>('gst_profile', (db) => db.gst_profiles, { upsertIfMissing: true }),
+  'gst_aato:create': put<GstAato>((db) => db.gst_aato),
+  'gst_aato:created': put<GstAato>((db) => db.gst_aato),
+  'gst_aato:update': merge<GstAato>('gst_aato', (db) => db.gst_aato, { upsertIfMissing: true }),
+  'gst_aato:updated': merge<GstAato>('gst_aato', (db) => db.gst_aato, { upsertIfMissing: true }),
+  'gst_document_metadata:create': put<GstDocumentMetadata>((db) => db.gst_document_metadata),
+  'gst_document_metadata:created': put<GstDocumentMetadata>((db) => db.gst_document_metadata),
+  'gst_document_metadata:update': merge<GstDocumentMetadata>('gst_document_metadata', (db) => db.gst_document_metadata, { upsertIfMissing: true }),
+  'gst_document_metadata:updated': merge<GstDocumentMetadata>('gst_document_metadata', (db) => db.gst_document_metadata, { upsertIfMissing: true }),
+  'gst_report_run:create': put<GstReportRun>((db) => db.gst_report_runs),
+  'gst_report_run:created': put<GstReportRun>((db) => db.gst_report_runs),
+  'gst_report_run:update': merge<GstReportRun>('gst_report_run', (db) => db.gst_report_runs, { upsertIfMissing: true }),
+  'gst_report_run:updated': merge<GstReportRun>('gst_report_run', (db) => db.gst_report_runs, { upsertIfMissing: true }),
+  'gst_report_row:create': put<GstReportRow>((db) => db.gst_report_rows),
+  'gst_report_row:created': put<GstReportRow>((db) => db.gst_report_rows),
+  'gst_report_row:update': merge<GstReportRow>('gst_report_row', (db) => db.gst_report_rows, { upsertIfMissing: true }),
+  'gst_report_row:updated': merge<GstReportRow>('gst_report_row', (db) => db.gst_report_rows, { upsertIfMissing: true }),
+  'gst_adjustment:create': put<GstAdjustment>((db) => db.gst_adjustments),
+  'gst_adjustment:created': put<GstAdjustment>((db) => db.gst_adjustments),
+  'gst_adjustment:update': merge<GstAdjustment>('gst_adjustment', (db) => db.gst_adjustments, { upsertIfMissing: true }),
+  'gst_adjustment:updated': merge<GstAdjustment>('gst_adjustment', (db) => db.gst_adjustments, { upsertIfMissing: true }),
+  'gstr2b_document:create': put<Gstr2bDocument>((db) => db.gstr2b_documents),
+  'gstr2b_document:created': put<Gstr2bDocument>((db) => db.gstr2b_documents),
+  'gstr2b_document:update': merge<Gstr2bDocument>('gstr2b_document', (db) => db.gstr2b_documents, { upsertIfMissing: true }),
+  'gstr2b_document:updated': merge<Gstr2bDocument>('gstr2b_document', (db) => db.gstr2b_documents, { upsertIfMissing: true }),
+  'gst_match:create': put<GstMatch>((db) => db.gst_matches),
+  'gst_match:created': put<GstMatch>((db) => db.gst_matches),
+  'gst_match:update': merge<GstMatch>('gst_match', (db) => db.gst_matches, { upsertIfMissing: true }),
+  'gst_match:updated': merge<GstMatch>('gst_match', (db) => db.gst_matches, { upsertIfMissing: true }),
+  'gst_match_run:create': replayGstMatchRun,
+  'gst_match_run:created': replayGstMatchRun,
+  'gst_itc_ledger:create': put<GstItcLedgerEntry>((db) => db.gst_itc_ledger),
+  'gst_itc_ledger:created': put<GstItcLedgerEntry>((db) => db.gst_itc_ledger),
+  'gst_itc_ledger:update': merge<GstItcLedgerEntry>('gst_itc_ledger', (db) => db.gst_itc_ledger, { upsertIfMissing: true }),
+  'gst_itc_ledger:updated': merge<GstItcLedgerEntry>('gst_itc_ledger', (db) => db.gst_itc_ledger, { upsertIfMissing: true }),
+
+  'gstr2b_import:create': replayGstr2bImport,
+  'gstr2b_import:created': replayGstr2bImport,
+  'gstr2b_import:update': merge<Gstr2bImport>('gstr2b_import', (db) => db.gstr2b_imports, { upsertIfMissing: true }),
+  'gstr2b_import:updated': merge<Gstr2bImport>('gstr2b_import', (db) => db.gstr2b_imports, { upsertIfMissing: true }),
 
   'customer:create': put<Customer>((db) => db.customers),
   'customer:update': merge<Customer>('customer', (db) => db.customers),

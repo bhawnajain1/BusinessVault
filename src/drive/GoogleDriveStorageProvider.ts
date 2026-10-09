@@ -1100,8 +1100,8 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       throw new Error(`attachment path must be attachments/<subdir>/<file> — got '${input.path}'`);
     }
     const subdir = parts[1];
-    if (!['purchases', 'expenses', 'products'].includes(subdir)) {
-      throw new Error(`attachment subdir must be purchases|expenses|products — got '${subdir}'`);
+    if (!['purchases', 'expenses', 'products', 'gstr2b'].includes(subdir)) {
+      throw new Error(`attachment subdir must be purchases|expenses|products|gstr2b — got '${subdir}'`);
     }
 
     // Ensure intermediate folders exist.
@@ -1319,19 +1319,22 @@ export class GoogleDriveStorageProvider implements CustomerStorageProvider {
       journalFiles.sort((a, b) => a.year - b.year || a.month - b.month);
     }
 
-    // 4. Attachment index — top-level entries only; contents fetched lazily.
+    // Index attachment files recursively; GST imports are grouped by import id.
     const attachmentIndex: RestoreDescriptor['attachmentIndex'] = [];
-    for (const sub of ['purchases', 'expenses', 'products'] as const) {
-      const dirId = await this.resolveFolder(`attachments/${sub}`);
-      if (!dirId) continue;
-      const files = await this.api.listChildren(dirId);
-      for (const f of files) {
-        if (f.mimeType === MIME_FOLDER) continue;
-        attachmentIndex.push({
-          path: `attachments/${sub}/${f.name}`,
-          providerFileId: f.id,
-        });
-      }
+    const attachmentRootId = await this.resolveFolder('attachments');
+    if (attachmentRootId) {
+      const walk = async (folderId: string, path: string): Promise<void> => {
+        for (const child of await this.api.listChildren(folderId)) {
+          const childPath = `${path}/${child.name}`;
+          if (child.mimeType === MIME_FOLDER) {
+            await walk(child.id, childPath);
+          } else {
+            this.fileRefCache.set(childPath, child);
+            attachmentIndex.push({ path: childPath, providerFileId: child.id });
+          }
+        }
+      };
+      await walk(attachmentRootId, 'attachments');
     }
 
     return {

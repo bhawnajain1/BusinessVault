@@ -31,7 +31,7 @@ export async function startDriveOAuth(_args: StartDriveOAuthArgs): Promise<void>
     );
   }
   log.info('driveGlue', 'startDriveOAuth (GIS popup)', { businessId: PENDING_BUSINESS_ID });
-  await connectDrive({ businessId: PENDING_BUSINESS_ID, prompt: 'consent' });
+  await connectDrive({ businessId: PENDING_BUSINESS_ID, prompt: 'select_account' });
 }
 
 export async function buildDriveProvider(

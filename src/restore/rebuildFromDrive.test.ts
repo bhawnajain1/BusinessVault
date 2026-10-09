@@ -26,8 +26,9 @@ import type {
   StockMovement,
   JournalEntry,
   JournalLine,
+  GstProfile,
 } from '../db/types';
-import { applyEvent } from './eventHandlers';
+import { applyEvent, getEventHandler } from './eventHandlers';
 
 // jsdom Blob has no arrayBuffer; force Node's.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -412,6 +413,7 @@ const je2_lines = [
 async function makeSnapshotFiles(
   snapshotBusiness: Record<string, unknown> = business,
   snapshotPayments: Payment[] = [],
+  additionalRows: Record<string, Record<string, unknown>[]> = {},
 ) {
   const byStore: Record<string, Record<string, unknown>[]> = {
     businesses: [snapshotBusiness],
@@ -442,6 +444,7 @@ async function makeSnapshotFiles(
     accounts,
     journal_entries: [je1],
     journal_lines: je1_lines,
+    ...additionalRows,
   };
 
   const files = [] as Array<{
@@ -591,6 +594,131 @@ describe('rebuildFromDrive', () => {
         { db: testDb, businessId: BID, diagnostics },
       ),
     ).rejects.toThrow('belongs to business other-business');
+    await testDb.delete();
+  });
+
+  it('replays one aggregate GSTR-2B import idempotently and rejects cross-business children', async () => {
+    const testDb = new BusinessVaultDB(`bv-gstr2b-event-${Date.now()}-${Math.random()}`);
+    const stores = testDb as unknown as Record<string, {
+      get(id: string): Promise<Record<string, unknown> | undefined>;
+      where(key: string): { equals(value: string): { count(): Promise<number> } };
+    }>;
+    const diagnostics: string[] = [];
+    const imported = {
+      id: 'gstr2b-import-event',
+      business_id: BID,
+      return_period: '082026',
+      status: 'imported',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const documents = [
+      {
+        id: 'gstr2b-document-event-1',
+        business_id: BID,
+        gstr2b_import_id: imported.id,
+        canonical_document_number: 'INV/001',
+        search_normalized_document_number: 'INV001',
+        taxable_paise: 10000,
+      },
+      {
+        id: 'gstr2b-document-event-2',
+        business_id: BID,
+        gstr2b_import_id: imported.id,
+        canonical_document_number: 'CN/002',
+        search_normalized_document_number: 'CN002',
+        taxable_paise: 5000,
+      },
+    ];
+    const attachment = {
+      id: 'gstr2b-attachment-event',
+      business_id: BID,
+      ref_type: 'gstr2b_import',
+      ref_id: imported.id,
+      filename: 'gstr2b.json',
+      mime_type: 'application/json',
+      size_bytes: 128,
+      checksum: 'checksum-gstr2b',
+      drive_file_id: null,
+      logical_path: 'attachments/gstr2b/import.json',
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    const event: SyncEvent = {
+      event_id: 'evt_gstr2b_aggregate',
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: 'gstr2b_import',
+      entity_id: imported.id,
+      operation: 'create',
+      entity_version: 1,
+      timestamp: NOW,
+      payload: { business_id: BID, import: imported, documents, attachment },
+      payload_hash: 'gstr2b-hash',
+      previous_hash: null,
+      sync_status: 'SYNCED',
+    };
+
+    expect(await applyEvent(event, { db: testDb, businessId: BID, diagnostics })).toBe('applied');
+    expect(await applyEvent(event, { db: testDb, businessId: BID, diagnostics })).toBe('applied');
+    expect(await stores.gstr2b_imports.where('business_id').equals(BID).count()).toBe(1);
+    expect(await stores.gstr2b_documents.where('business_id').equals(BID).count()).toBe(2);
+    expect(await stores.attachments.where('business_id').equals(BID).count()).toBe(1);
+    expect(await stores.attachments.get(attachment.id)).toMatchObject({ blob: null });
+    expect(await testDb.sync_events.count()).toBe(0);
+
+    await expect(
+      applyEvent(
+        {
+          ...event,
+          event_id: 'evt_gstr2b_cross_business_child',
+          payload: {
+            business_id: BID,
+            import: imported,
+            documents: [{ ...documents[0], business_id: 'other-business' }],
+            attachment: null,
+          },
+        },
+        { db: testDb, businessId: BID, diagnostics },
+      ),
+    ).rejects.toThrow('another business');
+    expect(await stores.gstr2b_imports.where('business_id').equals(BID).count()).toBe(1);
+    expect(await stores.gstr2b_documents.where('business_id').equals(BID).count()).toBe(2);
+    await testDb.delete();
+  });
+
+  it('replays a GSTR-2B import when attachment is omitted', async () => {
+    const testDb = new BusinessVaultDB(`bv-gstr2b-no-attachment-${Date.now()}-${Math.random()}`);
+    const imported = {
+      id: 'gstr2b-import-without-attachment',
+      business_id: BID,
+      return_period: '082026',
+      status: 'imported',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const event: SyncEvent = {
+      event_id: 'evt_gstr2b_without_attachment',
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: 'gstr2b_import',
+      entity_id: imported.id,
+      operation: 'create',
+      entity_version: 1,
+      timestamp: NOW,
+      payload: { business_id: BID, import: imported, documents: [] },
+      payload_hash: 'gstr2b-no-attachment-hash',
+      previous_hash: null,
+      sync_status: 'SYNCED',
+    };
+
+    await expect(
+      applyEvent(event, { db: testDb, businessId: BID, diagnostics: [] }),
+    ).resolves.toBe('applied');
+    expect(await testDb.gstr2b_imports.get(imported.id)).toMatchObject({ id: imported.id });
+    expect(await testDb.attachments.count()).toBe(0);
     await testDb.delete();
   });
 
@@ -755,6 +883,19 @@ describe('rebuildFromDrive', () => {
     __resetMetaDbForTests();
   });
 
+  it('registers create and update replay handlers for every GST entity type', () => {
+    const entityTypes = [
+      'gst_profile', 'gst_aato', 'gst_document_metadata', 'gst_report_run',
+      'gst_report_row', 'gst_adjustment', 'gstr2b_import', 'gstr2b_document',
+      'gst_match', 'gst_itc_ledger',
+    ];
+    for (const entityType of entityTypes) {
+      for (const operation of ['create', 'created', 'update', 'updated']) {
+        expect(getEventHandler(entityType, operation), `${entityType}:${operation}`).toBeDefined();
+      }
+    }
+  });
+
   it('rebuilds a business end-to-end from the folder', async () => {
     const report = await rebuildFromDrive(provider, {
       db,
@@ -796,6 +937,460 @@ describe('rebuildFromDrive', () => {
     expect(inv!.paid_paise).toBe(10000);
     expect(inv!.balance_paise).toBe(13600);
     expect(inv!.status).toBe('partial');
+  });
+
+  it('restores normalized GSTR-2B documents from the snapshot and reconciles aggregate replay counts', async () => {
+    const snapshotImport = {
+      id: 'gstr2b-import-snapshot',
+      business_id: BID,
+      return_period: '072026',
+      status: 'imported',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const snapshotDocument = {
+      id: 'gstr2b-document-snapshot',
+      business_id: BID,
+      gstr2b_import_id: snapshotImport.id,
+      canonical_document_number: 'A/001',
+      search_normalized_document_number: 'A001',
+      supplier_gstin: '27AAAAA0000A1Z0',
+      taxable_paise: 20000,
+      igst_paise: 3600,
+    };
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeSnapshot({
+      businessId: BID,
+      kind: 'daily',
+      asOf: '2026-08-19',
+      files: await makeSnapshotFiles(business, [], {
+        gstr2b_imports: [snapshotImport],
+        gstr2b_documents: [snapshotDocument],
+      }),
+      manifest: { schemaVersion: 13, journalCheckpoint: 'snapshot-checkpoint' },
+    });
+    const replayImport = {
+      id: 'gstr2b-import-replay',
+      business_id: BID,
+      return_period: '082026',
+      status: 'imported',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const replayDocument = {
+      id: 'gstr2b-document-replay',
+      business_id: BID,
+      gstr2b_import_id: replayImport.id,
+      canonical_document_number: 'B/002',
+      search_normalized_document_number: 'B002',
+      supplier_gstin: '27BBBBB0000B1Z0',
+      taxable_paise: 30000,
+      igst_paise: 5400,
+    };
+    const replayAttachment = {
+      id: 'gstr2b-attachment-replay',
+      business_id: BID,
+      ref_type: 'gstr2b_import',
+      ref_id: replayImport.id,
+      filename: 'gstr2b-082026.json',
+      mime_type: 'application/json',
+      size_bytes: 256,
+      checksum: 'replay-attachment-checksum',
+      drive_file_id: 'drive-file-gstr2b',
+      logical_path: 'attachments/gstr2b/082026.json',
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    const importWithoutAttachment = {
+      id: 'gstr2b-import-without-attachment-replay',
+      business_id: BID,
+      return_period: '092026',
+      status: 'imported',
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    await producer.writeJournalEvents([
+      {
+        event_id: 'evt_gstr2b_import_after_snapshot',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'gstr2b_import',
+        entity_id: replayImport.id,
+        operation: 'create',
+        entity_version: 1,
+        timestamp: '2026-08-20T10:00:00.000Z',
+        payload: {
+          business_id: BID,
+          import: replayImport,
+          documents: [replayDocument],
+          attachment: replayAttachment,
+        },
+        payload_hash: 'gstr2b-replay-hash',
+        previous_hash: null,
+        sync_status: 'LOCAL_ONLY',
+      },
+      {
+        event_id: 'evt_gstr2b_import_without_attachment_after_snapshot',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'gstr2b_import',
+        entity_id: importWithoutAttachment.id,
+        operation: 'create',
+        entity_version: 1,
+        timestamp: '2026-08-21T10:00:00.000Z',
+        payload: {
+          business_id: BID,
+          import: importWithoutAttachment,
+          documents: [],
+          attachment: null,
+        },
+        payload_hash: 'gstr2b-no-attachment-replay-hash',
+        previous_hash: null,
+        sync_status: 'LOCAL_ONLY',
+      },
+    ]);
+
+    const report = await rebuildFromDrive(new LocalFolderStorageProvider(), {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+    const stores = db as unknown as Record<string, {
+      get(id: string): Promise<Record<string, unknown> | undefined>;
+    }>;
+
+    expect(report.migratedFrom).toBe(13);
+    expect(report.countReconciliation).toEqual({ exact: true, compared: true, mismatches: {} });
+    expect(report.counts.gstr2b_imports).toBe(3);
+    expect(report.counts.gstr2b_documents).toBe(2);
+    expect(report.counts.attachments).toBe(1);
+    expect(report.sourceCounts.gstr2b_imports).toBe(3);
+    expect(report.sourceCounts.gstr2b_documents).toBe(2);
+    expect(report.sourceCounts.attachments).toBe(1);
+    expect(await stores.gstr2b_documents.get(snapshotDocument.id)).toMatchObject({
+      canonical_document_number: 'A/001',
+      search_normalized_document_number: 'A001',
+      gstr2b_import_id: snapshotImport.id,
+    });
+    expect(await stores.gstr2b_documents.get(replayDocument.id)).toMatchObject({
+      canonical_document_number: 'B/002',
+      search_normalized_document_number: 'B002',
+    });
+    expect(await stores.attachments.get(replayAttachment.id)).toMatchObject({ blob: null });
+    expect(report.unhandledEvents).toBe(0);
+  });
+
+  it('restores and verifies original GSTR-2B attachment bytes from a snapshot', async () => {
+    const sourceBytes = new TextEncoder().encode('{"redacted":"portal source"}');
+    const sourceHash = await sha256Hex(sourceBytes);
+    const importId = 'gstr2b-import-with-source';
+    const attachmentId = 'gstr2b-source-attachment';
+    const logicalPath = `attachments/gstr2b/${importId}-source.json`;
+    const imported = {
+      id: importId,
+      business_id: BID,
+      gstin_snapshot: business.gstin,
+      tax_period_key: '2026-08',
+      source_type: 'GSTR2B_JSON',
+      original_attachment_id: attachmentId,
+      sha256: sourceHash,
+      imported_at: NOW,
+      portal_generated_at: null,
+      recomputed_at: null,
+      schema_adapter_version: 'fixture-interface-v1',
+      parse_status: 'PARSED',
+      parse_errors_json: null,
+      supersedes_import_id: null,
+      is_latest: 1,
+      ...commonAudit(),
+    };
+    const attachment = {
+      id: attachmentId,
+      business_id: BID,
+      ref_type: 'gstr2b_import',
+      ref_id: importId,
+      filename: 'source.json',
+      mime_type: 'application/json',
+      size_bytes: sourceBytes.length,
+      checksum: sourceHash,
+      drive_file_id: null,
+      logical_path: logicalPath,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.uploadAttachment({
+      path: logicalPath,
+      blob: new Blob([sourceBytes.slice().buffer as ArrayBuffer], { type: 'application/json' }),
+      mimeType: 'application/json',
+    });
+    await producer.writeSnapshot({
+      businessId: BID,
+      kind: 'daily',
+      asOf: '2026-08-19',
+      files: await makeSnapshotFiles(business, [], {
+        gstr2b_imports: [imported],
+        attachments: [attachment],
+      }),
+      manifest: { schemaVersion: 14 },
+    });
+
+    const report = await rebuildFromDrive(new LocalFolderStorageProvider(), {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    const restoredAttachment = await db.attachments.get(attachmentId);
+    expect(report.countReconciliation.exact).toBe(true);
+    expect(restoredAttachment?.checksum).toBe(imported.sha256);
+    expect(restoredAttachment?.blob).toBeInstanceOf(Blob);
+    expect(await new Response(restoredAttachment!.blob!).text()).toBe('{"redacted":"portal source"}');
+    await fs.writeFile(path.join(root, 'BusinessVault - Acme Traders', logicalPath), 'corrupted source');
+    await expect(
+      rebuildFromDrive(new LocalFolderStorageProvider(), {
+        db,
+        providerConfig: { kind: 'local-folder', rootPath: root },
+        confirmDataLoss: true,
+      }),
+    ).rejects.toBeInstanceOf(BackupIntegrityError);
+    expect(await db.gstr2b_imports.get(importId)).toMatchObject({ sha256: sourceHash });
+    expect(await new Response((await db.attachments.get(attachmentId))!.blob!).text())
+      .toBe('{"redacted":"portal source"}');
+  });
+
+  it('replays a post-snapshot GST profile create with correct counts and applies profile updates', async () => {
+    const snapshotProfile = {
+      id: 'gst-profile-snapshot',
+      business_id: BID,
+      gstin: '27AAAAA0000A1Z0',
+      legal_name: 'Snapshot profile',
+      state_code: '27',
+      registration_type: 'REGULAR',
+      gst_reporting_enabled: 1,
+      registration_start_date: '2020-04-01',
+      registration_end_date: null,
+      filing_frequency: 'MONTHLY',
+      effective_from: '2020-04-01',
+      effective_to: null,
+      active: 1,
+      created_at: NOW,
+      updated_at: NOW,
+      entity_version: 1,
+    };
+    const createdProfile = {
+      ...snapshotProfile,
+      id: 'gst-profile-created-after-snapshot',
+      gstin: '29BBBBB0000B1Z0',
+      state_code: '29',
+      legal_name: 'Journal profile',
+    };
+    const updateUpsertProfile = {
+      ...snapshotProfile,
+      id: 'gst-profile-update-upsert',
+      gstin: '29DDDDD0000D1Z0',
+      state_code: '29',
+      legal_name: 'Update-upsert profile',
+    };
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeSnapshot({
+      businessId: BID,
+      kind: 'daily',
+      asOf: '2026-08-19',
+      files: await makeSnapshotFiles(business, [], { gst_profiles: [snapshotProfile] }),
+      manifest: { schemaVersion: 14, journalCheckpoint: 'gst-profile-checkpoint' },
+    });
+    await producer.writeJournalEvents([
+      {
+        event_id: 'evt_gst_profile_created_after_snapshot',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'gst_profile',
+        entity_id: createdProfile.id,
+        operation: 'create',
+        entity_version: 1,
+        timestamp: '2026-08-20T10:00:00.000Z',
+        payload: createdProfile,
+        payload_hash: 'gst-profile-create-hash',
+        previous_hash: null,
+        sync_status: 'LOCAL_ONLY',
+      },
+      {
+        event_id: 'evt_gst_profile_updated_after_snapshot',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'gst_profile',
+        entity_id: snapshotProfile.id,
+        operation: 'update',
+        entity_version: 2,
+        timestamp: '2026-08-21T10:00:00.000Z',
+        payload: {
+          id: snapshotProfile.id,
+          gstin: '27CCCCC0000C1Z0',
+          legal_name: 'Updated snapshot profile',
+          entity_version: 2,
+        },
+        payload_hash: 'gst-profile-update-hash',
+        previous_hash: 'gst-profile-create-hash',
+        sync_status: 'LOCAL_ONLY',
+      },
+      {
+        event_id: 'evt_gst_profile_update_upsert_after_snapshot',
+        business_id: BID,
+        device_id: 'device_test',
+        entity_type: 'gst_profile',
+        entity_id: updateUpsertProfile.id,
+        operation: 'updated' as unknown as SyncEvent['operation'],
+        entity_version: 2,
+        timestamp: '2026-08-22T10:00:00.000Z',
+        payload: updateUpsertProfile,
+        payload_hash: 'gst-profile-update-upsert-hash',
+        previous_hash: 'gst-profile-update-hash',
+        sync_status: 'LOCAL_ONLY',
+      },
+    ]);
+
+    const report = await rebuildFromDrive(new LocalFolderStorageProvider(), {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(report.countReconciliation).toEqual({ exact: true, compared: true, mismatches: {} });
+    expect(report.counts.gst_profiles).toBe(3);
+    expect(report.sourceCounts.gst_profiles).toBe(3);
+    expect(await db.gst_profiles.get(createdProfile.id)).toMatchObject({
+      gstin: createdProfile.gstin,
+      filing_frequency: 'MONTHLY',
+    });
+    expect(await db.gst_profiles.get(snapshotProfile.id)).toMatchObject({
+      gstin: '27CCCCC0000C1Z0',
+      legal_name: 'Updated snapshot profile',
+      state_code: '27',
+    });
+    expect(await db.gst_profiles.get(updateUpsertProfile.id)).toMatchObject({
+      gstin: updateUpsertProfile.gstin,
+      legal_name: 'Update-upsert profile',
+    });
+    expect(report.unhandledEvents).toBe(0);
+  });
+
+  it('restores pre-restore GST rows after a GST aggregate replay failure', async () => {
+    const priorProfile: GstProfile = {
+      id: 'gst-profile-prior',
+      business_id: BID,
+      gstin: '27AAAAA0000A1Z0',
+      legal_name: 'Prior profile',
+      state_code: '27',
+      registration_type: 'REGULAR',
+      gst_reporting_enabled: 1,
+      registration_start_date: '2020-04-01',
+      registration_end_date: null,
+      filing_frequency: 'MONTHLY',
+      effective_from: NOW,
+      effective_to: null,
+      active: 1,
+      ...commonAudit(),
+    };
+    const otherBusinessProfile: GstProfile = {
+      id: 'gst-profile-other-business',
+      business_id: 'other-business',
+      gstin: '29BBBBB0000B1Z0',
+      legal_name: 'Other business profile',
+      state_code: '29',
+      registration_type: 'REGULAR',
+      gst_reporting_enabled: 1,
+      registration_start_date: '2020-04-01',
+      registration_end_date: null,
+      filing_frequency: 'MONTHLY',
+      effective_from: NOW,
+      effective_to: null,
+      active: 1,
+      ...commonAudit(),
+    };
+    await db.gst_profiles.bulkPut([priorProfile, otherBusinessProfile]);
+
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeJournalEvents([{
+      event_id: 'evt_gstr2b_invalid_child',
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: 'gstr2b_import',
+      entity_id: 'gstr2b-import-invalid',
+      operation: 'create',
+      entity_version: 1,
+      timestamp: '2026-08-20T10:00:00.000Z',
+      payload: {
+        business_id: BID,
+        import: { id: 'gstr2b-import-invalid', business_id: BID },
+        documents: [{ id: 'gstr2b-document-invalid', business_id: 'other-business' }],
+        attachment: null,
+      },
+      payload_hash: 'invalid-gstr2b-hash',
+      previous_hash: null,
+      sync_status: 'SYNCED',
+    }]);
+
+    await expect(
+      rebuildFromDrive(new LocalFolderStorageProvider(), {
+        db,
+        providerConfig: { kind: 'local-folder', rootPath: root },
+      }),
+    ).rejects.toThrow('Restore replay failed');
+    expect(await db.gst_profiles.get(priorProfile.id)).toEqual(priorProfile);
+    expect(await db.gst_profiles.get(otherBusinessProfile.id)).toEqual(otherBusinessProfile);
+    expect(await db.gstr2b_imports.get('gstr2b-import-invalid')).toBeUndefined();
+  });
+
+  it('restores pre-restore rows when post-replay validation fails', async () => {
+    const priorProfile: GstProfile = {
+      id: 'gst-profile-validation-rollback',
+      business_id: BID,
+      gstin: '27AAAAA0000A1Z0',
+      legal_name: 'Local profile before restore',
+      state_code: '27',
+      registration_type: 'REGULAR',
+      gst_reporting_enabled: 1,
+      registration_start_date: '2020-04-01',
+      registration_end_date: null,
+      filing_frequency: 'MONTHLY',
+      effective_from: NOW,
+      effective_to: null,
+      active: 1,
+      ...commonAudit(),
+    };
+    const restoredProfile = { ...priorProfile, legal_name: 'Profile from backup' };
+    await db.gst_profiles.put(priorProfile);
+
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeSnapshot({
+      businessId: BID,
+      kind: 'daily',
+      asOf: '2026-08-19',
+      files: await makeSnapshotFiles(business, [], { gst_profiles: [restoredProfile] }),
+      manifest: { schemaVersion: 14 },
+    });
+
+    await expect(
+      rebuildFromDrive(new LocalFolderStorageProvider(), {
+        db,
+        providerConfig: { kind: 'local-folder', rootPath: root },
+        onProgress: (step) => {
+          if (step === 'Verifying accounting and inventory') throw new Error('simulated validation failure');
+        },
+      }),
+    ).rejects.toThrow('simulated validation failure');
+    expect(await db.gst_profiles.get(priorProfile.id)).toEqual(priorProfile);
   });
 
   it('does not replay historical allocation events already covered by a snapshot', async () => {
