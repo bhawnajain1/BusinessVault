@@ -942,6 +942,34 @@ describe('rebuildFromDrive', () => {
     expect(inv!.status).toBe('partial');
   });
 
+  it('ignores a stale business update already included in the snapshot', async () => {
+    const producer = new LocalFolderStorageProvider();
+    await producer.connect({ kind: 'local-folder', rootPath: root });
+    await producer.initializeBusiness({ businessId: BID, businessName: business.name });
+    await producer.writeJournalEvents([{
+      event_id: 'evt_stale_business_update',
+      business_id: BID,
+      device_id: 'device_test',
+      entity_type: 'business',
+      entity_id: BID,
+      operation: 'update',
+      entity_version: 1,
+      timestamp: '2026-08-20T10:00:00.000Z',
+      payload: { id: BID, name: 'Older Acme Traders', entity_version: 1 },
+      payload_hash: 'stale-business-update-hash',
+      previous_hash: null,
+      sync_status: 'SYNCED',
+    }]);
+
+    const report = await rebuildFromDrive(provider, {
+      db,
+      providerConfig: { kind: 'local-folder', rootPath: root },
+    });
+
+    expect(report.diagnostics.ok).toBe(true);
+    expect((await db.businesses.get(BID))?.name).toBe(business.name);
+  });
+
   it('restores normalized GSTR-2B documents from the snapshot and reconciles aggregate replay counts', async () => {
     const snapshotImport = {
       id: 'gstr2b-import-snapshot',

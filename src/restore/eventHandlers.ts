@@ -64,6 +64,13 @@ export interface HandlerContext {
   diagnostics: string[];
 }
 
+function staleEventIgnored(ctx: HandlerContext, message: string): void {
+  log.debug('restore.event.stale', 'restore: stale journal event ignored', {
+    businessId: ctx.businessId,
+    message,
+  });
+}
+
 export type EventHandler = (
   evt: SyncEvent,
   ctx: HandlerContext,
@@ -101,7 +108,7 @@ const put =
     const existing = await table(ctx.db).get(row.id);
     const eventVersion = evt.entity_version ?? row.entity_version ?? 0;
     if (existing && eventVersion > 0 && (existing.entity_version ?? 0) >= eventVersion) {
-      ctx.diagnostics.push(`${evt.entity_type}:create ${row.id}: stale event ignored`);
+      staleEventIgnored(ctx, `${evt.entity_type}:create ${row.id}: stale event ignored`);
       return;
     }
     await table(ctx.db).put(row);
@@ -153,7 +160,7 @@ const merge =
     const currentVersion = (existing as { entity_version?: number }).entity_version ?? 0;
     const eventVersion = evt.entity_version ?? Number(patch.entity_version ?? 0);
     if (eventVersion > 0 && currentVersion >= eventVersion) {
-      ctx.diagnostics.push(`${entityType}:update ${id}: stale event ignored`);
+      staleEventIgnored(ctx, `${entityType}:update ${id}: stale event ignored`);
       return;
     }
     const next = {
