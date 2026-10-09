@@ -208,12 +208,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       }
 
       const abortController = new AbortController();
-      const release = beginAppOperation({
-        kind: 'restore',
-        label: 'Restore',
-        cancelable: true,
-        cancel: () => abortController.abort(),
-      });
+      const operationLock: { release?: () => void } = {};
       setStep('connecting');
       setError(null);
       setReport(null);
@@ -244,7 +239,6 @@ export default function RestoreWizard(props: RestoreWizardProps) {
       }
 
       if (!provider) {
-        release();
         setStep('error');
         setError('Provider is not available in this build.');
         return;
@@ -265,6 +259,16 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           providerConfig,
           preConnectedProvider,
           confirmDataLoss,
+          onBusinessSelected: () => {
+            // Discovering backups and choosing one are read-only. Lock only
+            // after selection, before the restore can modify local data.
+            operationLock.release = beginAppOperation({
+              kind: 'restore',
+              label: 'Restore',
+              cancelable: true,
+              cancel: () => abortController.abort(),
+            });
+          },
           onProgress: (msg, pct) => {
             setStatusMessage(msg);
             appendLog(`Progress: ${msg}${pct != null ? ` (${pct}%)` : ''}`);
@@ -315,7 +319,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           gstReconciled: result.gstReconciled,
         });
         appendLog(`Restore complete. Events replayed: ${result.eventsReplayed}.`);
-        release();
+        operationLock.release?.();
         if (providerKind === 'google-drive') {
           await rebindDriveTokensToBusiness(result.businessId);
         }
@@ -331,7 +335,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
         // instead of retaining the pre-restore in-memory view.
         window.setTimeout(() => window.location.reload(), 0);
       } catch (err) {
-        release();
+        operationLock.release?.();
         await tryBootProvider().catch(() => false);
         if (err instanceof Error && err.name === 'AbortError') {
           appendLog('Restore cancelled; local data was left unchanged.');

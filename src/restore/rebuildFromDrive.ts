@@ -84,6 +84,8 @@ export interface RebuildOptions {
    * called when exactly one is present.
    */
   pickBusiness?: BusinessPicker;
+  /** Called after a backup business is selected and before local data changes. */
+  onBusinessSelected?: (business: DiscoveredBusiness) => void;
   /** Test hook — inject a pre-connected provider instead of opening a new one. */
   preConnectedProvider?: CustomerStorageProvider;
   /** Called with the current step description for UI progress. */
@@ -236,6 +238,7 @@ export async function rebuildFromDrive(
     schemaVersion: selected.schemaVersion,
     candidateCount: businesses.length,
   });
+  opts.onBusinessSelected?.(selected);
 
   // Bind the provider to the selected business so subsequent journal/snapshot
   // reads know which folder to look in.

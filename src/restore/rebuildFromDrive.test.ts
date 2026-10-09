@@ -897,11 +897,14 @@ describe('rebuildFromDrive', () => {
   });
 
   it('rebuilds a business end-to-end from the folder', async () => {
+    const selected: string[] = [];
     const report = await rebuildFromDrive(provider, {
       db,
       providerConfig: { kind: 'local-folder', rootPath: root },
+      onBusinessSelected: (business) => selected.push(business.businessId),
     });
 
+    expect(selected).toEqual([BID]);
     // Structural counts.
     expect(report.counts.customers).toBe(2);
     expect(report.counts.items).toBe(1);
