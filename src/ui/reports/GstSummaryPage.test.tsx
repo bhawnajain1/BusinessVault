@@ -531,6 +531,22 @@ describe('GST report workspace', () => {
     expect(screen.getByRole('table', { name: 'Independent monthly comparison (not a combined return period)' })).toBeTruthy();
   });
 
+  it('shows a selected-months analysis total without merging monthly return workings', async () => {
+    mocks.calculateMonths.mockImplementation(async (_business: string, keys: string[]) => keys.map((key, index) => ({
+      ...calculation(key),
+      totals: { ...calculation(key).totals, outwardNet: { ...summary, taxable_paise: (index + 1) * 10_000, document_count: index + 1, source_entity_ids: [`invoice-${key}`] } },
+    })));
+    await open();
+    const firstKey = mocks.calculateMonths.mock.lastCall![1][0] as string;
+    const otherKey = screen.getAllByRole('checkbox').map(input => input.closest('label')!.textContent!.trim()).find(label => /^\d{4}-\d{2}$/.test(label) && label !== firstKey)!;
+    fireEvent.click(screen.getByLabelText(otherKey));
+    await finished();
+    expect(screen.getByRole('heading', { name: 'Selected-months analysis' })).toBeTruthy();
+    expect(screen.getByText('Total across 2 independently calculated months. This is for review only, not a combined GST return period.')).toBeTruthy();
+    expect(screen.getByText('300.00')).toBeTruthy();
+    expect(screen.getByRole('table', { name: 'Independent monthly comparison (not a combined return period)' })).toBeTruthy();
+  });
+
   it('clears results without calculating an empty selection', async () => {
     await open();
     const key = mocks.calculateMonths.mock.lastCall![1][0] as string;

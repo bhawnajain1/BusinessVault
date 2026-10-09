@@ -5,7 +5,7 @@ import { gstMonthlyReportService } from '../../domain/gstReporting';
 import type { GstMonthlyReportService, SaveGstDocumentMetadataInput, ReviewGstItcInput, SaveGstProfileInput, SaveGstNoteInput } from '../../domain/gstReporting/GstMonthlyReportService';
 import { downloadMonthlyGstExcel, downloadMonthlyGstCsv, downloadMonthlyGstPdf, downloadMonthlyGstJson } from '../../domain/gstReporting/exports';
 import { financialYearForDate, precedingFinancialYear, quarterPeriod } from '../../domain/gstReporting/periods';
-import { taxTotalPaise, type GstAmounts, type GstAmountKey, type GstMonthlySources, type MonthlyGstCalculation, type NormalizedGstDocument, type BooksItcStatus, type BooksItcRow } from '../../domain/gstReporting/types';
+import { taxTotalPaise, type GstAmounts, type GstAmountKey, type GstMonthlySources, type GstSummary, type MonthlyGstCalculation, type NormalizedGstDocument, type BooksItcStatus, type BooksItcRow } from '../../domain/gstReporting/types';
 import { isValidGstin } from '../../lib/gst';
 import { setCurrentBusinessId } from '../../lib/business';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
@@ -86,6 +86,24 @@ function indicativeLiabilitySourceIds(result: MonthlyGstCalculation): string[] {
   return [...result.outwardDocuments.filter(d => outputGstSourceIds(result).includes(d.source_entity_id) && [...contributingHeads].some(head => d[`${head.toLowerCase()}_paise` as keyof GstAmounts] !== 0)).map(d => d.source_entity_id), ...result.inwardDocuments.filter(d => d.included && d.classification === 'RCM' && [...contributingHeads].some(head => d[`${head.toLowerCase()}_paise` as keyof GstAmounts] !== 0)).map(d => d.source_entity_id), ...result.booksItcRows.filter(row => contributingHeads.has(row.tax_head) && row.approved_paise !== 0).map(row => row.source_entity_id)];
 }
 
+function sumAmounts(results: MonthlyGstCalculation[], select: (result: MonthlyGstCalculation) => GstAmounts): GstAmounts {
+  const total: GstAmounts = { taxable_paise: 0, igst_paise: 0, cgst_paise: 0, sgst_paise: 0, cess_paise: 0, pre_round_total_paise: 0, round_off_paise: 0, total_paise: 0 };
+  for (const result of results) {
+    const amounts = select(result);
+    for (const [key] of Object.entries(total) as Array<[GstAmountKey, number]>) total[key] += amounts[key];
+  }
+  return total;
+}
+
+function sumSummary(results: MonthlyGstCalculation[], select: (result: MonthlyGstCalculation) => GstSummary): GstSummary {
+  const total = sumAmounts(results, select) as GstSummary;
+  total.document_count = results.reduce((sum, result) => sum + select(result).document_count, 0);
+  total.party_count = results.reduce((sum, result) => sum + select(result).party_count, 0);
+  total.detail_row_count = results.reduce((sum, result) => sum + select(result).detail_row_count, 0);
+  total.source_entity_ids = [...new Set(results.flatMap(result => select(result).source_entity_ids))];
+  return total;
+}
+
 export default function GstSummaryPage() {
   const active = useActiveBusiness();
   const navigate = useNavigate();
@@ -146,6 +164,15 @@ export default function GstSummaryPage() {
   const adjustmentHeads = [...new Set(adjustmentFields.filter(f => f.table_code === selectedAdjustmentTable).map(f => f.measure.slice(0, -6).toUpperCase()))];
   const blockingIssueCount = current?.issues.filter(issue => issue.severity === 'BLOCKING_ERROR').length ?? 0;
   const issueCount = current?.issues.length ?? 0;
+  const selectedMonthsAnalysis = visibleResults.length > 1 ? {
+    outwardNet: sumSummary(visibleResults, result => result.totals.outwardNet),
+    outputLiability: sumAmounts(visibleResults, result => result.totals.outputLiability),
+    inwardNet: sumSummary(visibleResults, result => result.totals.inwardNet),
+    booksItc: sumAmounts(visibleResults, result => result.totals.booksItc.NET_APPROVED),
+    indicativeLiability: sumAmounts(visibleResults, result => result.totals.indicativeWorkingBalance),
+    issueCount: visibleResults.reduce((sum, result) => sum + result.issues.length, 0),
+    blockingIssueCount: visibleResults.reduce((sum, result) => sum + result.issues.filter(issue => issue.severity === 'BLOCKING_ERROR').length, 0),
+  } : null;
   const reportStatus = immutable ? savedResult?.savedStatus === 'FINALIZED_WORKING' ? 'Finalized' : 'Reviewed' : calculating ? 'Calculating' : !current ? 'Not calculated' : blockingIssueCount ? `Incomplete · ${blockingIssueCount} ${blockingIssueCount === 1 ? 'issue' : 'issues'}` : current.status === 'READY_FOR_CA_REVIEW' ? 'Ready for review' : 'Reconciliation pending';
 
   useEffect(() => { setSupportingFile(null); }, [current?.period.periodKey, current?.sourceDataHash]);
@@ -237,6 +264,10 @@ export default function GstSummaryPage() {
   function drill(ids: string[], label: string, result = current) {
     if (result) setCurrentKey(result.period.periodKey);
     setFilter({ ids: [...new Set(ids)], label }); setTab('Source Transactions');
+    setTimeout(() => sourceHeading.current?.focus(), 0);
+  }
+  function drillSelectedMonths(ids: string[], label: string) {
+    setFilter({ ids: [...new Set(ids)], label, allMonths: true }); setTab('Source Transactions');
     setTimeout(() => sourceHeading.current?.focus(), 0);
   }
   function metric(value: number | null, ids: string[], label: string, result = current, monetary = true) {
@@ -391,6 +422,16 @@ export default function GstSummaryPage() {
 
     <section id={`gst-panel-${tabs.indexOf(tab)}`} role="tabpanel" aria-labelledby={`gst-tab-${tabs.indexOf(tab)}`}>
     {tab === 'Monthly Overview' && <>
+      {selectedMonthsAnalysis && <section className="gst-section-card"><div className="gst-card-heading"><div><BarChart3 size={22} /><div><h2>Selected-months analysis</h2><p>Total across {visibleResults.length} independently calculated months. This is for review only, not a combined GST return period.</p></div></div></div>
+        <div className="gst-metrics">
+          <button type="button" className="gst-metric gst-metric-green" onClick={() => drillSelectedMonths(selectedMonthsAnalysis.outwardNet.source_entity_ids, 'Selected months net taxable outward')}><ShoppingBag size={22} /><span><small>Net taxable outward</small><strong>{money(selectedMonthsAnalysis.outwardNet.taxable_paise)}</strong><em>From {selectedMonthsAnalysis.outwardNet.document_count} sales documents</em></span></button>
+          <button type="button" className="gst-metric gst-metric-blue" onClick={() => drillSelectedMonths(visibleResults.flatMap(outputGstSourceIds), 'Selected months output GST')}><CircleDollarSign size={22} /><span><small>Output GST</small><strong>{money(taxTotalPaise(selectedMonthsAnalysis.outputLiability))}</strong><em>IGST {money(selectedMonthsAnalysis.outputLiability.igst_paise)} · CGST {money(selectedMonthsAnalysis.outputLiability.cgst_paise)} · SGST {money(selectedMonthsAnalysis.outputLiability.sgst_paise)}</em></span></button>
+          <button type="button" className="gst-metric gst-metric-violet" onClick={() => drillSelectedMonths(selectedMonthsAnalysis.inwardNet.source_entity_ids, 'Selected months purchase taxable')}><PackageCheck size={22} /><span><small>Purchase taxable</small><strong>{money(selectedMonthsAnalysis.inwardNet.taxable_paise)}</strong><em>From {selectedMonthsAnalysis.inwardNet.document_count} purchase documents</em></span></button>
+          <button type="button" className="gst-metric gst-metric-amber" onClick={() => drillSelectedMonths(visibleResults.flatMap(approvedBooksItcSourceIds), 'Selected months books ITC')}><ReceiptIndianRupee size={22} /><span><small>Books ITC</small><strong>{money(taxTotalPaise(selectedMonthsAnalysis.booksItc))}</strong><em>Subject to CA review</em></span></button>
+          <button type="button" className="gst-metric gst-metric-rose" onClick={() => drillSelectedMonths(visibleResults.flatMap(indicativeLiabilitySourceIds), 'Selected months indicative liability')}><Landmark size={22} /><span><small>Indicative liability</small><strong>{money(taxTotalPaise(selectedMonthsAnalysis.indicativeLiability))}</strong><em>Before payment and adjustments</em></span></button>
+          <button type="button" className={`gst-metric ${selectedMonthsAnalysis.blockingIssueCount ? 'gst-metric-danger' : 'gst-metric-green'}`} onClick={() => changeTab('Validation Issues')}><AlertTriangle size={22} /><span><small>Validation issues</small><strong>{selectedMonthsAnalysis.issueCount}</strong><em>{selectedMonthsAnalysis.blockingIssueCount ? `${selectedMonthsAnalysis.blockingIssueCount} blocking issues` : 'No blocking issues'}</em></span></button>
+        </div>
+      </section>}
       {current && <><div className="gst-metrics">
         <button type="button" className="gst-metric gst-metric-green" onClick={() => drill(current.totals.outwardNet.source_entity_ids, 'Net taxable outward')}><ShoppingBag size={22} /><span><small>Net taxable outward</small><strong>{money(current.totals.outwardNet.taxable_paise)}</strong><em>From {current.totals.outwardNet.document_count} sales documents</em></span></button>
         <button type="button" className="gst-metric gst-metric-blue" onClick={() => drill(outputGstSourceIds(current), 'Output GST')}><CircleDollarSign size={22} /><span><small>Output GST</small><strong>{money(taxTotalPaise(current.totals.outputLiability))}</strong><em>IGST {money(current.totals.outputLiability.igst_paise)} · CGST {money(current.totals.outputLiability.cgst_paise)} · SGST {money(current.totals.outputLiability.sgst_paise)}</em></span></button>
