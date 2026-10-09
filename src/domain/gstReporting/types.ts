@@ -2,9 +2,14 @@ import type {
   Business, Invoice, InvoiceLine, Purchase, PurchaseLine, SalesReturn,
   SalesReturnItem, Customer, Supplier, GstProfile, GstAato, GstDocumentMetadata,
   GstItcLedgerEntry, GstAdjustment, Expense, Advance, LegacyReversalAudit,
+  GstNote, Item, Unit,
 } from '../../db/types';
 
 export interface GstMonthlySources {
+  notes?: GstNote[];
+  currentItems?: Item[];
+  currentUnits?: Unit[];
+  advanceOffsetEvidence?: GstDocumentMetadata[];
   business: Business;
   invoices: Invoice[];
   invoiceLines: InvoiceLine[];
@@ -36,6 +41,7 @@ export interface GstDocumentIdentityEvidence {
   document_date?: string;
   /** Identity-only FY query evidence can supply FY instead of a document date. */
   financial_year?: string;
+  direction?: 'OUTWARD' | 'INWARD';
   party_gstin: string | null;
 }
 
@@ -70,7 +76,7 @@ export type GstClassification = 'B2B' | 'B2CL' | 'B2CS' | 'EXPORT_WITH_PAYMENT'
   | 'UNCLASSIFIED_INVALID_GSTIN';
 
 export interface NormalizedGstDocument extends GstAmounts {
-  source_entity_type: 'INVOICE' | 'SALES_RETURN' | 'PURCHASE' | 'PURCHASE_RETURN';
+  source_entity_type: 'INVOICE' | 'SALES_RETURN' | 'PURCHASE' | 'PURCHASE_RETURN' | 'GST_NOTE' | 'ADVANCE';
   source_entity_id: string;
   source_entity_version: number;
   tax_period_key: string;
@@ -101,6 +107,9 @@ export interface NormalizedGstDocument extends GstAmounts {
   section_9_5_role?: string | null;
   section_52_tcs?: 0 | 1 | null;
   ecommerce_reporting_type?: string | null;
+  direction?: 'OUTWARD' | 'INWARD';
+  iff_reported_period?: string | null;
+  allocation_only?: boolean;
 }
 export type NormalizedOutwardDocument = NormalizedGstDocument;
 export type NormalizedInwardDocument = NormalizedGstDocument;
@@ -124,6 +133,15 @@ export interface GstPreviouslyReportedValues extends GstAmounts {
   place_of_supply?: string;
   is_interstate?: boolean;
   ecommerce_operator_gstin?: string | null;
+  party_gstin?: string;
+  recipient_category?: string;
+  reverse_charge?: boolean;
+}
+
+export interface GstAdvanceOffset extends Pick<GstAmounts, 'taxable_paise' | 'igst_paise' | 'cgst_paise' | 'sgst_paise' | 'cess_paise'> {
+  advance_id: string;
+  /** Required for a partial offset against a mixed-rate advance. */
+  lines?: Array<{ advance_line_id: string; taxable_paise: number; igst_paise: number; cgst_paise: number; sgst_paise: number; cess_paise: number }>;
 }
 
 export interface NormalizedGstRateRow extends GstAmounts {
@@ -136,6 +154,11 @@ export interface NormalizedGstRateRow extends GstAmounts {
   taxability: string;
   place_of_supply: string;
   ecommerce_operator_gstin: string | null;
+  is_interstate?: boolean;
+  recipient_category?: string;
+  party_gstin?: string;
+  reverse_charge?: boolean;
+  recipient_group?: NormalizedHsnRow['recipient_group'];
 }
 export type NormalizedOutwardRateRow = NormalizedGstRateRow;
 export type NormalizedInwardRateRow = NormalizedGstRateRow;
@@ -191,6 +214,10 @@ export interface Gstr1WorkingSections {
   hsnB2b: NormalizedHsnRow[];
   hsnB2c: NormalizedHsnRow[];
   b2csAggregates?: GstB2csAggregate[];
+  /** Quarter preparation excludes these already-IFF-reported documents; books/3B retain them. */
+  iffReportedSourceIds?: string[];
+  quarterPendingDocuments?: NormalizedGstDocument[];
+  quarterPendingRateRows?: NormalizedGstRateRow[];
 }
 
 export interface GstB2csAggregate extends GstAmounts {

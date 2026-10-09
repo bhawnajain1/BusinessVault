@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import GstSummaryPage from './GstSummaryPage';
-import { monthPeriod } from '../../domain/gstReporting/periods';
+import { monthPeriod, quarterPeriod } from '../../domain/gstReporting/periods';
 import type { GstAmounts, GstSummary, MonthlyGstCalculation, NormalizedGstDocument } from '../../domain/gstReporting/types';
 import { computeTotals } from '../pos/POSScreen';
 
-const mocks = vi.hoisted(() => ({ loadWorkspace: vi.fn(), loadSavedReport: vi.fn(), calculateMonths: vi.fn(), saveProfile: vi.fn(), setAato: vi.fn(), saveDocumentMetadata: vi.fn(), reviewItc: vi.fn(), addAdjustment: vi.fn(), saveReport: vi.fn(), excel: vi.fn(), csv: vi.fn(), pdf: vi.fn(), json: vi.fn(), setBusiness: vi.fn() }));
+const mocks = vi.hoisted(() => ({ loadWorkspace: vi.fn(), loadSavedReport: vi.fn(), calculateMonths: vi.fn(), calculateQuarter: vi.fn(), saveNote: vi.fn(), confirmNilPeriod: vi.fn(), saveProfile: vi.fn(), setAato: vi.fn(), saveDocumentMetadata: vi.fn(), reviewItc: vi.fn(), addAdjustment: vi.fn(), saveReport: vi.fn(), excel: vi.fn(), csv: vi.fn(), pdf: vi.fn(), json: vi.fn(), setBusiness: vi.fn() }));
 vi.mock('../../lib/business', () => ({ setCurrentBusinessId: mocks.setBusiness }));
 vi.mock('../../domain/gstReporting', () => ({ gstMonthlyReportService: mocks }));
 vi.mock('../../domain/gstReporting/exports', () => ({ downloadMonthlyGstExcel: mocks.excel, downloadMonthlyGstCsv: mocks.csv, downloadMonthlyGstPdf: mocks.pdf, downloadMonthlyGstJson: mocks.json }));
@@ -43,6 +43,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.loadWorkspace.mockResolvedValue({ businesses: [{ id: 'business-a', name: 'Synthetic business', gstin: '', state_code: '27' }, { id: 'business-b', name: 'Second business', gstin: '', state_code: '29' }], profiles: [], aato: [], savedRuns: [] });
   mocks.calculateMonths.mockImplementation(async (_business: string, keys: string[]) => keys.map(calculation));
+  mocks.calculateQuarter.mockImplementation(async (business: string, year: string, quarter: number) => ({ ...calculation(`${year.slice(0, 4)}-04`), businessId: business, period: quarterPeriod(business, '', year, quarter) }));
   mocks.setBusiness.mockResolvedValue(undefined);
 });
 afterEach(cleanup);
@@ -92,7 +93,7 @@ describe('GST report workspace', () => {
     await act(async () => latest.resolve(results));
     await finished();
     expect(screen.getAllByRole('button', { name: 'Outward Taxable: 222.00. Show contributing sources' })).toHaveLength(3);
-    const status = screen.getByRole('status').textContent;
+    const status = within(reportPage() as HTMLElement).getByRole('status').textContent;
     await act(async () => {
       if (outcome === 'error') old.reject(new Error('Obsolete source error'));
       else {
@@ -104,7 +105,7 @@ describe('GST report workspace', () => {
     expect(screen.getAllByRole('button', { name: 'Outward Taxable: 222.00. Show contributing sources' })).toHaveLength(3);
     expect(screen.queryByRole('button', { name: 'Outward Taxable: 111.00. Show contributing sources' })).toBeNull();
     expect(screen.getByRole('alert').textContent).toBe('');
-    expect(screen.getByRole('status').textContent).toBe(status);
+    expect(within(reportPage() as HTMLElement).getByRole('status').textContent).toBe(status);
     expect(reportPage().getAttribute('aria-busy')).toBe('false');
   });
 
@@ -211,13 +212,13 @@ describe('GST report workspace', () => {
     for (const name of ['Save profile', 'Save AATO', 'Download Excel (current month)', 'Download Excel (selected months)', 'Save reviewed snapshot', 'Finalize working snapshot']) {
       expect(screen.getByRole('button', { name }).matches(':disabled')).toBe(true);
     }
-    fireEvent.click(screen.getByRole('button', { name: 'Purchase / Books ITC' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Purchase / Books ITC' }));
     expect(screen.getByRole('button', { name: 'Save ITC review' }).matches(':disabled')).toBe(true);
     const refreshed = calculation(initialCall[1][0]);
     refreshed.totals.outwardNet = { ...summary, taxable_paise: 43210 };
     await act(async () => pending.resolve([refreshed]));
     await finished();
-    fireEvent.click(screen.getByRole('button', { name: 'Monthly Overview' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Monthly Overview' }));
     expect(screen.getByRole('button', { name: 'Outward Taxable: 432.10. Show contributing sources' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Download Excel (current month)' }).matches(':disabled')).toBe(false);
     expect(screen.getByRole('button', { name: 'Save AATO' }).matches(':disabled')).toBe(false);
@@ -284,7 +285,7 @@ describe('GST report workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'ELIGIBLE_IN_BOOKS IGST: 9.00. Show contributing sources' }));
     const references = screen.getByRole('table', { name: 'Historical ITC source references (not current purchase-book totals)' });
     expect(references.textContent).toContain('OLD-0'); expect(references.textContent).not.toContain('OLD-1'); expect(references.textContent).not.toContain('OLD-2');
-    fireEvent.click(screen.getByRole('button', { name: 'Monthly Overview' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Monthly Overview' }));
     fireEvent.click(screen.getByRole('button', { name: 'INDICATIVE_BALANCE IGST: -5.00. Show contributing sources' }));
     const balance = screen.getByRole('table', { name: 'Historical ITC source references (not current purchase-book totals)' });
     expect(balance.textContent).toContain('OLD-0'); expect(balance.textContent).toContain('OLD-2'); expect(balance.textContent).not.toContain('OLD-1');
@@ -299,7 +300,7 @@ describe('GST report workspace', () => {
     mocks.calculateMonths.mockImplementationOnce(async () => { const live = calculation('2026-08'); live.totals = { ...live.totals, outwardNet: { ...summary, taxable_paise: 25000 } }; return [live]; });
     await open();
     await screen.findByText('Calculated independent monthly workings. No return has been filed.');
-    fireEvent.click(screen.getByRole('button', { name: 'Saved Reviews / Audit' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Saved Reviews / Audit' }));
     expect(screen.getByRole('table', { name: 'GST audit log' }).textContent).toContain('gst_report_run.saved');
     fireEvent.click(screen.getByRole('button', { name: 'Open saved snapshot saved-run' }));
     await screen.findByText('Read-only saved snapshot: FINALIZED_WORKING / 2026-08');
@@ -308,12 +309,14 @@ describe('GST report workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Download Excel (saved snapshot)' }));
     await waitFor(() => expect(mocks.excel).toHaveBeenCalledWith([saved]));
     expect(screen.getByRole('button', { name: 'Save reviewed snapshot' }).matches(':disabled')).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Source Transactions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Source Transactions' }));
     expect(screen.getByRole('button', { name: 'Edit classification' }).matches(':disabled')).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Purchase / Books ITC' }));
+    fireEvent.click(screen.getByText('Add independent GST credit / debit note'));
+    expect(screen.getByRole('button', { name: 'Save independent GST note' }).matches(':disabled')).toBe(true);
+    fireEvent.click(screen.getByRole('tab', { name: 'Purchase / Books ITC' }));
     expect(screen.getByRole('button', { name: 'Save ITC review' }).matches(':disabled')).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Return to live working' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Monthly Overview' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Monthly Overview' }));
     expect(screen.getByRole('button', { name: 'Outward Taxable: 250.00. Show contributing sources' })).toBeTruthy();
     expect(mocks.calculateMonths).toHaveBeenCalledTimes(1);
   });
@@ -325,7 +328,7 @@ describe('GST report workspace', () => {
     });
     await open();
     await screen.findByText('Calculated independent monthly workings. No return has been filed.');
-    fireEvent.click(screen.getByRole('button', { name: 'Validation Issues' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation Issues' }));
     fireEvent.click(screen.getByRole('button', { name: 'INVALID' }));
     const evidence = screen.getByRole('table', { name: 'Contributing source manifest / audit evidence' });
     fireEvent.click(within(evidence).getByText('View source evidence'));
@@ -337,7 +340,7 @@ describe('GST report workspace', () => {
   async function openItc() {
     await open();
     await screen.findByText('Calculated independent monthly workings. No return has been filed.');
-    fireEvent.click(screen.getByRole('button', { name: 'Purchase / Books ITC' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Purchase / Books ITC' }));
     fireEvent.change(screen.getByLabelText('Purchase source'), { target: { value: 'purchase' } });
     fireEvent.change(screen.getByLabelText('Original eligible amount (integer paise)'), { target: { value: '900' } });
     fireEvent.change(screen.getByLabelText('Reversal / reclaim amount (integer paise)'), { target: { value: '0' } });
@@ -386,7 +389,7 @@ describe('GST report workspace', () => {
     expect(mocks.reviewItc.mock.calls[0][0]).toMatchObject({ source_period_key: '2026-07', tax_period_key: '2026-08', books_tax_paise: 0, related_prior_entry_id: 'reversal', reclaimed_paise: 400 });
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(2));
     await finished();
-    fireEvent.click(screen.getByRole('button', { name: 'Source Transactions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Source Transactions' }));
     expect(screen.getByRole('table', { name: 'Contributing documents' }).textContent).not.toContain('JULY-BILL');
     expect(screen.getByRole('table', { name: 'Historical ITC source references (not current purchase-book totals)' }).textContent).toContain('JULY-BILL');
   });
@@ -425,7 +428,7 @@ describe('GST report workspace', () => {
     });
     await open();
     await screen.findByText('Calculated independent monthly workings. No return has been filed.');
-    fireEvent.click(screen.getByRole('button', { name: 'Source Transactions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Source Transactions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Edit classification' }));
     expect((screen.getByLabelText('Supply / explicit zero-tax category') as HTMLSelectElement).value).toBe('DOMESTIC');
     fireEvent.click(screen.getByRole('button', { name: 'Save source classification' }));
@@ -446,9 +449,9 @@ describe('GST report workspace', () => {
     });
     await open();
     await screen.findByText('Calculated independent monthly workings. No return has been filed.');
-    fireEvent.click(screen.getByRole('button', { name: 'Draft GSTR-3B' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Draft GSTR-3B' }));
     const tables = screen.getByLabelText('Table code') as HTMLSelectElement;
-    expect([...tables.options].map(o => o.value)).toEqual(['3.1(a)', '5.1']);
+    expect([...tables.options].map(o => o.value)).toEqual(['5', '3.1(a)', '5.1']);
     fireEvent.change(tables, { target: { value: '5.1' } });
     const heads = screen.getByLabelText('Adjustment tax head') as HTMLSelectElement;
     expect([...heads.options].map(o => o.value)).toEqual(['CGST']);
@@ -468,7 +471,7 @@ describe('GST report workspace', () => {
       return [r];
     });
     await open();
-    fireEvent.click(screen.getByRole('button', { name: 'Draft GSTR-3B' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Draft GSTR-3B' }));
     fireEvent.change(screen.getByLabelText('Signed adjustment (integer paise)'), { target: { value: '100' } });
     fireEvent.change(screen.getByLabelText('Adjustment reason'), { target: { value: 'CA correction' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add CA adjustment' }));
@@ -486,7 +489,7 @@ describe('GST report workspace', () => {
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-b', mocks.calculateMonths.mock.calls[0][1], 'MONTHLY'));
     await finished();
     await screen.findByText('Calculated independent monthly workings. No return has been filed.');
-    fireEvent.click(screen.getByRole('button', { name: 'Source Transactions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Source Transactions' }));
     let resolve!: () => void;
     mocks.setBusiness.mockImplementationOnce(() => new Promise<void>(done => { resolve = done; }));
     fireEvent.click(screen.getByRole('link', { name: 'CREDIT-01' }));
@@ -608,5 +611,129 @@ describe('GST report workspace', () => {
     expect(mocks.saveReport.mock.calls[0][1]).toBe('FINALIZED_WORKING');
     expect(confirm.mock.calls[0][0]).toContain('cannot be edited or undone');
     confirm.mockRestore();
+  });
+
+  it.each(['OUTWARD', 'INWARD'] as const)('saves an independent %s note with historical lines, exact headers and optional linkage', async direction => {
+    await open(); fireEvent.click(screen.getByRole('tab', { name: 'Source Transactions' }));
+    fireEvent.click(screen.getByText('Add independent GST credit / debit note'));
+    fireEvent.change(screen.getByLabelText('Note direction'), { target: { value: direction } });
+    for (const [label, value] of [['Note number', 'CN-0001'], ['Note party source ID', 'party-1'], ['Note POS state code', '27'], ['Line 1 description', 'Historical goods'], ['Line 1 HSN / SAC', '12345678'], ['Line 1 UQC', 'NOS'], ['Line 1 GST rate (basis points)', '1800'], ['Line 1 Taxable (integer paise)', '10001'], ['Line 1 IGST (integer paise)', '1800'], ['Note round-off (signed integer paise)', '-1']]) {
+      fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    }
+    if (direction === 'INWARD') fireEvent.change(screen.getByLabelText('Note supplier state code'), { target: { value: '29' } });
+    fireEvent.click(screen.getByLabelText('Note interstate supply'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save independent GST note' }));
+    await waitFor(() => expect(mocks.saveNote).toHaveBeenCalledTimes(1));
+    expect(mocks.saveNote.mock.lastCall![0]).toMatchObject({ direction, note_number: 'CN-0001', note_type: 'CREDIT_NOTE', party_id: 'party-1', is_interstate: 1,
+      taxable_paise: 10001, igst_paise: 1800, pre_round_total_paise: 11801, round_off_paise: -1, total_paise: 11800, original_source_entity_id: null,
+      lines: [{ id: 'line-1', line_no: 1, description: 'Historical goods', hsn: '12345678', uqc_code: 'NOS', qty_micros: 1000000, tax_rate_bps: 1800, line_total_paise: 11801 }] });
+    await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(2)); await finished();
+  });
+
+  it('requires complete nil-book confirmation and uses the current hash and frequency', async () => {
+    mocks.calculateMonths.mockImplementationOnce(async (_b: string, keys: string[]) => {
+      const r = calculation(keys[0]); r.status = 'DRAFT'; r.issues = [{ code: 'NIL_PERIOD_NOT_CONFIRMED', severity: 'WARNING', tax_period_key: keys[0], source_entity_type: 'REPORT', source_entity_id: keys[0], document_number: null, field: null, message: 'Confirm completeness', recommended_correction: 'Confirm', amount_impact: null }]; return [r];
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      await open(); const key = mocks.calculateMonths.mock.lastCall![1][0];
+      fireEvent.click(screen.getByLabelText(/I confirm all source transactions/));
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm nil period completeness' }));
+      expect(mocks.confirmNilPeriod).not.toHaveBeenCalled();
+      confirm.mockReturnValue(true); fireEvent.click(screen.getByRole('button', { name: 'Confirm nil period completeness' }));
+      await waitFor(() => expect(mocks.confirmNilPeriod).toHaveBeenCalledWith('business-a', key, key, 'MONTHLY'));
+      await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(2)); await finished();
+    } finally { confirm.mockRestore(); }
+  });
+
+  it('saves taxable and detailed external adjustments with supporting files and cumulative working values', async () => {
+    mocks.calculateMonths.mockImplementationOnce(async (_b: string, keys: string[]) => {
+      const r = calculation(keys[0]); const base = { books_derived_paise: 0, gstr1_working_paise: null, approved_books_itc_paise: null, calculated_paise: 100, ca_adjustment_paise: 30, final_working_paise: 130, source_status: 'MANUAL_CA_ADJUSTMENT' as const, source_document_count: 0, source_entity_ids: [], adjustment_ids: [], notes: '' };
+      r.gstr3bSections.fields = [{ ...base, table_code: '3.1(a)', measure: 'taxable_paise' }, { ...base, table_code: '5.1.INTEREST', measure: 'igst_paise' }, { ...base, table_code: '6.1.CASH', measure: 'igst_paise' }]; return [r];
+    });
+    await open(); fireEvent.click(screen.getByRole('tab', { name: 'Draft GSTR-3B' }));
+    expect(screen.getByRole('option', { name: '5.1.INTEREST' })).toBeTruthy(); expect(screen.getByRole('option', { name: '6.1.CASH' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'TAXABLE' })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Signed adjustment (integer paise)'), { target: { value: '20' } });
+    fireEvent.change(screen.getByLabelText('Adjustment reason'), { target: { value: 'CA documented correction' } });
+    const file = new File(['evidence'], 'support.txt', { type: 'text/plain' });
+    fireEvent.change(screen.getByLabelText('Supporting file (optional)'), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add CA adjustment' }));
+    await waitFor(() => expect(mocks.addAdjustment).toHaveBeenCalledTimes(1));
+    expect(mocks.addAdjustment.mock.lastCall![0]).toMatchObject({ measure: 'taxable_paise', original_paise: 100, adjusted_paise: 150, adjustment_paise: 20, supportingFile: { filename: 'support.txt', mimeType: 'text/plain', blob: file } });
+    await finished();
+  });
+
+  it('preserves IFF, advance-offset and special-recipient metadata and rejects malformed JSON without a write', async () => {
+    mocks.calculateMonths.mockImplementationOnce(async (_b: string, keys: string[]) => [{ ...calculation(keys[0]), inwardDocuments: [purchase(keys[0])] }]);
+    await open(); fireEvent.click(screen.getByRole('tab', { name: 'Source Transactions' })); fireEvent.click(screen.getByRole('button', { name: 'Edit classification' }));
+    const fields = [['IFF-reported month', '2026-07'], ['Recipient UIN (not GSTIN)', 'SYNTHETIC-UIN'], ['Recipient identity reviewed at (ISO timestamp)', '2026-07-31T12:00:00Z'], ['Recipient identity review reason', 'Reviewed recipient identity'], ['Advance GST historical lines (JSON)', '{"lines":[]}'], ['Final-invoice advance offsets (JSON)', '[{"advance_id":"advance-1","taxable_paise":100,"igst_paise":0,"cgst_paise":0,"sgst_paise":0,"cess_paise":0}]']];
+    for (const [label, value] of fields) fireEvent.change(screen.getByLabelText(label, { exact: false }), { target: { value } });
+    fireEvent.change(screen.getByLabelText('Previously reported integer-paise values (JSON)'), { target: { value: '{bad' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save source classification' })); await screen.findByText('Previously reported values must be valid JSON.');
+    expect(mocks.saveDocumentMetadata).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Previously reported integer-paise values (JSON)'), { target: { value: '{}' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save source classification' }));
+    await waitFor(() => expect(mocks.saveDocumentMetadata).toHaveBeenCalledTimes(1));
+    expect(mocks.saveDocumentMetadata.mock.lastCall![0]).toMatchObject({ iff_reported_period: '2026-07', recipient_uin: 'SYNTHETIC-UIN', recipient_identity_review_reason: 'Reviewed recipient identity', advance_gst_json: '{"lines":[]}', advance_adjustments_json: fields[5][1] }); await finished();
+  });
+
+  it('exports selected-month CSV independently from current-month CSV', async () => {
+    await open(); fireEvent.click(screen.getByLabelText('Select all months')); await finished();
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV registers (selected months)' }));
+    await waitFor(() => expect(mocks.csv).toHaveBeenCalledTimes(1)); await finished();
+    expect(mocks.csv.mock.lastCall![0]).toHaveLength(12);
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV registers (current month)' }));
+    await waitFor(() => expect(mocks.csv).toHaveBeenCalledTimes(2)); expect(mocks.csv.mock.lastCall![0]).toHaveLength(1); await finished();
+  });
+
+  it('opens the grouped export menu and restores focus after Escape', async () => {
+    await open();
+    const trigger = screen.getByRole('button', { name: 'Export' });
+    fireEvent.click(trigger);
+    expect(screen.getByRole('menu', { name: 'Export GST reports' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Selected months workbook' })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole('menu', { name: 'Export GST reports' }), { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: 'Export GST reports' })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('uses accessible tabs with arrow-key navigation', async () => {
+    await open();
+    const overview = screen.getByRole('tab', { name: 'Monthly Overview' });
+    fireEvent.keyDown(overview, { key: 'ArrowRight' });
+    expect(screen.getByRole('tab', { name: 'GSTR-1 Working' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe('gst-tab-1');
+  });
+
+  it('explicitly refreshes live sources through calculation without a durable write', async () => {
+    await open(); fireEvent.click(screen.getByRole('button', { name: /Calculate reports/ }));
+    await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(2)); await finished();
+    expect(mocks.loadWorkspace).toHaveBeenCalledTimes(1); expect(mocks.saveReport).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsafe historical note line total and retains the entered evidence', async () => {
+    await open(); fireEvent.click(screen.getByRole('tab', { name: 'Source Transactions' })); fireEvent.click(screen.getByText('Add independent GST credit / debit note'));
+    for (const [label, value] of [['Note number', 'CN-0002'], ['Note party source ID', 'party-1'], ['Note POS state code', '27'], ['Line 1 description', 'Historical goods'], ['Line 1 HSN / SAC', '1234'], ['Line 1 UQC', 'NOS'], ['Line 1 GST rate (basis points)', '1800'], ['Line 1 Taxable (integer paise)', String(Number.MAX_SAFE_INTEGER)], ['Line 1 IGST (integer paise)', '1']]) fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save independent GST note' })); await screen.findByText('Line 1 total exceeds safe integer range.');
+    expect(mocks.saveNote).not.toHaveBeenCalled(); expect((screen.getByLabelText('Note number') as HTMLInputElement).value).toBe('CN-0002'); expect(mocks.calculateMonths).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['success', 'error'] as const)('ignores obsolete QRMP quarter %s while the latest quarter remains busy', async outcome => {
+    await open(); const old = deferred<MonthlyGstCalculation>(); const latest = deferred<MonthlyGstCalculation>();
+    mocks.calculateQuarter.mockImplementationOnce(() => old.promise).mockImplementationOnce(() => latest.promise);
+    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
+    await waitFor(() => expect(mocks.calculateQuarter).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText('Quarter'), { target: { value: '2' } });
+    await waitFor(() => expect(mocks.calculateQuarter).toHaveBeenCalledTimes(2));
+    const year = mocks.calculateQuarter.mock.lastCall![1];
+    const q = { ...calculation('2026-07'), period: quarterPeriod('business-a', '', year, 2) };
+    q.gstr1Sections.quarterPendingDocuments = [{ ...purchase('2026-07'), source_entity_type: 'INVOICE', document_number: 'PENDING-Q2' }];
+    await act(async () => { if (outcome === 'error') old.reject(new Error('Old quarter unavailable')); else old.resolve({ ...q, period: quarterPeriod('business-a', '', year, 1) }); });
+    expect(reportPage().getAttribute('aria-busy')).toBe('true'); expect(screen.getByRole('alert').textContent).toBe('');
+    await act(async () => latest.resolve(q)); await finished();
+    fireEvent.click(screen.getByRole('button', { name: 'Open separate QRMP quarter working' }));
+    const table = screen.getByRole('table', { name: 'Quarter GSTR-1 pending documents (already-IFF-reported sources excluded)' }); expect(table.textContent).toContain('PENDING-Q2');
+    fireEvent.click(screen.getByRole('button', { name: 'Download Excel (current quarter)' })); await waitFor(() => expect(mocks.excel).toHaveBeenCalledWith([q])); await finished();
   });
 });

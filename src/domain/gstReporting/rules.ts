@@ -1,6 +1,6 @@
 import { isDateOnly } from './periods';
 
-export const GST_RULE_SET_VERSION = 'businessvault-gst-2025.05-v2';
+export const GST_RULE_SET_VERSION = 'businessvault-gst-2025.05-v3';
 
 export interface GstRuleSet {
   id: string;

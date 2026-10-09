@@ -46,7 +46,7 @@ it('keeps the general GST Summary sheet but obtains complete month workings from
   const db = new BusinessVaultDB(`gst-general-export-${Date.now()}`);
   const calculation = example.calculations[0] as MonthlyGstCalculation;
   const calculate = vi.spyOn(GstMonthlyReportService.prototype, 'calculateMonths').mockImplementation(async (_id, months) => months.map(month => ({ ...calculation, period: { ...calculation.period, periodKey: month } })));
-  const workspace = vi.spyOn(GstMonthlyReportService.prototype, 'loadWorkspace').mockResolvedValue({ businesses: [], profiles: [], aato: [], savedRuns: [], itcEntries: [], reviewPurchases: [], auditLog: [] });
+  const workspace = vi.spyOn(GstMonthlyReportService.prototype, 'loadWorkspace').mockResolvedValue({ businesses: [], profiles: [], aato: [], savedRuns: [], itcEntries: [], reviewPurchases: [], reviewNotes: [], auditLog: [] });
   try {
     await db.businesses.put({ id: calculation.businessId, name: 'Synthetic Example Shop', gstin: 'SYNTHETIC-NOT-A-GSTIN', state_code: '27' } as Business);
     const result = await buildBusinessExcelExport(calculation.businessId, { db, fromDate: new Date('2025-05-17T00:00:00Z'), toDate: new Date('2025-06-04T00:00:00Z'), asOf: new Date('2025-06-04T00:00:00Z') });

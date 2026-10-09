@@ -1,5 +1,6 @@
-import type { GstDocumentMetadata, Invoice, InvoiceLine, Purchase, PurchaseLine, SalesReturn, SalesReturnItem } from '../../db/types';
+import type { GstDocumentMetadata, GstNote, GstNoteLine, Invoice, InvoiceLine, Purchase, PurchaseLine, SalesReturn, SalesReturnItem } from '../../db/types';
 import { isValidGstin, isValidStateCode } from '../../lib/gst';
+import { inwardNoteEvidence } from '../../db/repos/gstReporting';
 import { buildDocumentSeries } from './documentSeries';
 import { dateInPeriod, financialYearForDate, isDateOnly, monthPeriod, precedingFinancialYear, validateTaxPeriod } from './periods';
 import { GST_RULE_SET_VERSION, minimumHsnDigits, rulesForDate } from './rules';
@@ -10,6 +11,7 @@ import type {
   MonthlyGstCalculation, NormalizedGstDocument, NormalizedGstRateRow, NormalizedHsnRow,
   GstPreviouslyReportedValues,
   GstB2csAggregate,
+  GstAdvanceOffset,
 } from './types';
 
 export type { GstMonthlySources } from './types';
@@ -20,14 +22,18 @@ const taxHeads: GstTaxHead[] = ['IGST', 'CGST', 'SGST', 'CESS'];
 const statuses: BooksItcStatus[] = ['UNREVIEWED', 'ELIGIBLE_IN_BOOKS', 'INELIGIBLE', 'TEMPORARILY_REVERSED', 'PERMANENTLY_REVERSED', 'RECLAIMABLE', 'RECLAIMED'];
 const unclassified = (category: GstClassification) => category.startsWith('UNCLASSIFIED');
 const emptyAmounts = (): GstAmounts => ({ taxable_paise: 0, igst_paise: 0, cgst_paise: 0, sgst_paise: 0, cess_paise: 0, pre_round_total_paise: 0, round_off_paise: 0, total_paise: 0 });
-type Header = Invoice | Purchase | SalesReturn;
-type Line = InvoiceLine | PurchaseLine | SalesReturnItem;
+type Header = Invoice | Purchase | SalesReturn | GstNote;
+type Line = InvoiceLine | PurchaseLine | SalesReturnItem | GstNoteLine;
 
 /** Synchronous, local-only calculation. The service hashes sourceManifest with rules/period. */
 export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPeriod, generatedAt: string): MonthlyGstCalculation {
   const issues: GstValidationIssue[] = [];
   const manifest = new Map<string, GstSourceManifestEntry>();
   const businessId = period.businessId;
+  const periodContainsKey = (key: string) => key >= period.periodStart.slice(0, 7) && key < period.nextPeriodStart.slice(0, 7);
+  const throughPeriodKey = period.periodType === 'MONTH' ? period.periodKey : (() => {
+    const end = new Date(`${period.nextPeriodStart}T00:00:00Z`); end.setUTCDate(0); return end.toISOString().slice(0, 7);
+  })();
   function issue(code: string, severity: GstValidationIssue['severity'], type: string, id: string,
     message: string, field: string | null = null, number: string | null = null, impact: Partial<GstAmounts> | null = null) {
     issues.push({ code, severity, tax_period_key: period.periodKey, source_entity_type: type,
@@ -57,7 +63,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   function indexed<T extends { id: string; business_id: string }>(rows: T[], type: string): Map<string, T> {
     const result = new Map<string, T>();
     for (const row of rows) {
-      if (row.business_id !== businessId) continue;
+      if ('business_id' in row && row.business_id !== businessId) continue;
       if (result.has(row.id)) issue('DUPLICATE_SOURCE_ID', 'BLOCKING_ERROR', type, row.id, 'Duplicate source identity supplied.');
       else result.set(row.id, row);
     }
@@ -67,7 +73,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     const result = new Map<string, Line[]>();
     const ids = new Set<string>();
     for (const row of rows) {
-      if (row.business_id !== businessId) continue;
+      if ('business_id' in row && row.business_id !== businessId) continue;
       const id = (row as unknown as Record<string, string>)[parent];
       if (ids.has(row.id)) { issue('DUPLICATE_LINE_ID', 'BLOCKING_ERROR', parent, row.id, 'Duplicate line excluded.'); continue; }
       ids.add(row.id);
@@ -107,6 +113,8 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   issue('RULE_SET', 'INFORMATION', 'REPORT', period.periodKey, GST_RULE_SET_VERSION);
 
   const customers = indexed(sources.customers, 'CUSTOMER');
+  const currentItems = new Map((sources.currentItems ?? []).filter(row => row.business_id === businessId).map(row => [row.id, row]));
+  const currentUnits = new Map((sources.currentUnits ?? []).filter(row => row.business_id === businessId).map(row => [row.id, row]));
   const suppliers = indexed(sources.suppliers, 'SUPPLIER');
   const invoices = indexed(sources.invoices, 'INVOICE');
   const originals = indexed(sources.originalInvoices, 'INVOICE');
@@ -148,7 +156,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   function normalize(header: Header, type: NormalizedGstDocument['source_entity_type'], lines: Line[],
     date: string, number: string, partyId: string, pos: string, interstate: number,
     sign: 1 | -1, exclusion: string | null, cancelled: boolean, original: Invoice | Purchase | null = null) {
-    const outward = type === 'INVOICE' || type === 'SALES_RETURN';
+    const outward = type === 'INVOICE' || type === 'SALES_RETURN' || type === 'ADVANCE' || type === 'GST_NOTE' && 'direction' in header && header.direction === 'OUTWARD';
     const ownMeta = metadata.get(`${type}:${header.id}`) ?? (type === 'PURCHASE_RETURN' ? metadata.get(`PURCHASE:${header.id}`) : undefined);
     const originalMeta = original && type === 'SALES_RETURN' ? metadata.get(`INVOICE:${original.id}`) : undefined;
     // Inherit only classification evidence, never the original invoice's identity or reporting period.
@@ -169,14 +177,14 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     if (reportingOverride) {
       try { monthPeriod(businessId, period.gstinSnapshot, reportingOverride); }
       catch { issue('INVALID_REPORTING_PERIOD', 'BLOCKING_ERROR', type, header.id, 'Reporting-period override must be a valid YYYY-MM tax month.'); return; }
-      if (reportingOverride !== period.periodKey) return;
+      if (!periodContainsKey(reportingOverride)) return;
     } else if (!dateInPeriod(date, period)) return;
     const party = outward ? customers.get(partyId) : suppliers.get(partyId);
     if (party) remember(outward ? 'CUSTOMER' : 'SUPPLIER', party.id, party, party.entity_version);
     if (original) remember(outward ? 'ORIGINAL_INVOICE' : 'ORIGINAL_PURCHASE', original.id, original, original.entity_version);
     if (ownMeta) remember('GST_DOCUMENT_METADATA', ownMeta.id, ownMeta, ownMeta.entity_version);
     if (originalMeta) remember('GST_DOCUMENT_METADATA', originalMeta.id, originalMeta, originalMeta.entity_version);
-    const gstin = party?.gstin?.trim().toUpperCase() ?? '';
+    const gstin = meta?.recipient_category === 'UIN' ? meta.recipient_uin?.trim().toUpperCase() ?? '' : party?.gstin?.trim().toUpperCase() ?? '';
     const position = meta?.place_of_supply_state_code ?? pos;
     const document: NormalizedGstDocument = { ...emptyAmounts(), source_entity_type: type, source_entity_id: header.id,
       source_entity_version: header.entity_version, tax_period_key: period.periodKey,
@@ -190,6 +198,10 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       original_period_key: meta?.original_return_period ?? (original ? ('invoice_date' in original ? original.invoice_date : original.bill_date).slice(0, 7) : null),
       amendment_kind: meta?.amendment_kind ?? null, ecommerce_operator_gstin: meta?.ecommerce_operator_gstin ?? null,
       reverse_charge: meta?.reverse_charge === 1, line_count: lines.length };
+    document.direction = outward ? 'OUTWARD' : 'INWARD';
+    document.iff_reported_period = meta?.iff_reported_period ?? null;
+    if ('original_source_entity_id' in header) document.original_source_entity_id ??= header.original_source_entity_id ?? null;
+    if (type === 'GST_NOTE' && 'note_type' in header) document.document_type = header.note_type;
     Object.assign(document, { shipping_bill_number: meta?.shipping_bill_number ?? null, shipping_bill_date: meta?.shipping_bill_date ?? null,
       port_code: meta?.port_code ?? null, section_9_5_role: meta?.section_9_5_role ?? null,
       section_52_tcs: meta?.section_52_tcs ?? null, ecommerce_reporting_type: meta?.ecommerce_reporting_type ?? null });
@@ -223,7 +235,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     const sez = special === 'SEZ_WITH_PAYMENT' || special === 'SEZ_WITHOUT_PAYMENT';
     let classification: GstClassification = gstin ? 'B2B' : 'B2CS';
     let unsupported = false;
-    const compatibleType = type === 'SALES_RETURN' || type === 'PURCHASE_RETURN'
+    const compatibleType = type === 'ADVANCE' ? ['RECEIPT_VOUCHER', 'ADVANCE_ADJUSTMENT'].includes(document.document_type) : type === 'SALES_RETURN' || type === 'PURCHASE_RETURN'
       ? document.document_type === 'CREDIT_NOTE'
       : ['TAX_INVOICE', 'BILL_OF_SUPPLY', 'CREDIT_NOTE', 'DEBIT_NOTE'].includes(document.document_type);
     if (!compatibleType || document.document_type === 'CREDIT_NOTE' && sign !== -1) {
@@ -240,7 +252,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     if ((!overseas && !isValidStateCode(position)) || (interstate !== 0 && interstate !== 1)) {
       unsupported = true; issue('MISSING_PLACE_OF_SUPPLY', 'BLOCKING_ERROR', type, header.id, 'Explicit valid place of supply and supply type are required.', 'place_of_supply', number);
     }
-    const supplierLocation = 'supplier_state_code' in header ? header.supplier_state_code : '';
+    const supplierLocation = 'supplier_state_code' in header ? header.supplier_state_code ?? '' : '';
     const supplyOrigin = outward ? period.gstinSnapshot.slice(0, 2) : supplierLocation;
     if (!outward && !isValidStateCode(supplierLocation)) { unsupported = true; issue('SUPPLIER_STATE_REQUIRED', 'BLOCKING_ERROR', type, header.id, 'Persisted supplier state is required to establish inward supply type.'); }
     if (!overseas && !sez && isValidStateCode(position) && (position !== supplyOrigin) !== document.is_interstate) {
@@ -250,7 +262,11 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       || (!document.is_interstate && document.igst_paise && !overseas && !sez)) {
       unsupported = true; issue('TAX_HEAD_CONFLICT', 'BLOCKING_ERROR', type, header.id, 'Tax heads conflict with the supply type.', null, number);
     }
-    if (meta?.recipient_category === 'UIN' || meta?.recipient_category === 'UNKNOWN'
+    if (meta?.recipient_category === 'UIN' && (!outward || !gstin || !/^[A-Z0-9]{2,32}$/.test(gstin)
+      || !meta.recipient_identity_reviewed_at || !Number.isFinite(Date.parse(meta.recipient_identity_reviewed_at)) || !meta.recipient_identity_review_reason?.trim())) {
+      unsupported = true; issue('UIN_IDENTITY_REVIEW_REQUIRED', 'BLOCKING_ERROR', type, header.id, 'UIN requires a separately captured identity and a dated reasoned review; GSTIN checksum rules are not used.', 'recipient_uin', number);
+    }
+    if (meta?.recipient_category === 'UNKNOWN'
       || (meta?.recipient_category === 'UNREGISTERED' && gstin)
       || (['REGISTERED', 'COMPOSITION', 'SEZ'].includes(meta?.recipient_category ?? '') && !gstin)) {
       unsupported = true; issue('UNSUPPORTED_RECIPIENT', 'BLOCKING_ERROR', type, header.id, 'Recipient metadata is unsupported or conflicts with the captured identifier.', null, number);
@@ -282,7 +298,9 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     }
     if (meta?.reverse_charge === 1) {
       if (!outward) classification = 'RCM';
-      else { unsupported = true; issue('OUTWARD_RCM_REVIEW_REQUIRED', 'BLOCKING_ERROR', type, header.id, 'Outward reverse-charge liability is not supported by this working engine.', null, number); }
+      else if (!gstin || meta?.recipient_category === 'UIN' || special && special !== 'DOMESTIC') {
+        unsupported = true; issue('OUTWARD_RCM_METADATA_REQUIRED', 'BLOCKING_ERROR', type, header.id, 'Outward RCM requires an explicitly registered domestic recipient.', null, number);
+      }
     }
     if (meta?.section_9_5_role && meta.section_9_5_role !== 'NONE') {
       if (!outward || !isValidGstin(meta.ecommerce_operator_gstin ?? '') || meta.ecommerce_reporting_type !== 'SECTION_9_5'
@@ -296,9 +314,12 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     if (meta?.amendment_kind && !['OLDER_PERIOD_AMENDMENT', 'SAME_PERIOD_GSTR1A', 'INTERNAL_UNFILED_EDIT'].includes(meta.amendment_kind)) unsupported = true;
     if (sign < 0 && !document.original_source_entity_id) issue('MISSING_ORIGINAL_NOTE_LINK', 'WARNING', type, header.id, 'Original-note linkage is optional legally but missing for audit drill-down.', null, number);
     const lineTotals = emptyAmounts();
-    const normalizedLines: Array<{ source: Line; amounts: GstAmounts; taxability: string; quantity?: number }> = [];
+    const normalizedLines: Array<{ source: Line; amounts: GstAmounts; taxability: string; quantity?: number; dimensions?: NormalizedGstDocument }> = [];
     for (const line of lines) {
       const amounts = emptyAmounts();
+      if (!line || typeof line !== 'object') {
+        unsupported = true; issue('INVALID_LINE_SNAPSHOT', 'BLOCKING_ERROR', type, header.id, 'Historical line snapshot is not an object.', null, number); continue;
+      }
       let invalid = false;
       for (const key of ['taxable_paise', ...taxKeys, 'line_total_paise', 'qty_micros', 'tax_rate_bps'] as const) {
         if (!Number.isSafeInteger(line[key])) { invalid = true; issue('UNSAFE_LINE_VALUE', 'BLOCKING_ERROR', type, header.id, `Invalid fixed-point ${key} on line ${line.id}.`, key, number); }
@@ -324,6 +345,11 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       if (!/^\d{4,8}$/.test(line.hsn) || (hsnMinimum !== null && line.hsn.length < hsnMinimum)) issue('INVALID_HSN', 'BLOCKING_ERROR', type, header.id, `Line ${line.id} HSN/SAC is missing or below the known minimum.`, 'hsn', number);
       if (!line.uqc_code) issue('MISSING_UQC', 'BLOCKING_ERROR', type, header.id, `Line ${line.id} has no historical UQC snapshot; current masters are not used.`, 'uqc_code', number);
       if (line.snapshot_source === 'LEGACY_INFERRED' || !line.taxability && taxability === 'TAXABLE') issue('INFERRED_LINE_SNAPSHOT', 'WARNING', type, header.id, `Line ${line.id} includes legacy/inferred snapshot fields.`, null, number);
+      const item = 'item_id' in line ? currentItems.get(line.item_id) : undefined;
+      const unit = item && currentUnits.get(item.unit_id);
+      if (item && (item.name !== line.description || item.hsn !== line.hsn || item.tax_rate_bps !== line.tax_rate_bps
+        || unit && line.uqc_code && unit.code !== line.uqc_code)) issue('MASTER_HISTORY_DIFFERENCE', 'WARNING', type, header.id,
+        `Current master differs from historical line ${line.id}; the persisted snapshot is retained.`, null, number);
       normalizedLines.push({ source: line, amounts, taxability });
     }
     for (const key of ['taxable_paise', ...taxKeys] as const) {
@@ -331,27 +357,33 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     }
     const taxabilities = new Set(normalizedLines.map(line => line.taxability));
     if (taxabilities.size === 1 && ['NIL_RATED', 'EXEMPT', 'NON_GST'].includes([...taxabilities][0])) classification = [...taxabilities][0] as GstClassification;
-    else if ([...taxabilities].some(value => ['NIL_RATED', 'EXEMPT', 'NON_GST'].includes(value))) {
-      unsupported = true; issue('MIXED_TAXABILITY_REVIEW', 'BLOCKING_ERROR', type, header.id, 'Mixed taxable/exempt/non-GST document needs explicit per-section allocation.', null, number);
-    }
+    // Explicit historical taxability allocates mixed documents by line, not header.
     // Amendments require previous line snapshots, not a guessed header allocation.
     if (meta?.amendment_kind && meta.amendment_kind !== 'INTERNAL_UNFILED_EDIT') {
       try {
         const previous = JSON.parse(meta.previously_reported_values_json ?? '') as GstPreviouslyReportedValues;
         const originalPeriod = monthPeriod(businessId, period.gstinSnapshot, meta.original_return_period ?? '');
-        if (period.periodType !== 'MONTH' || (meta.amendment_kind === 'SAME_PERIOD_GSTR1A' ? originalPeriod.periodKey !== period.periodKey : originalPeriod.periodKey >= period.periodKey)) throw new Error('Invalid amendment period');
+        const reportingMonth = reportingOverride ?? date.slice(0, 7);
+        if (meta.amendment_kind === 'SAME_PERIOD_GSTR1A' ? originalPeriod.periodKey !== reportingMonth : originalPeriod.periodKey >= reportingMonth) throw new Error('Invalid amendment period');
         if (!meta.original_return_period || !meta.original_document_number || !Array.isArray(previous.lines)
-          || previous.lines.length !== normalizedLines.length || amountKeys.some(key => !Number.isSafeInteger(previous[key]))) throw new Error('Missing previous snapshots');
+          || !previous.lines.length || amountKeys.some(key => !Number.isSafeInteger(previous[key]))) throw new Error('Missing previous snapshots');
         const priorLines = new Map(previous.lines.map(line => [line.source_line_id, line]));
         if (priorLines.size !== previous.lines.length || previous.pre_round_total_paise !== previous.taxable_paise + taxKeys.reduce((total, key) => total + previous[key], 0)
           || previous.total_paise !== previous.pre_round_total_paise + previous.round_off_paise) throw new Error('Invalid previous header');
         const previousSum = emptyAmounts();
         for (const line of previous.lines) add(previousSum, line);
         if ((['taxable_paise', ...taxKeys] as const).some(key => previousSum[key] !== previous[key])) throw new Error('Previous header/lines differ');
-        let attributeChanged = false;
+        let attributeChanged = previous.lines.length !== normalizedLines.length || normalizedLines.some(line => !priorLines.has(line.source.id));
+        for (const prior of previous.lines) {
+          if (amountKeys.some(key => !Number.isSafeInteger(prior[key])) || !Number.isSafeInteger(prior.quantity_micros)
+            || !Number.isSafeInteger(prior.tax_rate_bps) || prior.tax_rate_bps < 0 || !/^[0-9]{4,8}$/.test(prior.hsn) || !prior.uqc_code
+            || !['TAXABLE', 'ZERO_RATED', 'NIL_RATED', 'EXEMPT', 'NON_GST'].includes(prior.taxability)
+            || prior.pre_round_total_paise !== prior.taxable_paise + taxKeys.reduce((total, key) => total + prior[key], 0)
+            || prior.round_off_paise !== 0 || prior.total_paise !== prior.pre_round_total_paise) throw new Error('Invalid prior line evidence');
+        }
         for (const line of normalizedLines) {
           const prior = priorLines.get(line.source.id);
-          if (!prior || amountKeys.some(key => !Number.isSafeInteger(prior[key])) || !Number.isSafeInteger(prior.quantity_micros)) throw new Error('Previous line snapshots invalid');
+          if (!prior) continue;
           if (prior.tax_rate_bps !== line.source.tax_rate_bps || prior.hsn !== line.source.hsn || prior.description !== line.source.description
             || prior.uqc_code !== (line.source.uqc_code ?? null) || prior.goods_or_service !== (line.source.goods_or_service ?? null)
             || prior.taxability !== line.taxability) attributeChanged = true;
@@ -362,23 +394,43 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
             || amountKeys.some(key => !Number.isSafeInteger(line.amounts[key] - prior[key]))) throw new Error('Invalid previous line totals or unsafe differential');
         }
         const expectedGroup = rules?.splitHsnByRecipient ? gstin ? 'B2B' : 'B2C' : 'COMBINED';
-        if (attributeChanged && (previous.classification !== classification || previous.recipient_group !== expectedGroup
-          || previous.place_of_supply !== position || previous.is_interstate !== document.is_interstate
-          || previous.ecommerce_operator_gstin !== document.ecommerce_operator_gstin)) throw new Error('Prior document classification dimensions missing or changed');
+        const dimensionsChanged = previous.classification != null && previous.classification !== classification
+          || previous.recipient_group != null && previous.recipient_group !== expectedGroup
+          || previous.place_of_supply != null && previous.place_of_supply !== position
+          || previous.is_interstate != null && previous.is_interstate !== document.is_interstate
+          || previous.ecommerce_operator_gstin !== undefined && previous.ecommerce_operator_gstin !== document.ecommerce_operator_gstin
+          || previous.party_gstin !== undefined && previous.party_gstin !== gstin
+          || previous.recipient_category !== undefined && previous.recipient_category !== document.recipient_category;
+        if (attributeChanged || dimensionsChanged || previous.reverse_charge !== undefined && previous.reverse_charge !== document.reverse_charge) {
+          if (!previous.classification || !previous.recipient_group || !isValidStateCode(previous.place_of_supply ?? '')
+            || typeof previous.is_interstate !== 'boolean' || previous.ecommerce_operator_gstin === undefined) throw new Error('Prior document classification dimensions missing');
+          if (dimensionsChanged && (previous.party_gstin === undefined || !previous.recipient_category)) throw new Error('Prior recipient identity missing');
+          attributeChanged = true;
+        }
         if (amountKeys.some(key => !Number.isSafeInteger(document[key] - previous[key]))) throw new Error('Unsafe differential header');
         for (const key of amountKeys) document[key] -= previous[key];
         const priorContributions: typeof normalizedLines = [];
-        for (const line of normalizedLines) {
-          const prior = priorLines.get(line.source.id)!;
-          if (attributeChanged) {
+        if (attributeChanged) {
+          for (const prior of previous.lines) {
             const priorAmounts = emptyAmounts();
             for (const key of amountKeys) priorAmounts[key] = -prior[key];
-            priorContributions.push({ source: { ...line.source, hsn: prior.hsn, description: prior.description,
+            priorContributions.push({ source: { id: prior.source_line_id, line_no: 0, qty_micros: prior.quantity_micros,
+              taxable_paise: prior.taxable_paise, igst_paise: prior.igst_paise, cgst_paise: prior.cgst_paise, sgst_paise: prior.sgst_paise,
+              cess_paise: prior.cess_paise, line_total_paise: prior.total_paise, hsn: prior.hsn, description: prior.description,
               uqc_code: prior.uqc_code ?? undefined, goods_or_service: prior.goods_or_service as Line['goods_or_service'],
               taxability: prior.taxability as Line['taxability'], tax_rate_bps: prior.tax_rate_bps },
-              amounts: priorAmounts, taxability: prior.taxability, quantity: -prior.quantity_micros });
-            line.quantity = sign * Math.abs(line.source.qty_micros);
-          } else {
+              amounts: priorAmounts, taxability: prior.taxability, quantity: -prior.quantity_micros,
+              dimensions: { ...document, classification: previous.classification!, place_of_supply: previous.place_of_supply!,
+                is_interstate: previous.is_interstate!, party_gstin: previous.party_gstin ?? gstin,
+                recipient_category: previous.recipient_category ?? document.recipient_category,
+                reverse_charge: previous.reverse_charge ?? document.reverse_charge,
+                ecommerce_operator_gstin: previous.ecommerce_operator_gstin ?? null } });
+          }
+        }
+        for (const line of normalizedLines) {
+          const prior = priorLines.get(line.source.id);
+          if (attributeChanged) line.quantity = sign * Math.abs(line.source.qty_micros);
+          else if (prior) {
             for (const key of amountKeys) line.amounts[key] -= prior[key];
             line.quantity = sign * Math.abs(line.source.qty_micros) - prior.quantity_micros;
           }
@@ -387,36 +439,49 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
         }
         normalizedLines.push(...priorContributions);
       } catch {
-        unsupported = true; issue('AMENDMENT_PREVIOUS_VALUES_REQUIRED', 'BLOCKING_ERROR', type, header.id, 'Amendment requires valid original/reporting periods and previous header/line snapshots with unchanged grouping attributes; full amended values are excluded.', null, number);
+        unsupported = true; issue('AMENDMENT_PREVIOUS_VALUES_REQUIRED', 'BLOCKING_ERROR', type, header.id, 'Amendment requires valid original/reporting periods, complete prior header/lines and prior classification dimensions for changed groups; full amended values are excluded.', null, number);
         document.included = false; document.exclusion_reason = 'AMENDMENT_PREVIOUS_VALUES_REQUIRED';
       }
     }
     if (document.classification !== 'UNCLASSIFIED_INVALID_GSTIN') document.classification = unsupported ? 'UNCLASSIFIED' : classification;
     if (unsupported) issue('UNSUPPORTED_CLASSIFICATION', 'BLOCKING_ERROR', type, header.id, 'Metadata does not support a complete classification; this source remains visible and unclassified.', null, number);
-    const legalKey = JSON.stringify([outward ? 'OUTWARD' : 'INWARD', outward ? '' : gstin || partyId, document.document_type, financialYearForDate(date), number]);
+    const legalKey = JSON.stringify([outward ? 'OUTWARD' : 'INWARD', outward ? '' : gstin || partyId, document.document_type, financialYearForDate(date), number,
+      type === 'ADVANCE' && document.document_type === 'ADVANCE_ADJUSTMENT' ? header.id : '']);
     const duplicates = duplicateKeys.get(legalKey) ?? [];
     duplicates.push(document); duplicateKeys.set(legalKey, duplicates);
     if (!document.included) return;
     const rates = new Map<string, NormalizedGstRateRow>();
     for (const line of normalizedLines) {
-      const key = JSON.stringify([line.source.tax_rate_bps, line.taxability]);
+      const dimensions = line.dimensions ?? document;
+      const lineClassification = unclassified(document.classification) ? document.classification : ['NIL_RATED', 'EXEMPT', 'NON_GST'].includes(line.taxability) ? line.taxability as GstClassification : dimensions.classification;
+      const key = JSON.stringify([line.source.tax_rate_bps, line.taxability, lineClassification, dimensions.place_of_supply, dimensions.party_gstin, dimensions.recipient_category, dimensions.ecommerce_operator_gstin]);
       let row = rates.get(key);
       if (!row) {
         row = { ...emptyAmounts(), source_entity_type: type, source_entity_id: header.id, source_line_ids: [], tax_period_key: period.periodKey,
-          classification: document.classification, tax_rate_bps: line.source.tax_rate_bps, taxability: line.taxability,
-          place_of_supply: position, ecommerce_operator_gstin: document.ecommerce_operator_gstin };
+          classification: lineClassification, tax_rate_bps: line.source.tax_rate_bps, taxability: line.taxability,
+          place_of_supply: dimensions.place_of_supply, ecommerce_operator_gstin: dimensions.ecommerce_operator_gstin,
+          is_interstate: dimensions.is_interstate, recipient_category: dimensions.recipient_category, party_gstin: dimensions.party_gstin, reverse_charge: dimensions.reverse_charge };
+        row.recipient_group = unclassified(document.classification) ? 'UNCLASSIFIED' : rules?.splitHsnByRecipient ? dimensions.party_gstin ? 'B2B' : 'B2C' : 'COMBINED';
         rates.set(key, row);
       }
       row.source_line_ids.push(line.source.id); add(row, line.amounts, header.id);
       const quantity = line.quantity ?? sign * Math.abs(line.source.qty_micros);
-      hsnLineContributions.push({ document, source: line.source, amounts: line.amounts, taxability: line.taxability, quantity });
+      hsnLineContributions.push({ document: dimensions, source: line.source, amounts: line.amounts, taxability: line.taxability, quantity });
+    }
+    if (meta?.iff_reported_period) {
+      const month = Number(meta.iff_reported_period.slice(5));
+      if (period.filingFrequency !== 'QRMP' || !/^\d{4}-\d{2}$/.test(meta.iff_reported_period)
+        || !isDateOnly(`${meta.iff_reported_period}-01`) || month % 3 === 0 || meta.iff_reported_period !== date.slice(0, 7)
+        || !outward || !gstin || !['B2B', 'DEEMED_EXPORT'].includes(document.classification)) {
+        issue('INVALID_IFF_METADATA', 'BLOCKING_ERROR', type, header.id, 'IFF requires a registered QRMP document in its source month and the first two months of a quarter.');
+      }
     }
     (outward ? outwardRateRows : inwardRateRows).push(...rates.values());
   }
 
   function buildHsnContribution(contribution: typeof hsnLineContributions[number]) {
       const { document, source, amounts, taxability, quantity } = contribution;
-      const outward = document.source_entity_type === 'INVOICE' || document.source_entity_type === 'SALES_RETURN';
+       const outward = document.direction === 'OUTWARD' || document.source_entity_type === 'INVOICE' || document.source_entity_type === 'SALES_RETURN';
       const recipientGroup = unclassified(document.classification) ? 'UNCLASSIFIED' : rules?.splitHsnByRecipient ? document.party_gstin ? 'B2B' : 'B2C' : 'COMBINED';
       const hsnKey = JSON.stringify([recipientGroup, source.hsn, source.description, source.uqc_code ?? null,
         source.goods_or_service ?? null, taxability, source.tax_rate_bps]);
@@ -476,26 +541,141 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       purchase.supplier_bill_number || purchase.bill_number, purchase.supplier_id, meta?.place_of_supply_state_code ?? sources.business.state_code,
       purchase.is_interstate, sign, excluded, excluded === 'CANCELLED', purchases.get(purchase.reverses_purchase_id ?? '') ?? null);
   }
+  for (const advance of sources.advances) {
+    if (advance.business_id !== businessId || advance.deleted_at) continue;
+    const meta = metadata.get(`ADVANCE:${advance.id}`);
+    if (!dateInPeriod(advance.advance_date, period)) continue;
+    remember('ADVANCE', advance.id, { advance, metadata: meta ?? null }, advance.entity_version, advance.advance_date, 'EXCLUDED', meta?.entity_version ?? null);
+    if (meta?.tax_on_advance_applicable === 0) continue;
+    try {
+      if (meta?.tax_on_advance_applicable !== 1 || advance.party_type !== 'customer') throw new Error();
+      const lines = JSON.parse(meta.advance_gst_json ?? '').lines as GstNoteLine[];
+      if (!Array.isArray(lines) || !lines.length || lines.some(line => line.taxability !== 'TAXABLE')) throw new Error();
+      const amounts = sum(lines.map(line => ({ ...line, pre_round_total_paise: line.line_total_paise, total_paise: line.line_total_paise })));
+      if (amounts.total_paise !== advance.amount_paise || !Number.isSafeInteger(advance.amount_paise)) throw new Error();
+      const header: GstNote = { ...advance, ...amounts, direction: 'OUTWARD', note_type: 'DEBIT_NOTE', note_number: advance.advance_number,
+        note_date: advance.advance_date, party_id: advance.party_id, place_of_supply: meta.place_of_supply_state_code ?? '',
+        is_interstate: meta.place_of_supply_state_code !== period.gstinSnapshot.slice(0, 2) ? 1 : 0, lines_json: JSON.stringify(lines) };
+      // This is a receipt voucher, not an accounting invoice or debit note.
+      const priorMeta = metadata.get(`ADVANCE:${advance.id}`)!;
+      metadata.set(`ADVANCE:${advance.id}`, { ...priorMeta, document_type: 'RECEIPT_VOUCHER' });
+      normalize(header, 'ADVANCE', lines, advance.advance_date, advance.advance_number, advance.party_id, header.place_of_supply, header.is_interstate, 1, null, false);
+    } catch { issue('ADVANCE_GST_DETAIL_REQUIRED', 'BLOCKING_ERROR', 'ADVANCE', advance.id, 'Taxable customer advance requires explicit historical taxable lines matching the receipt and GST classification.'); }
+  }
+  for (const invoice of invoices.values()) {
+    const meta = metadata.get(`INVOICE:${invoice.id}`);
+    if (!meta?.advance_adjustments_json || !outwardDocuments.some(row => row.source_entity_id === invoice.id && row.included && !unclassified(row.classification))) continue;
+    try {
+      const offsets = JSON.parse(meta.advance_adjustments_json) as GstAdvanceOffset[];
+      if (!Array.isArray(offsets) || new Set(offsets.map(row => row.advance_id)).size !== offsets.length) throw new Error();
+      const prepared: Array<{ header: GstNote; lines: GstNoteLine[]; meta: GstDocumentMetadata }> = [];
+      const invoiceOffset = emptyAmounts();
+      for (const offset of offsets) {
+        const advance = sources.advances.find(row => row.id === offset.advance_id && row.business_id === businessId);
+        const advanceMeta = metadata.get(`ADVANCE:${offset.advance_id}`);
+        if (!advance || advance.deleted_at || advance.party_type !== 'customer' || advance.party_id !== invoice.customer_id
+          || advance.advance_date > invoice.invoice_date || advanceMeta?.tax_on_advance_applicable !== 1) throw new Error();
+        const priorLines = JSON.parse(advanceMeta.advance_gst_json ?? '').lines as GstNoteLine[];
+        if (!Array.isArray(priorLines) || !priorLines.length || priorLines.some(line => line.taxability !== 'TAXABLE')) throw new Error();
+        const advanceAmounts = sum(priorLines.map(line => ({ ...line, pre_round_total_paise: line.line_total_paise, total_paise: line.line_total_paise })));
+        if (advanceAmounts.total_paise !== advance.amount_paise) throw new Error();
+        const cumulative = emptyAmounts();
+        const cumulativeLines = new Map<string, GstAmounts>();
+        const evidence = [...new Map([...(sources.advanceOffsetEvidence ?? []), ...sources.metadata].map(row => [row.id, row])).values()];
+        for (const linked of evidence) if (linked.business_id === businessId && linked.advance_adjustments_json) {
+          const values = JSON.parse(linked.advance_adjustments_json);
+          if (!Array.isArray(values)) throw new Error();
+          for (const value of values) if (value.advance_id === advance.id) {
+            for (const key of ['taxable_paise', ...taxKeys] as const) if (!Number.isSafeInteger(value[key]) || value[key] < 0) throw new Error();
+            add(cumulative, value);
+            const allocations = value.lines ?? (priorLines.length === 1 ? [{ ...value, advance_line_id: priorLines[0].id }]
+              : (['taxable_paise', ...taxKeys] as const).every(key => value[key] === advanceAmounts[key]) ? priorLines.map(line => ({ ...line, advance_line_id: line.id })) : null);
+            if (!Array.isArray(allocations)) throw new Error();
+            const allocated = emptyAmounts();
+            for (const allocation of allocations) {
+              const prior = priorLines.find(line => line.id === allocation.advance_line_id);
+              if (!prior) throw new Error();
+              const total = cumulativeLines.get(prior.id) ?? emptyAmounts();
+              for (const key of ['taxable_paise', ...taxKeys] as const) if (!Number.isSafeInteger(allocation[key]) || allocation[key] < 0) throw new Error();
+              add(total, allocation); add(allocated, allocation); cumulativeLines.set(prior.id, total);
+              for (const key of ['taxable_paise', ...taxKeys] as const) if (total[key] > prior[key]) throw new Error();
+            }
+            for (const key of ['taxable_paise', ...taxKeys] as const) if (allocated[key] !== value[key]) throw new Error();
+          }
+        }
+        for (const key of ['taxable_paise', ...taxKeys] as const) {
+          if (!Number.isSafeInteger(offset[key]) || offset[key] < 0 || cumulative[key] > advanceAmounts[key]) throw new Error();
+        }
+        if (offset.taxable_paise <= 0) throw new Error();
+        add(invoiceOffset, offset);
+        const id = `advance-offset:${invoice.id}:${advance.id}`;
+        const amounts = { ...emptyAmounts(), ...offset };
+        amounts.total_paise = amounts.pre_round_total_paise = amounts.taxable_paise + taxKeys.reduce((sum, key) => sum + amounts[key], 0);
+        const fullOffset = (['taxable_paise', ...taxKeys] as const).every(key => offset[key] === advanceAmounts[key]);
+        const allocation = offset.lines ?? (priorLines.length === 1 ? [{ ...offset, advance_line_id: priorLines[0].id }]
+          : fullOffset ? priorLines.map(line => ({ ...line, advance_line_id: line.id })) : null);
+        if (!allocation || !allocation.length || new Set(allocation.map(row => row.advance_line_id)).size !== allocation.length) throw new Error();
+        const lines: GstNoteLine[] = allocation.map((value, index) => {
+          const prior = priorLines.find(line => line.id === value.advance_line_id);
+          if (!prior) throw new Error();
+          for (const key of ['taxable_paise', ...taxKeys] as const) if (!Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > prior[key]) throw new Error();
+          const total = value.taxable_paise + taxKeys.reduce((sum, key) => sum + value[key], 0);
+          if (!Number.isSafeInteger(total)) throw new Error();
+          return { ...prior, ...value, id: `${id}:${index}`, qty_micros: 0, line_total_paise: total };
+        });
+        const allocationSum = sum(lines);
+        for (const key of ['taxable_paise', ...taxKeys] as const) if (allocationSum[key] !== offset[key]) throw new Error();
+        const header: GstNote = { ...advance, ...amounts, id, direction: 'OUTWARD', note_type: 'CREDIT_NOTE', note_number: invoice.invoice_number,
+          note_date: invoice.invoice_date, party_id: advance.party_id, place_of_supply: advanceMeta.place_of_supply_state_code ?? '',
+          is_interstate: advanceMeta.place_of_supply_state_code !== period.gstinSnapshot.slice(0, 2) ? 1 : 0, lines_json: JSON.stringify(lines) };
+        prepared.push({ header, lines, meta: { ...advanceMeta, source_entity_id: id, document_type: 'ADVANCE_ADJUSTMENT', reporting_period_override: null,
+          amendment_kind: null, original_source_entity_id: advance.id } });
+        remember('LINKED_ADVANCE', advance.id, { advance, metadata: advanceMeta }, advance.entity_version, advance.advance_date);
+      }
+      for (const key of ['taxable_paise', ...taxKeys] as const) if (invoiceOffset[key] > invoice[key]) throw new Error();
+      for (const entry of prepared) {
+        metadata.set(`ADVANCE:${entry.header.id}`, entry.meta);
+        normalize(entry.header, 'ADVANCE', entry.lines, invoice.invoice_date, invoice.invoice_number, invoice.customer_id,
+          entry.header.place_of_supply, entry.header.is_interstate, -1, null, false);
+      }
+    } catch { issue('INVALID_ADVANCE_OFFSET', 'BLOCKING_ERROR', 'INVOICE', invoice.id, 'Linked advance offsets require earlier same-party taxable receipts, explicit rate-wise amounts and cumulative limits.'); }
+  }
+  for (const note of sources.notes ?? []) {
+    if (note.business_id !== businessId) continue;
+    let lines: GstNoteLine[] = [];
+    try { const parsed = JSON.parse(note.lines_json); if (!Array.isArray(parsed)) throw new Error(); lines = parsed; }
+    catch { issue('MISSING_LINE_DATA', 'BLOCKING_ERROR', 'GST_NOTE', note.id, 'Historical note lines are invalid.'); }
+    normalize(note, 'GST_NOTE', lines, note.note_date, note.note_number, note.party_id, note.place_of_supply, note.is_interstate,
+      note.note_type === 'CREDIT_NOTE' ? -1 : 1, null, false);
+  }
   // Remove every member of an exact duplicate set, rather than silently picking a winner.
   const duplicates = new Set<string>();
   const identityKey = (type: string, party: string, documentType: string, date: string, number: string) => JSON.stringify([
-    type === 'INVOICE' || type === 'SALES_RETURN' ? 'OUTWARD' : 'INWARD', type === 'INVOICE' || type === 'SALES_RETURN' ? '' : party,
+     type === 'INVOICE' || type === 'SALES_RETURN' || type === 'OUTWARD' ? 'OUTWARD' : 'INWARD', type === 'INVOICE' || type === 'SALES_RETURN' || type === 'OUTWARD' ? '' : party,
     documentType, financialYearForDate(date), number,
   ]);
   const identityEvidence = new Map<string, Set<string>>();
+  const fuzzyEvidence = new Map<string, Set<string>>();
   for (const evidence of sources.documentIdentityEvidence ?? []) {
     if (evidence.business_id !== businessId) continue;
     const fy = evidence.document_date && isDateOnly(evidence.document_date) ? financialYearForDate(evidence.document_date) : evidence.financial_year;
     if (!fy || !/^\d{4}-\d{2}$/.test(fy) || evidence.document_date && !isDateOnly(evidence.document_date)) { issue('INVALID_IDENTITY_EVIDENCE', 'BLOCKING_ERROR', evidence.source_entity_type, evidence.source_entity_id, 'Duplicate identity evidence requires a valid date or explicit financial year.'); continue; }
-    const outward = evidence.source_entity_type === 'INVOICE' || evidence.source_entity_type === 'SALES_RETURN';
+    const outward = evidence.direction === 'OUTWARD' || evidence.source_entity_type === 'INVOICE' || evidence.source_entity_type === 'SALES_RETURN';
     const key = JSON.stringify([outward ? 'OUTWARD' : 'INWARD', outward ? '' : evidence.party_gstin?.trim().toUpperCase() ?? '', evidence.document_type, fy, evidence.document_number]);
     const ids = identityEvidence.get(key) ?? new Set<string>(); ids.add(`${evidence.source_entity_type}:${evidence.source_entity_id}`); identityEvidence.set(key, ids);
+    const fuzzyKey = JSON.stringify([outward ? 'OUTWARD' : 'INWARD', outward ? '' : evidence.party_gstin?.trim().toUpperCase() ?? '', evidence.document_type, fy, evidence.document_number.toUpperCase().replace(/[^A-Z0-9]/g, '')]);
+    const fuzzyIds = fuzzyEvidence.get(fuzzyKey) ?? new Set<string>(); fuzzyIds.add(`${evidence.source_entity_type}:${evidence.source_entity_id}`); fuzzyEvidence.set(fuzzyKey, fuzzyIds);
     remember('DOCUMENT_IDENTITY_EVIDENCE', `${evidence.source_entity_type}:${evidence.source_entity_id}`, evidence);
   }
   for (const document of [...outwardDocuments, ...inwardDocuments]) {
     if (!document.included) continue;
-    const key = identityKey(document.source_entity_type, document.party_gstin || document.party_id, document.document_type, document.document_date, document.document_number);
+    const key = identityKey(document.direction ?? document.source_entity_type, document.party_gstin || document.party_id, document.document_type, document.document_date, document.document_number);
     const id = `${document.source_entity_type}:${document.source_entity_id}`;
+    const fuzzyKey = JSON.stringify([document.direction, document.direction === 'OUTWARD' ? '' : document.party_gstin, document.document_type,
+      financialYearForDate(document.document_date), document.document_number.toUpperCase().replace(/[^A-Z0-9]/g, '')]);
+    if ([...(fuzzyEvidence.get(fuzzyKey) ?? [])].some(other => other !== id) && ![...(identityEvidence.get(key) ?? [])].some(other => other !== id)) {
+      issue('FUZZY_DUPLICATE_SUGGESTION', 'WARNING', document.source_entity_type, document.source_entity_id, 'Another document has a similar punctuation/case-normalized number. Legal numbers are not merged or changed.', null, document.document_number);
+    }
     if ([...(identityEvidence.get(key) ?? [])].some(other => other !== id)) {
       document.included = false; document.exclusion_reason = 'DUPLICATE'; duplicates.add(id);
       issue('DUPLICATE_DOCUMENT', 'BLOCKING_ERROR', document.source_entity_type, document.source_entity_id, 'Full-financial-year evidence contains another source with this exact legal document identity.', null, document.document_number);
@@ -508,7 +688,8 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   if (duplicates.size) {
     for (const rows of [outwardRateRows, inwardRateRows]) for (let index = rows.length - 1; index >= 0; index--) if (duplicates.has(`${rows[index].source_entity_type}:${rows[index].source_entity_id}`)) rows.splice(index, 1);
   }
-  for (const contribution of hsnLineContributions) if (contribution.document.included) buildHsnContribution(contribution);
+  const excludedIdentities = new Set([...outwardDocuments, ...inwardDocuments].filter(row => !row.included).map(row => `${row.source_entity_type}:${row.source_entity_id}`));
+  for (const contribution of hsnLineContributions) if (contribution.document.included && !excludedIdentities.has(`${contribution.document.source_entity_type}:${contribution.document.source_entity_id}`)) buildHsnContribution(contribution);
   for (const document of [...outwardDocuments, ...inwardDocuments]) {
     const entry = manifest.get(`${document.source_entity_type}:${document.source_entity_id}`)!;
     entry.report_effect = document.included ? 'INCLUDED' : 'EXCLUDED';
@@ -526,21 +707,46 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   const inwardNoteIds = new Set(inwardNotes.map(d => d.source_entity_id));
   function summary(documents: NormalizedGstDocument[], rows: NormalizedGstRateRow[]): GstSummary {
     const live = documents.filter(d => d.included), ids = new Set(live.map(d => d.source_entity_id));
-    return { ...sum(live), document_count: live.length, party_count: new Set(live.map(d => d.party_gstin).filter(Boolean)).size,
+    return { ...sum(live), document_count: live.filter(row => !row.allocation_only).length, party_count: new Set(live.map(d => d.party_gstin).filter(Boolean)).size,
       detail_row_count: rows.filter(row => ids.has(row.source_entity_id)).length, source_entity_ids: [...ids].sort() };
   }
   const sections: Record<string, NormalizedGstDocument[]> = {};
   for (const key of ['B2B', 'B2CL', 'B2CS', 'EXPORT_WITH_PAYMENT', 'EXPORT_WITHOUT_PAYMENT', 'SEZ_WITH_PAYMENT', 'SEZ_WITHOUT_PAYMENT', 'DEEMED_EXPORT', 'NIL_RATED', 'EXEMPT', 'NON_GST', 'REGISTERED_NOTES', 'UNREGISTERED_NOTES', 'AMENDMENTS', 'ECO_9_5_SUPPLIER', 'ECO_9_5_LIABLE', 'UNCLASSIFIED', 'UNCLASSIFIED_INVALID_GSTIN', 'ADVANCES']) sections[key] = [];
   const sourceSection = new Map<string, string>();
   for (const document of outwardIncluded) {
-    const section = unclassified(document.classification) ? document.classification : document.amendment_kind && document.amendment_kind !== 'INTERNAL_UNFILED_EDIT' ? 'AMENDMENTS'
+    const section = unclassified(document.classification) ? document.classification : document.source_entity_type === 'ADVANCE' ? 'ADVANCES' : document.amendment_kind && document.amendment_kind !== 'INTERNAL_UNFILED_EDIT' ? 'AMENDMENTS'
       : document.classification === 'B2CS' ? 'B2CS'
       : outwardNoteIds.has(document.source_entity_id) ? document.party_gstin ? 'REGISTERED_NOTES' : 'UNREGISTERED_NOTES' : document.classification;
     (sections[section] ??= []).push(document); sourceSection.set(document.source_entity_id, section);
   }
   const sectionRates: Record<string, NormalizedGstRateRow[]> = {};
+  const allocationsBySource = new Map<string, Map<string, NormalizedGstRateRow[]>>();
   for (const key of Object.keys(sections)) sectionRates[key] = [];
-  for (const row of outwardRateRows) sectionRates[sourceSection.get(row.source_entity_id)!].push(row);
+  for (const row of outwardRateRows) {
+    const primary = sourceSection.get(row.source_entity_id)!;
+    const section = ['NIL_RATED', 'EXEMPT', 'NON_GST'].includes(row.classification) && !['AMENDMENTS', 'REGISTERED_NOTES', 'UNREGISTERED_NOTES'].includes(primary)
+      ? row.classification : primary;
+    sectionRates[section].push(row);
+    const source = allocationsBySource.get(row.source_entity_id) ?? new Map<string, NormalizedGstRateRow[]>();
+    const rows = source.get(section) ?? []; rows.push(row); source.set(section, rows); allocationsBySource.set(row.source_entity_id, source);
+  }
+  // Header identity/value belongs to one primary section. Additional allocations
+  // carry only historical line measures and never repeat invoice value/count.
+  for (const document of outwardIncluded) {
+    const primary = sourceSection.get(document.source_entity_id)!;
+    const allocation = allocationsBySource.get(document.source_entity_id) ?? new Map<string, NormalizedGstRateRow[]>();
+    const allocations = [...allocation.keys()];
+    if (allocations.length <= 1 && (!allocations.length || allocations[0] === primary)) continue;
+    const all = new Set([...allocations, primary]);
+    for (const section of all) {
+      const totals = sum(allocation.get(section) ?? []);
+      const projected = { ...document, ...totals, allocation_only: section !== primary,
+        classification: section !== primary ? section as GstClassification : document.classification,
+        total_paise: section === primary ? document.total_paise : 0, round_off_paise: section === primary ? document.round_off_paise : 0 };
+      const index = sections[section].findIndex(row => row.source_entity_id === document.source_entity_id);
+      if (index >= 0) sections[section][index] = projected; else sections[section].push(projected);
+    }
+  }
   const sectionSummaries: Record<string, GstSummary> = {};
   for (const key of Object.keys(sections)) sectionSummaries[key] = summary(sections[key], sectionRates[key]);
   const b2csGroups = new Map<string, GstB2csAggregate>();
@@ -558,6 +764,17 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   const b2csAggregates = [...b2csGroups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, row]) => ({ ...row,
     source_entity_ids: [...new Set(row.source_entity_ids)].sort(), source_entity_types: [...new Set(row.source_entity_types!)].sort(), source_line_ids: [...new Set(row.source_line_ids)].sort() }));
 
+  const itcNotes = new Map((sources.notes ?? []).filter(row => row.business_id === businessId && row.direction === 'INWARD').map(row => [row.id, row]));
+  for (const note of itcNotes.values()) {
+    // Adapt detailed note evidence locally; no purchase or historical amount is persisted.
+    try {
+      if (purchases.has(note.id)) throw new Error('Source identity collision');
+      const evidence = inwardNoteEvidence(note);
+      purchases.set(note.id, evidence.header); purchaseLines.set(note.id, evidence.lines);
+      const meta = metadata.get(`GST_NOTE:${note.id}`);
+      if (meta) metadata.set(`PURCHASE:${note.id}`, meta);
+    } catch { issue('ITC_NOTE_EVIDENCE_INVALID', 'BLOCKING_ERROR', 'GST_NOTE', note.id, 'Inward note historical evidence is invalid or conflicts with a purchase identity.'); }
+  }
   const ledger = indexed(sources.itcEntries, 'GST_ITC_LEDGER');
   const supersededLedger = new Set<string>();
   const supersedingReviews = new Map<string, string[]>();
@@ -593,7 +810,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     if (entry.status === 'TEMPORARILY_REVERSED' || entry.status === 'PERMANENTLY_REVERSED') historyEvents.push({ entry,
       date: entry.reversal_period_key ?? entry.tax_period_key, kind: 'REVERSAL', amount: (entry.status === 'TEMPORARILY_REVERSED' ? entry.temporarily_reversed_paise : entry.permanently_reversed_paise) ?? Math.abs(purchase?.[head] ?? 0) });
     if (entry.status === 'RECLAIMED') historyEvents.push({ entry, date: entry.reclaim_period_key ?? entry.tax_period_key, kind: 'RECLAIM', amount: entry.reclaimed_paise ?? 0 });
-    if (entry.tax_period_key <= period.periodKey || (entry.reversal_period_key ?? entry.tax_period_key) <= period.periodKey || (entry.reclaim_period_key ?? entry.tax_period_key) <= period.periodKey) {
+    if (entry.tax_period_key <= throughPeriodKey || (entry.reversal_period_key ?? entry.tax_period_key) <= throughPeriodKey || (entry.reclaim_period_key ?? entry.tax_period_key) <= throughPeriodKey) {
       remember('GST_ITC_LEDGER', entry.id, entry, entry.entity_version);
       if (purchase) remember('ITC_SOURCE_PURCHASE', purchase.id, { header: purchase, lines: purchaseLines.get(purchase.id) ?? [],
         metadata: metadata.get(`PURCHASE:${purchase.id}`) ?? metadata.get(`PURCHASE_RETURN:${purchase.id}`) ?? null }, purchase.entity_version, purchase.bill_date);
@@ -618,7 +835,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   const priority = { CLAIM: 0, REVERSAL: 1, RETURN: 2, RECLAIM: 3 };
   historyEvents.sort((a, b) => a.date.localeCompare(b.date) || priority[a.kind] - priority[b.kind] || a.entry.id.localeCompare(b.entry.id));
   for (const event of historyEvents) {
-    if (event.date > period.periodKey) continue;
+    if (event.date > throughPeriodKey) continue;
     const key = historyKey(event.entry), purchase = purchases.get(event.entry.source_entity_id);
     const balance = historyBalances.get(key) ?? { claimed: 0, available: 0 };
     const head = `${event.entry.tax_head.toLowerCase()}_paise` as typeof taxKeys[number];
@@ -627,7 +844,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       && !!event.entry.category && (!!event.entry.reviewed_at || event.entry.user_confirmation === 1);
     try { monthPeriod(businessId, period.gstinSnapshot, event.date); } catch { valid = false; }
     // Purchase-note claims are negative review effects, not additional original entitlement.
-    if (purchase?.reverses_purchase_id) continue;
+    if (purchase?.reverses_purchase_id || itcNotes.get(event.entry.source_entity_id)?.note_type === 'CREDIT_NOTE') continue;
     if (event.kind === 'RETURN') {
       const previousReturned = returnedEntitlement.get(key) ?? 0;
       const totalReturned = previousReturned + magnitude;
@@ -672,7 +889,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     historyBalances.set(key, balance);
   }
   const currentLedger = [...ledger.values()].filter(entry => !supersededLedger.has(entry.id)
-    && (entry.tax_period_key === period.periodKey || entry.reversal_period_key === period.periodKey || entry.reclaim_period_key === period.periodKey))
+    && (periodContainsKey(entry.tax_period_key) || periodContainsKey(entry.reversal_period_key ?? '') || periodContainsKey(entry.reclaim_period_key ?? '')))
     .sort((a, b) => a.source_entity_type.localeCompare(b.source_entity_type) || a.source_entity_id.localeCompare(b.source_entity_id) || a.tax_head.localeCompare(b.tax_head) || a.id.localeCompare(b.id));
   const ledgerBySource = new Map<string, typeof currentLedger>();
   for (const entry of currentLedger) {
@@ -683,7 +900,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   const booksItcRows: BooksItcRow[] = [];
   const usedLedger = new Set<string>();
   const reclaimedByPrior = new Map<string, number>();
-  for (const entry of ledger.values()) if (entry.status === 'RECLAIMED' && entry.related_prior_entry_id && (entry.reclaim_period_key ?? entry.tax_period_key) <= period.periodKey) {
+  for (const entry of ledger.values()) if (entry.status === 'RECLAIMED' && entry.related_prior_entry_id && (entry.reclaim_period_key ?? entry.tax_period_key) <= throughPeriodKey) {
     const amount = entry.reclaimed_paise;
     if (amount != null && Number.isSafeInteger(amount) && amount >= 0) reclaimedByPrior.set(entry.related_prior_entry_id, (reclaimedByPrior.get(entry.related_prior_entry_id) ?? 0) + amount);
     remember('GST_ITC_LEDGER', entry.id, entry, entry.entity_version);
@@ -704,9 +921,9 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       for (const field of ['books_tax_paise', 'original_eligible_paise', 'temporarily_reversed_paise', 'permanently_reversed_paise', 'reclaimable_paise', 'reclaimed_paise'] as const) {
         if (entry[field] != null && (!Number.isSafeInteger(entry[field]) || (entry[field]! < 0 && !(document?.effect_sign === -1 && field === 'books_tax_paise')))) valid = false;
       }
-      const eligibilityPeriod = entry.tax_period_key === period.periodKey;
-      const reversalPeriod = (entry.reversal_period_key ?? entry.tax_period_key) === period.periodKey;
-      const reclaimPeriod = (entry.reclaim_period_key ?? entry.tax_period_key) === period.periodKey;
+      const eligibilityPeriod = periodContainsKey(entry.tax_period_key);
+      const reversalPeriod = periodContainsKey(entry.reversal_period_key ?? entry.tax_period_key);
+      const reclaimPeriod = periodContainsKey(entry.reclaim_period_key ?? entry.tax_period_key);
       const sourcePurchase = purchases.get(entry.source_entity_id);
       const sourceTax = sourcePurchase ? Math.abs(sourcePurchase[key]) : 0;
       const sourceMeta = metadata.get(`PURCHASE:${entry.source_entity_id}`) ?? metadata.get(`PURCHASE_RETURN:${entry.source_entity_id}`);
@@ -721,12 +938,12 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       if (entry.books_tax_paise != null && Math.abs(entry.books_tax_paise) !== Math.abs(books) && document) valid = false;
       if (status !== 'UNREVIEWED' && (!entry.category || (!entry.reviewed_at && entry.user_confirmation !== 1))) valid = false;
       if (document && (unclassified(document.classification) || !isValidGstin(document.party_gstin) || !document.included)) valid = false;
-      const signed = (amount: number | null | undefined) => (document?.effect_sign ?? (sourcePurchase?.reverses_purchase_id ? -1 : 1)) * Math.abs(amount ?? 0);
+      const signed = (amount: number | null | undefined) => (document?.effect_sign ?? (sourcePurchase?.reverses_purchase_id || itcNotes.get(entry.source_entity_id)?.note_type === 'CREDIT_NOTE' ? -1 : 1)) * Math.abs(amount ?? 0);
       if (status === 'ELIGIBLE_IN_BOOKS') {
         row.eligible_paise = eligibilityPeriod ? signed(entry.original_eligible_paise ?? (document ? books : 0)) : 0;
         if (document && eligibilityPeriod && Math.abs(row.eligible_paise) > Math.abs(books) || !document && Math.abs(row.eligible_paise) > sourceTax) valid = false;
         row.approved_paise = row.eligible_paise;
-        if (sourcePurchase?.reverses_purchase_id && Math.abs(row.approved_paise) > (returnAvailableLimits.get(`${sourcePurchase.id}:${head}`) ?? 0)) {
+        if (sourcePurchase?.reverses_purchase_id && Math.abs(row.approved_paise) > Math.min(Math.abs(sourcePurchase[key]), returnAvailableLimits.get(`${sourcePurchase.id}:${head}`) ?? 0)) {
           valid = false; issue('ITC_RETURN_DOUBLE_REDUCTION', 'BLOCKING_ERROR', 'GST_ITC_LEDGER', entry.id,
             'Approved purchase-return reduction exceeds original available claimed ITC; already reversed or never claimed tax cannot be deducted twice.', key);
         }
@@ -809,11 +1026,12 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       if (['taxable_paise', ...taxKeys, 'line_total_paise'].some(key => !Number.isSafeInteger(line[key as keyof Line]))) { linesValid = false; continue; }
       add(sourceTotals, { taxable_paise: Math.abs(line.taxable_paise), igst_paise: Math.abs(line.igst_paise), cgst_paise: Math.abs(line.cgst_paise), sgst_paise: Math.abs(line.sgst_paise), cess_paise: Math.abs(line.cess_paise), pre_round_total_paise: Math.abs(line.line_total_paise) });
     }
+    const note = itcNotes.get(entry.source_entity_id);
     const sourceExists = sourcePurchase && sourcePurchase.status !== 'draft' && sourcePurchase.status !== 'cancelled'
       && !sourcePurchase.replaced_by_purchase_id && isValidGstin(suppliers.get(sourcePurchase.supplier_id)?.gstin ?? '')
       && isDateOnly(sourcePurchase.bill_date) && sourcePurchase.bill_date < period.periodStart
       && (!entry.source_period_key || entry.source_period_key === sourcePurchase.bill_date.slice(0, 7))
-      && (entry.source_entity_type === 'PURCHASE' || entry.source_entity_type === 'PURCHASE_RETURN')
+      && (entry.source_entity_type === 'PURCHASE' || entry.source_entity_type === 'PURCHASE_RETURN' || entry.source_entity_type === 'GST_NOTE' && !!note)
       && [...taxKeys, 'taxable_paise', 'pre_round_total_paise', 'round_off_paise', 'total_paise'].every(key => Number.isSafeInteger(sourcePurchase[key as GstAmountKey]))
       && linesValid && (['taxable_paise', ...taxKeys, 'pre_round_total_paise'] as const).every(key => sourceTotals[key] === Math.abs(sourcePurchase[key]))
       && sourcePurchase.pre_round_total_paise === sourcePurchase.taxable_paise + taxKeys.reduce((total, key) => total + sourcePurchase[key], 0)
@@ -867,11 +1085,6 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     remember('EXPENSE', expense.id, expense, expense.entity_version, expense.expense_date, 'EXCLUDED');
     if (expense.tax_paise) issue('INSUFFICIENT_GST_DETAIL', 'WARNING', 'EXPENSE', expense.id, 'Aggregate expense tax is excluded from approved ITC because tax-head and supplier invoice details are unavailable.');
   }
-  for (const advance of sources.advances) if (advance.business_id === businessId && !advance.deleted_at && dateInPeriod(advance.advance_date, period)) {
-    const meta = metadata.get(`ADVANCE:${advance.id}`);
-    remember('ADVANCE', advance.id, { advance, metadata: meta ?? null }, advance.entity_version, advance.advance_date, 'EXCLUDED', meta?.entity_version ?? null);
-    if (meta?.tax_on_advance_applicable !== 0) issue('ADVANCE_GST_DETAIL_REQUIRED', 'BLOCKING_ERROR', 'ADVANCE', advance.id, 'Advance applicability or tax-head/application adjustment detail is unavailable; no liability invented.');
-  }
 
   const documentSeries = buildDocumentSeries(outwardDocuments);
   for (const series of documentSeries) if (series.status !== 'PASS') issue(series.duplicates.length ? 'DOCUMENT_SERIES_DUPLICATE' : 'DOCUMENT_SERIES_REVIEW', series.duplicates.length ? 'BLOCKING_ERROR' : 'WARNING', 'DOCUMENT_SERIES', series.series, 'Document series contains duplicates, gaps or non-sequential numbers.');
@@ -881,8 +1094,9 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   const inwardGross = summary(inwardDocuments.filter(d => !inwardNoteIds.has(d.source_entity_id)), inwardRateRows);
   const inwardNoteSummary = summary(inwardNotes, inwardRateRows), inwardNet = summary(inwardDocuments, inwardRateRows);
   const classifiedOutward = outwardIncluded.filter(d => !unclassified(d.classification));
-  const outputLiability = sum(classifiedOutward.filter(d => !['ECO_9_5_SUPPLIER', 'NIL_RATED', 'EXEMPT', 'NON_GST'].includes(d.classification)));
-  const rcmDocuments = inwardIncluded.filter(d => d.classification === 'RCM'), rcmLiability = sum(rcmDocuments);
+  const classifiedOutwardRates = outwardRateRows.filter(row => !unclassified(row.classification));
+  const outputLiability = sum(classifiedOutwardRates.filter(row => !row.reverse_charge && !['ECO_9_5_SUPPLIER', 'NIL_RATED', 'EXEMPT', 'NON_GST'].includes(row.classification)));
+  const rcmDocuments = inwardIncluded.filter(d => d.classification === 'RCM'), rcmLiability = sum(inwardRateRows.filter(row => row.classification === 'RCM'));
   const indicativeWorkingBalance = emptyAmounts();
   for (const key of taxKeys) add(indicativeWorkingBalance, { [key]: outputLiability[key] + rcmLiability[key] - booksItc.NET_APPROVED[key] }, 'INDICATIVE_BALANCE');
 
@@ -902,8 +1116,10 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     '3.1.1(ii)': classifiedOutward.filter(d => d.classification === 'ECO_9_5_SUPPLIER'),
   };
   for (const [table, documents] of Object.entries(tableDocuments)) {
-    const totals = sum(documents);
-    for (const key of ['taxable_paise', ...taxKeys] as const) field(table, key, totals[key], table === '3.1(d)' ? 'PURCHASE_BOOKS' : 'SALES_BOOKS', documents.map(d => d.source_entity_id), table === '3.1(d)' ? null : totals[key]);
+    const categories = table === '3.1(a)' ? ['B2B', 'B2CL', 'B2CS', 'DEEMED_EXPORT'] : table === '3.1(b)' ? ['EXPORT_WITH_PAYMENT', 'EXPORT_WITHOUT_PAYMENT', 'SEZ_WITH_PAYMENT', 'SEZ_WITHOUT_PAYMENT'] : table === '3.1(c)' ? ['NIL_RATED', 'EXEMPT'] : table === '3.1(e)' ? ['NON_GST'] : table === '3.1.1(i)' ? ['ECO_9_5_LIABLE'] : ['ECO_9_5_SUPPLIER'];
+    const allocated = table === '3.1(d)' ? inwardRateRows.filter(row => row.classification === 'RCM') : classifiedOutwardRates.filter(row => !row.reverse_charge && categories.includes(row.classification));
+    const totals = sum(allocated);
+    for (const key of ['taxable_paise', ...taxKeys] as const) field(table, key, totals[key], table === '3.1(d)' ? 'PURCHASE_BOOKS' : 'SALES_BOOKS', allocated.map(d => d.source_entity_id), table === '3.1(d)' ? null : totals[key]);
   }
   const categoryTables: Record<string, string> = { IMPORT_GOODS: '4(A)(1)', IMPORT_SERVICES: '4(A)(2)', RCM: '4(A)(3)', ISD: '4(A)(4)', OTHER_ITC: '4(A)(5)' };
   for (const head of taxHeads) {
@@ -922,16 +1138,17 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     const restricted = rows.filter(r => r.status === 'INELIGIBLE' && ['SECTION_16_4', 'POS_RESTRICTION'].includes(r.reason_code ?? ''));
     field('4(D)(2)', key, sum(restricted.map(r => ({ [key]: r.books_tax_paise })))[key], 'APPROVED_BOOKS_ITC', restricted.map(r => r.source_entity_id));
     field('5.1', key, null, 'NOT_AVAILABLE', []); field('6.1', key, null, 'NOT_AVAILABLE', []);
+    for (const table of ['5.1.INTEREST', '5.1.LATE_FEE', '6.1.CASH', '6.1.CREDIT', '6.1.PAYMENT']) field(table, key, null, 'NOT_AVAILABLE', []);
   }
   for (const interstate of [false, true]) for (const category of ['NIL_EXEMPT', 'NON_GST']) {
-    const rows = inwardIncluded.filter(d => d.is_interstate === interstate
+      const rows = inwardRateRows.filter(d => d.is_interstate === interstate
       && (category === 'NON_GST' ? d.classification === 'NON_GST' : ['NIL_RATED', 'EXEMPT'].includes(d.classification)));
     field(`5.${category}.${interstate ? 'INTERSTATE' : 'INTRASTATE'}`, 'taxable_paise', sum(rows).taxable_paise, 'PURCHASE_BOOKS', rows.map(r => r.source_entity_id));
   }
   for (const adjustment of [...sources.adjustments].sort((a, b) => a.id.localeCompare(b.id))) {
-    if (adjustment.business_id !== businessId || adjustment.tax_period_key !== period.periodKey) continue;
+    if (adjustment.business_id !== businessId || !periodContainsKey(adjustment.tax_period_key ?? '')) continue;
     remember('GST_ADJUSTMENT', adjustment.id, adjustment, adjustment.entity_version);
-    const key = `${adjustment.tax_head.toLowerCase()}_paise` as GstAmountKey;
+    const key = adjustment.measure ?? `${adjustment.tax_head.toLowerCase()}_paise` as GstAmountKey;
     const target = fields.find(f => f.table_code === adjustment.table_code && f.measure === key);
     const delta = adjustment.adjustment_paise;
     if (!target || adjustment.report_type !== 'GSTR3B_DRAFT' || !Number.isSafeInteger(delta) || !adjustment.reason.trim()) {
@@ -963,11 +1180,11 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     }
   }
   const interstateGroups = new Map<string, GstAmounts & { place_of_supply: string; recipient_category: string; source_entity_ids: string[] }>();
-  for (const document of classifiedOutward) if (document.is_interstate && ['UNREGISTERED', 'COMPOSITION', 'UIN'].includes(document.recipient_category)
-    && ['B2B', 'B2CL', 'B2CS'].includes(document.classification)) {
-    const key = `${document.place_of_supply}:${document.recipient_category}`;
-    const group = interstateGroups.get(key) ?? { ...emptyAmounts(), place_of_supply: document.place_of_supply, recipient_category: document.recipient_category, source_entity_ids: [] };
-    add(group, document); group.source_entity_ids.push(document.source_entity_id); interstateGroups.set(key, group);
+  for (const row of classifiedOutwardRates) if (row.is_interstate && !row.reverse_charge && ['UNREGISTERED', 'COMPOSITION', 'UIN'].includes(row.recipient_category ?? '')
+    && ['B2B', 'B2CL', 'B2CS'].includes(row.classification)) {
+    const key = `${row.place_of_supply}:${row.recipient_category}`;
+    const group = interstateGroups.get(key) ?? { ...emptyAmounts(), place_of_supply: row.place_of_supply, recipient_category: row.recipient_category!, source_entity_ids: [] };
+    add(group, row); group.source_entity_ids.push(row.source_entity_id); interstateGroups.set(key, group);
   }
 
   const reconciliations: GstReconciliationResult[] = [];
@@ -986,9 +1203,9 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     reconcile(`${name}_RATE_HEADERS`, source, sum([...rates]), [...documents], rates.length, ['taxable_paise', ...taxKeys, 'pre_round_total_paise']);
     reconcile(`${name}_HSN_LINES`, sum([...rates]), sum([...hsn]), [...documents], hsn.length, ['taxable_paise', ...taxKeys, 'pre_round_total_paise']);
     for (const group of ['B2B', 'B2C', 'COMBINED', 'UNCLASSIFIED'] as const) {
-      const groupDocs = documents.filter(document => (unclassified(document.classification) ? 'UNCLASSIFIED' : rules?.splitHsnByRecipient ? document.party_gstin ? 'B2B' : 'B2C' : 'COMBINED') === group);
-      const ids = new Set(groupDocs.map(document => document.source_entity_id));
-      const groupRates = rates.filter(row => ids.has(row.source_entity_id)), groupHsn = hsn.filter(row => row.recipient_group === group);
+      const groupRates = rates.filter(row => row.recipient_group === group), groupHsn = hsn.filter(row => row.recipient_group === group);
+      const ids = new Set(groupRates.map(row => row.source_entity_id));
+      const groupDocs = documents.filter(document => ids.has(document.source_entity_id));
       reconcile(`${name}_HSN_${group}`, sum([...groupRates]), sum([...groupHsn]), [...groupDocs], groupHsn.length, ['taxable_paise', ...taxKeys, 'pre_round_total_paise']);
     }
   }
@@ -999,7 +1216,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   reconcile('GSTR1_SECTION_TOTALS', outwardNet, sum(Object.values(sectionSummaries)), outwardIncluded, outwardRateRows.length,
     amountKeys, outwardIncluded.length, Object.values(sectionSummaries).reduce((count, s) => count + s.document_count, 0));
   const g3Outward = sum(fields.filter(f => ['3.1(a)', '3.1(b)', '3.1(c)', '3.1(e)', '3.1.1(i)', '3.1.1(ii)'].includes(f.table_code)).map(f => ({ [f.measure]: f.calculated_paise ?? 0 })));
-  reconcile('GSTR1_TO_3B', sum(classifiedOutward), g3Outward, classifiedOutward, classifiedOutward.length, ['taxable_paise', ...taxKeys]);
+  reconcile('GSTR1_TO_3B', sum(classifiedOutwardRates.filter(row => !row.reverse_charge)), g3Outward, classifiedOutward, classifiedOutward.length, ['taxable_paise', ...taxKeys]);
   reconcile('PURCHASE_GROSS_NOTES_NET', inwardNet, sum([inwardGross, inwardNoteSummary]), inwardIncluded, inwardRateRows.length);
   reconcile('PURCHASE_TAX_ITC_LEDGER', inwardNet, booksItc.TOTAL_BOOKS_TAX, inwardIncluded, booksItcRows.length, [...taxKeys]);
   reconcile('ITC_BOOKS_STATUS_PARTITIONS', booksItc.TOTAL_BOOKS_TAX, sum(Object.values(booksItcStatusPartitions)), inwardIncluded, booksItcRows.length, [...taxKeys]);
@@ -1042,7 +1259,12 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     sourceManifest: [...manifest.values()].sort((a, b) => a.entity_type.localeCompare(b.entity_type) || a.entity_id.localeCompare(b.entity_id)),
     outwardDocuments, inwardDocuments, outwardRateRows, inwardRateRows, outwardHsnRows, inwardHsnRows,
     outwardNotes, inwardNotes, booksItcRows, gstr1Sections: { summaries: sectionSummaries, documents: sections, rateRows: sectionRates,
-      hsnB2b: outwardHsnRows.filter(r => r.recipient_group === 'B2B'), hsnB2c: outwardHsnRows.filter(r => r.recipient_group === 'B2C'), b2csAggregates },
+      hsnB2b: outwardHsnRows.filter(r => r.recipient_group === 'B2B'), hsnB2c: outwardHsnRows.filter(r => r.recipient_group === 'B2C'), b2csAggregates,
+      iffReportedSourceIds: outwardIncluded.filter(row => row.iff_reported_period).map(row => row.source_entity_id).sort(),
+      ...(period.periodType === 'QUARTER' ? {
+        quarterPendingDocuments: outwardIncluded.filter(row => !row.iff_reported_period),
+        quarterPendingRateRows: outwardRateRows.filter(row => !outwardById.get(row.source_entity_id)?.iff_reported_period),
+      } : {}) },
     gstr3bSections: { fields, interstateSupplies: [...interstateGroups.values()].sort((a, b) => a.place_of_supply.localeCompare(b.place_of_supply) || a.recipient_category.localeCompare(b.recipient_category)),
       disclaimer: 'Indicative GST working before GSTR-2B reconciliation, electronic ledger balances, statutory ITC utilization, interest, late fee and CA review.' },
     documentSeries, totals: { outwardGross, outwardNotes: outwardNoteSummary, outwardNet, inwardGross, inwardNotes: inwardNoteSummary, inwardNet,

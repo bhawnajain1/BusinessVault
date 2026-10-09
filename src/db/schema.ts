@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 export const DB_NAME = 'businessvault';
 
@@ -225,4 +225,11 @@ export const STORES_V15: Record<string, string> = {
   gst_document_metadata: `${STORES_V14.gst_document_metadata}, [business_id+reporting_period_override]`,
   gst_adjustments: `${STORES_V14.gst_adjustments}, [business_id+tax_period_key]`,
   gst_itc_ledger: `${STORES_V14.gst_itc_ledger}, [business_id+source_period_key], [business_id+reversal_period_key], [business_id+reclaim_period_key], [business_id+related_prior_entry_id]`,
+};
+
+export const STORES_V16: Record<string, string> = {
+  ...STORES_V15,
+  gst_document_metadata: `${STORES_V15.gst_document_metadata}, *advance_offset_keys`,
+  gst_notes: 'id, business_id, [business_id+note_date], [business_id+direction+note_number]',
+  gst_nil_confirmations: 'id, business_id, [business_id+tax_period_key+filing_frequency]',
 };

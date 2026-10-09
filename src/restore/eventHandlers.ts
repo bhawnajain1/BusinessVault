@@ -40,6 +40,8 @@ import type {
   SalesReturnItem,
   CustomerItemPrice,
   GstProfile,
+  GstNote,
+  GstNilConfirmation,
   GstAato,
   GstDocumentMetadata,
   GstReportRun,
@@ -178,6 +180,7 @@ const merge =
 
 const GST_AGGREGATE_STORES: Record<string, string> = {
   gst_profile: 'gst_profiles', gst_aato: 'gst_aato',
+  gst_note: 'gst_notes', gst_nil_confirmation: 'gst_nil_confirmations',
   gst_document_metadata: 'gst_document_metadata', gst_itc_ledger: 'gst_itc_ledger',
   gst_adjustment: 'gst_adjustments', gst_report_run: 'gst_report_runs',
   gst_report_row: 'gst_report_rows',
@@ -200,7 +203,7 @@ async function guardGstRow(ctx: HandlerContext, store: string, row: Record<strin
     if (!same) throw new Error('Changed equal-version GST row is immutable');
     return false;
   }
-  if (existing && (immutableGstRun(existing) || ['gst_adjustments', 'gst_itc_ledger'].includes(store))) throw new Error('Saved GST row is immutable');
+  if (existing && (immutableGstRun(existing) || ['gst_adjustments', 'gst_itc_ledger', 'gst_nil_confirmations'].includes(store))) throw new Error('Saved GST row is immutable');
   if (row.report_run_id) {
     const parent = await ctx.db.gst_report_runs.get(String(row.report_run_id));
     if (parent && parent.business_id !== ctx.businessId) throw new Error('GST report parent ownership conflict');
@@ -237,9 +240,9 @@ async function replayGstAggregate(evt: SyncEvent, ctx: HandlerContext): Promise<
   if (audit && (audit.business_id !== ctx.businessId || audit.entity_id !== row.id ||
       audit.entity_type !== evt.entity_type || typeof audit.id !== 'string')) throw new Error('Invalid GST audit');
   const attachment = payload.attachment ? asRecord(payload.attachment, evt.event_id) : null;
-  if (attachment && (evt.entity_type !== 'gst_report_run' || attachment.business_id !== ctx.businessId ||
-      attachment.ref_id !== row.id || attachment.ref_type !== 'gst_report_run' ||
-      attachment.id !== row.source_artifact_attachment_id)) throw new Error('Invalid GST attachment');
+   if (attachment && (!['gst_report_run', 'gst_adjustment'].includes(evt.entity_type) || attachment.business_id !== ctx.businessId ||
+       attachment.ref_id !== row.id || attachment.ref_type !== evt.entity_type ||
+       attachment.id !== (evt.entity_type === 'gst_report_run' ? row.source_artifact_attachment_id : row.supporting_attachment_id))) throw new Error('Invalid GST attachment');
   const table = ctx.db.table(store);
   const existing = await table.get(String(row.id));
   if (existing?.business_id && existing.business_id !== ctx.businessId) throw new Error('GST row ownership conflict');
@@ -255,7 +258,7 @@ async function replayGstAggregate(evt: SyncEvent, ctx: HandlerContext): Promise<
   if (existingAudit && (existingAudit.business_id !== ctx.businessId || existingAudit.entity_id !== row.id ||
       existingAudit.entity_type !== evt.entity_type)) throw new Error('GST audit ownership or parent conflict');
   if (localAttachment && (localAttachment.business_id !== ctx.businessId || localAttachment.ref_id !== row.id ||
-      localAttachment.ref_type !== 'gst_report_run' || localAttachment.checksum !== attachment!.checksum)) {
+       localAttachment.ref_type !== evt.entity_type || localAttachment.checksum !== attachment!.checksum)) {
     throw new Error('GST attachment ownership, parent or checksum conflict');
   }
   const same = (table: string, left: Record<string, unknown>, right: Record<string, unknown>) =>
@@ -399,6 +402,12 @@ const HANDLERS: Record<string, EventHandler> = {
   'business:updated': merge('business', (db) => db.businesses),
 
   'gst_profile:create': put<GstProfile>((db) => db.gst_profiles),
+  'gst_note:create': put<GstNote>((db) => db.gst_notes),
+  'gst_note:created': put<GstNote>((db) => db.gst_notes),
+  'gst_note:update': merge<GstNote>('gst_note', db => db.gst_notes, { upsertIfMissing: true }),
+  'gst_note:updated': merge<GstNote>('gst_note', db => db.gst_notes, { upsertIfMissing: true }),
+  'gst_nil_confirmation:create': put<GstNilConfirmation>((db) => db.gst_nil_confirmations),
+  'gst_nil_confirmation:created': put<GstNilConfirmation>((db) => db.gst_nil_confirmations),
   'gst_profile:created': put<GstProfile>((db) => db.gst_profiles),
   'gst_profile:update': merge<GstProfile>('gst_profile', (db) => db.gst_profiles, { upsertIfMissing: true }),
   'gst_profile:updated': merge<GstProfile>('gst_profile', (db) => db.gst_profiles, { upsertIfMissing: true }),

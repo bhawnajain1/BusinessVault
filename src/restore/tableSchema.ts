@@ -9,7 +9,7 @@
  * reorder or rename columns without a schema migration.
  */
 
-import { GST_V15_NULL_FIELDS } from '../db/migrations/index';
+import { GST_V15_NULL_FIELDS, GST_V16_NULL_FIELDS } from '../db/migrations/index';
 
 export type ColumnType =
   | 'string'
@@ -821,8 +821,26 @@ export const TABLE_SPECS: TableSpec[] = [
   },
 ];
 
-// Keep the additive v15 columns nullable: absence is not evidence about history.
-for (const [store, fields] of Object.entries(GST_V15_NULL_FIELDS)) {
+TABLE_SPECS.push({
+  file: 'gst_notes.csv', store: 'gst_notes', pk: 'id', columns: [
+    ...['id', 'business_id', 'direction', 'note_type', 'note_number', 'note_date', 'party_id', 'place_of_supply', 'lines_json'].map(name => ({ name, type: 'string' as const })),
+    { name: 'is_interstate', type: 'boolean_int' },
+    ...['supplier_state_code', 'original_source_entity_type', 'original_source_entity_id'].map(name => ({ name, type: 'string_or_null' as const })),
+    ...['taxable_paise', 'igst_paise', 'cgst_paise', 'sgst_paise', 'cess_paise', 'pre_round_total_paise', 'round_off_paise', 'total_paise'].map(name => ({ name, type: 'paise' as const })),
+    ...COMMON_AUDIT,
+  ],
+}, {
+  file: 'gst_nil_confirmations.csv', store: 'gst_nil_confirmations', pk: 'id', columns: [
+    ...['id', 'business_id', 'tax_period_key', 'filing_frequency', 'source_data_hash', 'confirmed_at', 'confirmed_by_device_id'].map(name => ({ name, type: 'string' as const })),
+    ...COMMON_AUDIT,
+  ],
+});
+TABLE_SPECS.find(table => table.store === 'gst_document_metadata')!.columns.push({ name: 'advance_offset_keys', type: 'json' });
+
+// Absence is not evidence about history.
+for (const [store, fields] of Object.entries({ ...GST_V15_NULL_FIELDS,
+  gst_document_metadata: [...GST_V15_NULL_FIELDS.gst_document_metadata, ...GST_V16_NULL_FIELDS.gst_document_metadata],
+  gst_adjustments: [...GST_V15_NULL_FIELDS.gst_adjustments, ...GST_V16_NULL_FIELDS.gst_adjustments] })) {
   const spec = TABLE_SPECS.find((table) => table.store === store);
   if (!spec) continue;
   for (const name of fields) {

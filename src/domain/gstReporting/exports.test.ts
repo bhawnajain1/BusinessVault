@@ -391,7 +391,7 @@ describe('monthly GST presentation exports', () => {
     expect(rows(workbook.getWorksheet('G1 B2CS')!)[0]).toMatchObject({ source_entity_ids: '["invoice"]', 'taxable (INR)': 300.03 });
     expect(rows(workbook.getWorksheet('Sales Register')!)[0]).toMatchObject({ shipping_bill_number: '000012', port_code: '0001', section_9_5_role: 'NONE', section_52_tcs: 0 });
     expect((rows(workbook.getWorksheet('Sales Register')!)[0].shipping_bill_date as Date).toISOString()).toBe('2025-05-02T00:00:00.000Z');
-    expect(rows(workbook.getWorksheet('Metadata')!)[0]).toMatchObject({ saved_report_run_id: 'saved-00001', saved_status: 'FINALIZED_WORKING', status: 'FINALIZED_WORKING' });
+    expect(rows(workbook.getWorksheet('Metadata')!)[0]).toMatchObject({ saved_report_run_id: 'saved-00001', saved_status: 'FINALIZED_WORKING', status: 'INCOMPLETE', export_status: 'INCOMPLETE' });
     await downloadMonthlyGstJson([result]);
     const saved = JSON.parse(await downloads.mock.calls[0][0].text()).calculations[0];
     expect(saved.savedReportRunId).toBe('saved-00001'); expect(saved.savedStatus).toBe('FINALIZED_WORKING');
@@ -457,6 +457,178 @@ describe('monthly GST presentation exports', () => {
     expect(rows(workbook.getWorksheet('Reconciliation')!).find(row => row.control_origin === 'ENGINE')!.status).toBe('PASS');
     expect(rows(workbook.getWorksheet('Metadata')!)[0]).toMatchObject({ calculation_status: 'READY_FOR_CA_REVIEW', export_status: 'INCOMPLETE', status: 'INCOMPLETE' });
     expect(JSON.stringify(result)).toBe(original);
+  });
+
+  it('detects equal-count source substitution and duplicate document rows even with unchanged amounts', async () => {
+    for (const duplicate of [false, true]) {
+      const result = fixture();
+      if (duplicate) {
+        result.outwardDocuments.push({ ...result.outwardDocuments[0], ...zero() });
+      } else {
+        result.outwardDocuments[0].source_entity_id = 'substituted-source';
+      }
+      const { workbook } = await reopen([result]);
+      const control = rows(workbook.getWorksheet('Reconciliation')!).find(row => row.code === 'EXPORT:Sales Register:INCLUDED')!;
+      expect(control.status).toBe('ERROR');
+      expect(control['export_variance_total (INR)']).toBe(0);
+      expect(control.expected_source_entity_ids).toBe('["invoice","return"]');
+      expect(rows(workbook.getWorksheet('Metadata')!)[0].export_status).toBe('INCOMPLETE');
+    }
+  });
+
+  it('preserves normalized extension metadata and date cells in registers and CSV without statutory recalculation', async () => {
+    const result = fixture();
+    Object.assign(result.outwardDocuments[0], {
+      party_uin: '000000000000001', original_document_date: '2024-03-31',
+      tax_on_advance_applicable: true, advance_source_entity_ids: ['advance-00001'],
+      amendment_reporting_period: '2025-05', note_reason: '\t=unsafe',
+    });
+    Object.assign(result.outwardRateRows[0], { supply_components: ['TAXABLE', 'EXEMPT'] });
+    Object.assign(result.booksItcRows[0], { reason_code: 'PARTIAL_REVIEW', unreviewed_paise: 900 });
+    const { workbook } = await reopen([result]);
+    const sales = rows(workbook.getWorksheet('Sales Register')!)[0];
+    expect(sales).toMatchObject({ party_uin: '000000000000001', advance_source_entity_ids: '["advance-00001"]', tax_on_advance_applicable: 'true', note_reason: "'\t=unsafe" });
+    expect((sales.original_document_date as Date).toISOString()).toBe('2024-03-31T00:00:00.000Z');
+    const headers = workbook.getWorksheet('Sales Register')!.getRow(1).values as string[];
+    expect(workbook.getWorksheet('Sales Register')!.getCell(2, headers.indexOf('original_document_date')).numFmt).toBe('dd-mmm-yyyy');
+    expect(rows(workbook.getWorksheet('G1 B2B')!)[0].party_uin).toBe('000000000000001');
+    expect(rows(workbook.getWorksheet('G1 B2B')!)[0].supply_components).toBe('["TAXABLE","EXEMPT"]');
+    expect(rows(workbook.getWorksheet('Books ITC')!)[0]).toMatchObject({ reason_code: 'PARTIAL_REVIEW', 'unreviewed (INR)': 9 });
+    await downloadMonthlyGstCsv([result]);
+    const register = downloads.mock.calls.find(([, name]) => name.endsWith('.sales-register.csv'))!;
+    expect(parseCsv(await register[0].text()).rows[0]).toMatchObject({ party_uin: '000000000000001', original_document_date: '2024-03-31', note_reason: "'\t=unsafe" });
+  });
+
+  it.each(['=', '+', '-', '@', '\t', '\r'])('guards every spreadsheet injection prefix %j in user metadata', async prefix => {
+    const result = fixture();
+    result.businessName = `${prefix}SUM(1,2)`;
+    result.outwardDocuments[0].document_number = `${prefix}SUM(1,2)`;
+    const { workbook } = await reopen([result]);
+    // XML normalizes CR to LF; the safety prefix must still survive reopening.
+    const excelPrefix = prefix === '\r' ? '\n' : prefix;
+    expect(rows(workbook.getWorksheet('Metadata')!)[0].business_name).toBe(`'${excelPrefix}SUM(1,2)`);
+    expect(rows(workbook.getWorksheet('Sales Register')!)[0].document_number).toBe(`'${excelPrefix}SUM(1,2)`);
+    await downloadMonthlyGstCsv([result]);
+    const register = downloads.mock.calls.find(([, name]) => name.endsWith('.sales-register.csv'))!;
+    expect(parseCsv(await register[0].text()).rows[0].document_number).toBe(`'${prefix}SUM(1,2)`);
+  });
+
+  it('writes exact CSV money and quantity at safe-integer boundaries and rejects precision-losing Excel quantities', async () => {
+    const result = fixture();
+    result.outwardDocuments[0].total_paise = Number.MAX_SAFE_INTEGER - 1;
+    result.outwardDocuments[1].total_paise = -(Number.MAX_SAFE_INTEGER - 1);
+    result.outwardHsnRows[0].quantity_micros = Number.MAX_SAFE_INTEGER;
+    await downloadMonthlyGstCsv([result]);
+    const register = downloads.mock.calls.find(([, name]) => name.endsWith('.sales-register.csv'))!;
+    expect(parseCsv(await register[0].text()).rows.map(row => row.total_inr)).toEqual(['90071992547409.90', "'-90071992547409.90"]);
+    const hsn = downloads.mock.calls.find(([, name]) => name.endsWith('.hsn-b2b.csv'))!;
+    expect(parseCsv(await hsn[0].text()).rows[0].quantity).toBe('9007199254.740991');
+    result.outwardDocuments = fixture().outwardDocuments;
+    result.outwardNotes = fixture().outwardNotes;
+    await expect(buildMonthlyGstWorkbook([result])).rejects.toThrow('rate/quantity cannot preserve fixed-point precision');
+    downloads.mockClear();
+    result.outwardHsnRows[0].quantity_micros = 1.5;
+    await expect(downloadMonthlyGstJson([result])).rejects.toThrow('safe fixed-point');
+    expect(downloads).not.toHaveBeenCalled();
+  });
+
+  it('independently verifies document source counts, gross/net notes, ITC, fields and CSV registers', async () => {
+    const result = fixture();
+    const { workbook } = await reopen([result]);
+    const monthly = rows(workbook.getWorksheet('Monthly Summary')!);
+    for (const [sheet, gross, note] of [['Sales Register', 'outwardGross', 'outwardNotes'], ['Purchase Register', 'inwardGross', 'inwardNotes']] as const) {
+      const detail = rows(workbook.getWorksheet(sheet)!).filter(row => row.included === 'true' && (sheet !== 'Purchase Register' || row.row_kind === 'DOCUMENT'));
+      const noteSheet = sheet === 'Sales Register' ? 'Sales Notes' : 'Purchase Returns';
+      const notes = rows(workbook.getWorksheet(noteSheet)!);
+      const noteIds = new Set(notes.map(row => `${row.source_entity_type}:${row.source_entity_id}`));
+      const invoices = detail.filter(row => !noteIds.has(`${row.source_entity_type}:${row.source_entity_id}`));
+      for (const [data, section] of [[invoices, gross], [notes, note]] as const) {
+        const control = monthly.find(row => row.section === section)!;
+        expect(new Set(data.map(row => `${row.source_entity_type}:${row.source_entity_id}`)).size).toBe(control.document_count);
+        for (const key of [...heads, 'round_off_paise', 'total_paise']) expect(sum(data, key.replace('_paise', ' (INR)'))).toBe(Math.round(Number(control[key.replace('_paise', ' (INR)')]) * 100));
+      }
+    }
+    await downloadMonthlyGstCsv([result]);
+    for (const sheet of GST_WORKBOOK_SHEETS) {
+      const suffix = `.${sheet.toLowerCase().replace(/ /g, '-')}.csv`;
+      const csv = parseCsv(await downloads.mock.calls.find(([, name]) => name.endsWith(suffix))![0].text());
+      expect(csv.rows).toHaveLength(rows(workbook.getWorksheet(sheet)!).length);
+      expect(csv.rows.map(row => row.source_entity_id ?? '')).toEqual(rows(workbook.getWorksheet(sheet)!).map(row => String(row.source_entity_id ?? '')));
+    }
+    const fields = rows(workbook.getWorksheet('GSTR3B Working')!).filter(row => row.row_kind === 'FIELD');
+    for (const field of fields.filter(row => row['calculated (INR)'] !== null)) expect(sum([field], 'calculated (INR)') + sum([field], 'ca_adjustment (INR)')).toBe(sum([field], 'final_working (INR)'));
+  });
+
+  it('includes export failure evidence, books-derived fields and saved identity in the PDF summary', async () => {
+    const result = fixture() as MonthlyGstCalculation & { savedReportRunId: string; savedStatus: string };
+    result.savedReportRunId = 'saved-pdf-00001'; result.savedStatus = 'FINALIZED_WORKING';
+    result.totals.outwardNet.taxable_paise = 1;
+    await downloadMonthlyGstPdf([result]);
+    const content = Buffer.from(await downloads.mock.calls[0][0].arrayBuffer()).toString('latin1');
+    for (const phrase of ['saved-pdf-00001', 'INCOMPLETE', 'Export reconciliation', 'books INR 28.00', 'GSTR-1 INR 28.00', 'approved Books ITC NOT_AVAILABLE', 'final working INR 28.01']) expect(content).toContain(phrase);
+  });
+
+  it('retains reviewed status for a coherent saved v1 result without new optional fields', async () => {
+    const result = Object.assign(fixture(), { savedReportRunId: 'saved-v1', savedStatus: 'REVIEWED' });
+    const before = JSON.stringify(result);
+    const { workbook } = await reopen([result]);
+    expect(rows(workbook.getWorksheet('Reconciliation')!).filter(row => row.status === 'ERROR')).toEqual([]);
+    expect(rows(workbook.getWorksheet('Metadata')!)[0]).toMatchObject({ saved_report_run_id: 'saved-v1', saved_status: 'REVIEWED', export_status: 'REVIEWED', status: 'REVIEWED' });
+    expect(JSON.stringify(result)).toBe(before);
+  });
+
+  it('flags stale party counts and section document values without altering written summaries', async () => {
+    const result = fixture();
+    result.totals.outwardNet.party_count = 2;
+    result.gstr1Sections.summaries.B2B.total_paise++;
+    const { workbook } = await reopen([result]);
+    const controls = rows(workbook.getWorksheet('Reconciliation')!);
+    expect(controls.find(row => row.code === 'EXPORT:Sales Register:INCLUDED')).toMatchObject({ status: 'ERROR', party_count: 2, export_party_count: 1, party_count_variance: -1 });
+    expect(controls.find(row => row.code === 'EXPORT:Sales Register:G1:B2B:DOCUMENT_VALUES')).toMatchObject({ status: 'ERROR', 'export_variance_total (INR)': -0.01 });
+    expect(rows(workbook.getWorksheet('Monthly Summary')!).find(row => row.section === 'G1:B2B')!['total (INR)']).toBe(346.01);
+  });
+
+  it('rejects invalid date-only cells and validates an entire CSV pack before downloading', async () => {
+    const result = fixture();
+    result.outwardDocuments[0].document_date = '2025-02-30';
+    await expect(buildMonthlyGstWorkbook([result])).rejects.toThrow('invalid date');
+    const invalid = fixture();
+    Object.assign(invalid.issues[0], { external_impact_paise: 1.5 });
+    await expect(downloadMonthlyGstCsv([invalid])).rejects.toThrow('safe integer paise');
+    expect(downloads).not.toHaveBeenCalled();
+  });
+
+  it('exports first-class normalized notes, UIN, outward RCM and advances generically', async () => {
+    const result = fixture();
+    const note = result.outwardNotes[0];
+    note.source_entity_type = 'GST_NOTE';
+    note.direction = 'OUTWARD';
+    note.document_number = 'DN/000001';
+    const noteRate = result.outwardRateRows[2];
+    noteRate.source_entity_type = 'GST_NOTE';
+    result.inwardNotes[0].source_entity_type = 'GST_NOTE';
+    result.inwardNotes[0].direction = 'INWARD';
+    result.inwardRateRows[1].source_entity_type = 'GST_NOTE';
+    result.outwardDocuments[0].recipient_category = 'UIN';
+    result.outwardDocuments[0].reverse_charge = true;
+    const { workbook } = await reopen([result]);
+    expect(rows(workbook.getWorksheet('Sales Notes')!)[0]).toMatchObject({ source_entity_type: 'GST_NOTE', document_number: 'DN/000001', direction: 'OUTWARD' });
+    expect(rows(workbook.getWorksheet('Purchase Returns')!)[0]).toMatchObject({ source_entity_type: 'GST_NOTE', direction: 'INWARD' });
+    expect(rows(workbook.getWorksheet('G1 B2B')!)[0]).toMatchObject({ recipient_category: 'UIN', reverse_charge: 'true' });
+    expect(rows(workbook.getWorksheet('Reconciliation')!).filter(row => row.status === 'ERROR')).toEqual([]);
+    // The producer supplies advance calculations and classifications, not exports.
+    result.outwardDocuments[0].source_entity_type = 'ADVANCE';
+    result.outwardRateRows.slice(0, 2).forEach(row => { row.source_entity_type = 'ADVANCE'; });
+    result.gstr1Sections.summaries.ADVANCES = result.gstr1Sections.summaries.B2B;
+    result.gstr1Sections.documents.ADVANCES = result.gstr1Sections.documents.B2B;
+    result.gstr1Sections.rateRows.ADVANCES = result.gstr1Sections.rateRows.B2B;
+    delete result.gstr1Sections.summaries.B2B;
+    delete result.gstr1Sections.documents.B2B;
+    delete result.gstr1Sections.rateRows.B2B;
+    const advance = await reopen([result]);
+    expect(rows(advance.workbook.getWorksheet('G1 Other')!).filter(row => row.section === 'ADVANCES')).toHaveLength(2);
+    expect(rows(advance.workbook.getWorksheet('G1 Other')!).find(row => row.section === 'ADVANCES')!.source_entity_type).toBe('ADVANCE');
+    expect(rows(advance.workbook.getWorksheet('Reconciliation')!).filter(row => row.status === 'ERROR')).toEqual([]);
   });
 
   it.each([false, true])('independently reopens engine-generated counts and same-group B2CS invoices/partial note (%s)', async groupedB2cs => {

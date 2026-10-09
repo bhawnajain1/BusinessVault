@@ -32,6 +32,8 @@ export type EntityType =
   | 'sales_return_item'
   | 'customer_item_price'
   | 'gst_profile'
+  | 'gst_note'
+  | 'gst_nil_confirmation'
   | 'gst_aato'
   | 'gst_document_metadata'
   | 'gst_report_run'
@@ -963,6 +965,13 @@ export interface GstDocumentMetadata {
   original_source_entity_type?: GstSourceEntityType | null;
   original_source_entity_id?: string | null;
   previously_reported_values_json?: string | null;
+  iff_reported_period?: string | null;
+  advance_gst_json?: string | null;
+  advance_adjustments_json?: string | null;
+  advance_offset_keys?: string[] | null;
+  recipient_uin?: string | null;
+  recipient_identity_reviewed_at?: string | null;
+  recipient_identity_review_reason?: string | null;
   amendment_kind: string | null;
   tax_on_advance_applicable: 0 | 1 | null;
   classification_source: 'USER_CAPTURED' | 'MIGRATED_INFERENCE' | 'IMPORTED' | null;
@@ -1054,6 +1063,7 @@ export interface GstAdjustment {
   note?: string | null;
   table_code: string;
   tax_head: 'IGST' | 'CGST' | 'SGST' | 'CESS';
+  measure?: 'taxable_paise' | 'igst_paise' | 'cgst_paise' | 'sgst_paise' | 'cess_paise' | null;
   original_paise: number | null;
   adjusted_paise: number | null;
   reason: string;
@@ -1061,6 +1071,61 @@ export interface GstAdjustment {
   source: 'USER' | 'GST_PORTAL' | 'IMPORT';
   actor_id: string | null;
   device_id: string;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export interface GstNoteLine extends GstLineSnapshot {
+  id: string;
+  line_no: number;
+  description: string;
+  hsn: string;
+  qty_micros: number;
+  tax_rate_bps: number;
+  taxable_paise: number;
+  igst_paise: number;
+  cgst_paise: number;
+  sgst_paise: number;
+  cess_paise: number;
+  line_total_paise: number;
+}
+
+export interface GstNote {
+  id: string;
+  business_id: string;
+  direction: 'OUTWARD' | 'INWARD';
+  note_type: 'CREDIT_NOTE' | 'DEBIT_NOTE';
+  note_number: string;
+  note_date: string;
+  party_id: string;
+  place_of_supply: string;
+  is_interstate: 0 | 1;
+  supplier_state_code?: string | null;
+  original_source_entity_type?: GstSourceEntityType | null;
+  original_source_entity_id?: string | null;
+  lines_json: string;
+  taxable_paise: number;
+  igst_paise: number;
+  cgst_paise: number;
+  sgst_paise: number;
+  cess_paise: number;
+  pre_round_total_paise: number;
+  round_off_paise: number;
+  total_paise: number;
+  created_at: string;
+  updated_at: string;
+  entity_version: number;
+}
+
+export interface GstNilConfirmation {
+  id: string;
+  business_id: string;
+  tax_period_key: string;
+  filing_frequency: 'MONTHLY' | 'QRMP';
+  source_data_hash: string;
+  confirmed_at: string;
+  confirmed_by_device_id: string;
   created_at: string;
   updated_at: string;
   entity_version: number;

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Business, Customer, Supplier, Invoice, InvoiceLine, Purchase, PurchaseLine, SalesReturn, SalesReturnItem, GstProfile, GstAato, GstDocumentMetadata, GstItcLedgerEntry, GstAdjustment } from '../../db/types';
 import { computeGstinCheckChar } from '../../lib/gst';
 import { calculateMonthlyGst } from './calculateMonthlyGst';
-import { monthPeriod } from './periods';
+import { monthPeriod, quarterPeriod } from './periods';
 import type { GstAmounts, GstMonthlySources } from './types';
 
 const gstin = (state: string) => { const base = `${state}AAAAA0000A1Z`; return base + computeGstinCheckChar(base); };
@@ -69,6 +69,106 @@ function review(s: GstMonthlySources, id: string, status: GstItcLedgerEntry['sta
 }
 
 describe('pure monthly GST working', () => {
+  it('retains IFF books in quarter 3B while excluding them from pending quarter GSTR1 rows', () => {
+    const s = fixture(); s.profiles[0].filing_frequency = 'QRMP';
+    invoice(s, 'iff', { invoice_date: '2025-04-10' }); invoice(s, 'end', { invoice_date: '2025-06-10' });
+    metadata(s, 'iff', { iff_reported_period: '2025-04' });
+    const result = calculateMonthlyGst(s, quarterPeriod('b', gstin('27'), '2025-26', 1), stamp.created_at);
+    expect(result.gstr1Sections.iffReportedSourceIds).toEqual(['iff']);
+    expect(result.gstr1Sections.quarterPendingDocuments?.map(row => row.source_entity_id)).toEqual(['end']);
+    expect(result.gstr1Sections.quarterPendingRateRows?.reduce((sum, row) => sum + row.taxable_paise, 0)).toBe(10000);
+    expect(result.totals.outwardNet.taxable_paise).toBe(20000);
+    expect(result.gstr3bSections.fields.find(row => row.table_code === '3.1(a)' && row.measure === 'taxable_paise')?.calculated_paise).toBe(20000);
+    s.metadata[0].iff_reported_period = '2025-06';
+    expect(calculateMonthlyGst(s, quarterPeriod('b', gstin('27'), '2025-26', 1), stamp.created_at).issues.some(row => row.code === 'INVALID_IFF_METADATA')).toBe(true);
+  });
+  it('warns about master differences and fuzzy numbers without rewriting legal history', () => {
+    const s = fixture(); invoice(s, '1');
+    s.currentItems = [{ id: 'item', business_id: 'b', name: 'Renamed', hsn: '99999999', tax_rate_bps: 500, unit_id: 'unit' }] as GstMonthlySources['currentItems'];
+    s.documentIdentityEvidence = [{ business_id: 'b', source_entity_type: 'INVOICE', source_entity_id: 'other', document_type: 'TAX_INVOICE',
+      document_number: 'inv/1', financial_year: '2025-26', party_gstin: null }];
+    const result = calculate(s);
+    expect(result.issues.map(row => row.code)).toEqual(expect.arrayContaining(['MASTER_HISTORY_DIFFERENCE', 'FUZZY_DUPLICATE_SUGGESTION']));
+    expect(result.outwardHsnRows[0]).toMatchObject({ hsn: '84713000', description: 'Historical description', tax_rate_bps: 1800 });
+    expect(result.outwardDocuments[0].document_number).toBe('INV-1');
+    expect(result.outwardDocuments[0].included).toBe(true);
+  });
+  it('uses reviewed UIN identity without GSTIN checksum and allocates Table3.2', () => {
+    const s = fixture(); invoice(s, 'uin', { is_interstate: 1, place_of_supply: '29' });
+    metadata(s, 'uin', { recipient_category: 'UIN', recipient_uin: '29UNREVIEWED001', recipient_identity_reviewed_at: stamp.created_at,
+      recipient_identity_review_reason: 'Verified synthetic identity certificate' });
+    const result = calculate(s);
+    expect(result.outwardDocuments[0].classification).toBe('B2B');
+    expect(result.gstr3bSections.interstateSupplies[0]).toMatchObject({ recipient_category: 'UIN', taxable_paise: 10000, igst_paise: 1800 });
+    expect(result.status).toBe('READY_FOR_CA_REVIEW');
+    s.metadata[0].recipient_identity_reviewed_at = null;
+    expect(codes(s)).toContain('UIN_IDENTITY_REVIEW_REQUIRED');
+  });
+  it('keeps outward RCM in GSTR1 but excludes supplier output liability', () => {
+    const s = fixture(); invoice(s); metadata(s, 'i', { reverse_charge: 1, recipient_category: 'REGISTERED' });
+    const result = calculate(s);
+    expect(result.gstr1Sections.summaries.B2B.cgst_paise).toBe(900);
+    expect(result.totals.outputLiability.cgst_paise).toBe(0);
+    expect(result.gstr3bSections.fields.find(row => row.table_code === '3.1(a)' && row.measure === 'cgst_paise')?.calculated_paise).toBe(0);
+    expect(result.reconciliations.every(row => row.status === 'PASS')).toBe(true);
+  });
+  it('removes prior recipient/POS/category dimensions and adds amended dimensions', () => {
+    const s = fixture(); s.customers[0].gstin = '';
+    const inv = invoice(s, 'amended', { is_interstate: 1, place_of_supply: '29' });
+    metadata(s, 'amended', { amendment_kind: 'OLDER_PERIOD_AMENDMENT', original_return_period: '2025-04', original_document_number: 'OLD-01',
+      previously_reported_values_json: JSON.stringify({ ...amount(), classification: 'B2B', recipient_group: 'B2B', place_of_supply: '27',
+        is_interstate: false, ecommerce_operator_gstin: null, party_gstin: gstin('27'), recipient_category: 'REGISTERED',
+        lines: [{ ...amount(), source_line_id: inv.line.id, quantity_micros: inv.line.qty_micros, tax_rate_bps: inv.line.tax_rate_bps,
+          hsn: inv.line.hsn, description: inv.line.description, uqc_code: 'NOS', goods_or_service: 'GOODS', taxability: 'TAXABLE' }] }) });
+    const result = calculate(s);
+    expect(result.outwardRateRows.map(row => [row.classification, row.place_of_supply, row.taxable_paise])).toEqual(expect.arrayContaining([
+      ['B2B', '27', -10000], ['B2CS', '29', 10000],
+    ]));
+    expect(result.gstr3bSections.interstateSupplies[0].taxable_paise).toBe(10000);
+    expect(result.outwardHsnRows.map(row => [row.recipient_group, row.taxable_paise])).toEqual(expect.arrayContaining([['B2B', -10000], ['B2C', 10000]]));
+    expect(result.reconciliations.every(row => row.status === 'PASS')).toBe(true);
+  });
+  it('reports independent outward and inward delinked notes using persisted lines', () => {
+    const s = fixture(); const inv = invoice(s); s.invoices = []; s.invoiceLines = [];
+    s.notes = ['OUTWARD', 'INWARD'].map(direction => ({ ...stamp, ...amount(), id: direction, business_id: 'b', direction,
+      note_type: 'CREDIT_NOTE', note_number: `${direction}-001`, note_date: '2025-05-10', party_id: direction === 'OUTWARD' ? 'c' : 's',
+      place_of_supply: '27', supplier_state_code: '27', is_interstate: 0, lines_json: JSON.stringify([inv.line]) })) as NonNullable<GstMonthlySources['notes']>;
+    const result = calculate(s);
+    expect(result.totals.outwardNotes.total_paise).toBe(-11800);
+    expect(result.totals.inwardNotes.total_paise).toBe(-11800);
+    expect(result.issues.filter(row => row.code === 'MISSING_ORIGINAL_NOTE_LINK')).toHaveLength(2);
+    expect(result.reconciliations.every(row => row.status === 'PASS')).toBe(true);
+  });
+  it('reports taxable receipt then linked invoice offset without repeating advance liability', () => {
+    const s = fixture(); const inv = invoice(s);
+    s.advances = [{ ...stamp, id: 'advance', business_id: 'b', advance_date: '2025-04-10', advance_number: 'ADV-001', party_type: 'customer',
+      party_id: 'c', amount_paise: 11800, remaining_paise: 11800, applications: [], method: 'cash', account_id: 'cash', reference: '', notes: '', journal_entry_id: 'je' }];
+    metadata(s, 'advance', { source_entity_type: 'ADVANCE', tax_on_advance_applicable: 1, place_of_supply_state_code: '27',
+      advance_gst_json: JSON.stringify({ lines: [inv.line] }) });
+    metadata(s, 'i', { advance_adjustments_json: JSON.stringify([{ advance_id: 'advance', taxable_paise: 10000, cgst_paise: 900, sgst_paise: 900, igst_paise: 0, cess_paise: 0 }]) });
+    const result = calculate(s);
+    expect(result.totals.outputLiability.cgst_paise, JSON.stringify(result.issues)).toBe(0);
+    expect(result.totals.outwardNet.taxable_paise).toBe(0);
+    expect(result.reconciliations.every(row => row.status === 'PASS')).toBe(true);
+    s.metadata[1].advance_adjustments_json = s.metadata[1].advance_adjustments_json!.replace('10000', '10001');
+    expect(codes(s)).toContain('INVALID_ADVANCE_OFFSET');
+  });
+  it('requires partial mixed-rate offset allocation and prevents reusing the same rate balance', () => {
+    const s = fixture(); const inv = invoice(s);
+    const second = { ...inv.line, id: 'advance-rate2', ...amount(10000, 500), tax_rate_bps: 500, line_total_paise: 10500 };
+    s.advances = [{ ...stamp, id: 'advance', business_id: 'b', advance_date: '2025-04-10', advance_number: 'ADV-001', party_type: 'customer',
+      party_id: 'c', amount_paise: 22300, remaining_paise: 22300, applications: [], method: 'cash', account_id: 'cash', reference: '', notes: '', journal_entry_id: 'je' }];
+    metadata(s, 'advance', { source_entity_type: 'ADVANCE', tax_on_advance_applicable: 1, place_of_supply_state_code: '27',
+      advance_gst_json: JSON.stringify({ lines: [inv.line, second] }) });
+    const offset = { advance_id: 'advance', taxable_paise: 10000, cgst_paise: 900, sgst_paise: 900, igst_paise: 0, cess_paise: 0 };
+    metadata(s, 'i', { advance_adjustments_json: JSON.stringify([offset]) });
+    expect(codes(s)).toContain('INVALID_ADVANCE_OFFSET');
+    const allocated = { ...offset, lines: [{ ...offset, advance_line_id: inv.line.id }] };
+    s.metadata[1].advance_adjustments_json = JSON.stringify([allocated]);
+    expect(codes(s)).not.toContain('INVALID_ADVANCE_OFFSET');
+    s.advanceOffsetEvidence = [{ ...s.metadata[1], id: 'prior-offset', source_entity_id: 'other', advance_adjustments_json: JSON.stringify([allocated]) }];
+    expect(codes(s)).toContain('INVALID_ADVANCE_OFFSET');
+  });
   it.each([33, -33, 0, 15])('preserves signed roundoff %s exactly once', round => {
     const s = fixture(); invoice(s, '000001', { round_off_paise: round }); purchase(s, '000001', { round_off_paise: round });
     const result = calculate(s);
@@ -410,8 +510,13 @@ describe('pure monthly GST working', () => {
     const t = fixture(); const inv = invoice(t);
     t.invoiceLines.push({ ...inv.line, id: 'exempt', ...amount(10000, 0), line_total_paise: 10000, tax_rate_bps: 0, taxability: 'EXEMPT' });
     Object.assign(inv.header, { taxable_paise: 20000, pre_round_total_paise: 21800, total_paise: 21800 });
-    expect(codes(t)).toContain('MIXED_TAXABILITY_REVIEW');
-    expect(calculate(t).status).toBe('INCOMPLETE');
+    expect(codes(t)).not.toContain('MIXED_TAXABILITY_REVIEW');
+    const mixed = calculate(t);
+    expect(mixed.status).toBe('READY_FOR_CA_REVIEW');
+    expect(mixed.gstr3bSections.fields.find(row => row.table_code === '3.1(c)' && row.measure === 'taxable_paise')?.calculated_paise).toBe(10000);
+    expect(mixed.gstr1Sections.summaries.EXEMPT.taxable_paise).toBe(10000);
+    expect(mixed.totals.outwardNet.document_count).toBe(1);
+    expect(mixed.reconciliations.every(row => row.status === 'PASS')).toBe(true);
   });
   it('service exports do not require shipping bills and captured metadata survives normalization', () => {
     const s = fixture(); const inv = invoice(s, 'i', { is_interstate: 1, place_of_supply: '29' }, 10000, 0); inv.line.taxability = 'ZERO_RATED'; inv.line.goods_or_service = 'SERVICE';
@@ -542,7 +647,7 @@ describe('pure monthly GST working', () => {
       Object.assign(p.line, { ...amount(10000, 0), line_total_paise: 10000, tax_rate_bps: 0, taxability });
     }
     const result = calculate(s);
-    expect(result.gstr3bSections.fields.filter(f => f.table_code.startsWith('5.')).map(f => [f.table_code, f.calculated_paise])).toEqual([
+    expect(result.gstr3bSections.fields.filter(f => f.table_code.startsWith('5.') && !f.table_code.startsWith('5.1.')).map(f => [f.table_code, f.calculated_paise])).toEqual([
       ...result.gstr3bSections.fields.filter(f => f.table_code === '5.1').map(f => [f.table_code, null]),
       ['5.NIL_EXEMPT.INTRASTATE', 20000], ['5.NON_GST.INTRASTATE', 10000], ['5.NIL_EXEMPT.INTERSTATE', 20000], ['5.NON_GST.INTERSTATE', 10000],
     ]);

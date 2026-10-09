@@ -95,6 +95,7 @@ export async function buildSnapshotInput(
     }
 
     const prepared = rows.map((r) => {
+      if (spec.store === 'gst_document_metadata') return { ...r, advance_offset_keys: r.advance_offset_keys == null ? '' : JSON.stringify(r.advance_offset_keys) };
       if (spec.store === 'payments' && Array.isArray((r as { allocations?: unknown[] }).allocations)) {
         return {
           ...r,

@@ -413,6 +413,34 @@ const migration_v14_to_v15: Migration = {
   },
 };
 
+export const GST_V16_NULL_FIELDS: Record<string, readonly string[]> = {
+  gst_document_metadata: ['iff_reported_period', 'advance_gst_json', 'advance_adjustments_json', 'recipient_uin', 'recipient_identity_reviewed_at', 'recipient_identity_review_reason'],
+  gst_adjustments: ['measure'],
+};
+
+const migration_v15_to_v16: Migration = {
+  from: 15, to: 16, describe: 'Independent GST notes, nil completeness and explicit reporting evidence',
+  apply(tables) {
+    const result: SnapshotTables = { ...tables, gst_notes: tables.gst_notes ?? [], gst_nil_confirmations: tables.gst_nil_confirmations ?? [] };
+    for (const [table, fields] of Object.entries(GST_V16_NULL_FIELDS)) {
+      result[table] = (tables[table] ?? []).map(row => {
+        const next = { ...row };
+        for (const field of fields) next[field] ??= null;
+        return next;
+      });
+    }
+    result.gst_document_metadata = result.gst_document_metadata.map(row => {
+      let keys: string[] = [];
+      try {
+        const offsets = JSON.parse(String(row.advance_adjustments_json ?? '[]'));
+        if (Array.isArray(offsets)) keys = offsets.filter(value => typeof value.advance_id === 'string').map(value => `${row.business_id}:${value.advance_id}`);
+      } catch { /* Invalid evidence remains visible to reporting validation. */ }
+      return { ...row, advance_offset_keys: row.advance_offset_keys ?? [...new Set(keys)].sort() };
+    });
+    return result;
+  },
+};
+
 export const MIGRATIONS: Migration[] = [
   migration_v0_to_v1,
   migration_v1_to_v2,
@@ -429,6 +457,7 @@ export const MIGRATIONS: Migration[] = [
   migration_v12_to_v13,
   migration_v13_to_v14,
   migration_v14_to_v15,
+  migration_v15_to_v16,
 ];
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

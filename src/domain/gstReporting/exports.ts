@@ -30,6 +30,11 @@ const SPECIAL_COLUMNS = ['shipping_bill_number', 'shipping_bill_date', 'port_cod
 
 function money(paise: unknown): string {
   if (typeof paise !== 'number' || !Number.isSafeInteger(paise)) throw new Error('GST export requires safe integer paise');
+  // Division near MAX_SAFE_INTEGER can round up before fromMoney floors it.
+  if (Math.abs(paise) > EXCEL_MAX_PAISE) {
+    const absolute = BigInt(Math.abs(paise));
+    return `${paise < 0 ? '-' : ''}${absolute / 100n}.${String(absolute % 100n).padStart(2, '0')}`;
+  }
   return fromMoney(paise as Money).replace(/,/g, '');
 }
 
@@ -66,6 +71,7 @@ function exportControls(result: ExportCalculation, output: Record<SheetName, Tab
   const period = result.period.periodKey;
   const data = (sheet: SheetName) => output[sheet].rows.filter(row => row['Tax Period'] === period);
   const outwardById = new Map<string, typeof result.outwardDocuments>();
+  const b2csIdentities = new Set((result.gstr1Sections.documents.B2CS ?? []).map(row => `${row.source_entity_type}:${row.source_entity_id}`));
   for (const document of result.outwardDocuments) {
     const documents = outwardById.get(document.source_entity_id) ?? [];
     documents.push(document);
@@ -80,10 +86,7 @@ function exportControls(result: ExportCalculation, output: Record<SheetName, Tab
       const matches = (outwardById.get(String(id)) ?? []).filter(document => document.included
         && (row.source_entity_types as unknown[]).includes(document.source_entity_type)
         && document.tax_period_key === period
-        && document.classification === 'B2CS'
-        && document.place_of_supply === row.place_of_supply
-        && (document.is_interstate ? 'INTERSTATE' : 'INTRASTATE') === row.supply_type
-        && document.ecommerce_operator_gstin === row.ecommerce_operator_gstin);
+        && b2csIdentities.has(`${document.source_entity_type}:${document.source_entity_id}`));
       const identities = new Set(matches.map(document => `${document.source_entity_type}:${document.source_entity_id}`));
       return identities.size === 1 ? [...identities][0] : `UNRESOLVED:${String(id)}`;
     });
@@ -99,9 +102,9 @@ function exportControls(result: ExportCalculation, output: Record<SheetName, Tab
   };
   const check = (sheet: SheetName, section: string, actual: Row[], expected: Row[], keys: string[], expectedCount?: number, expectedDetails?: number) => {
     const actualIds = ids(actual), expectedIds = ids(expected);
-    const row: Row = { control_origin: 'EXPORT', code: `EXPORT:${sheet}:${section}`, sheet, section, source_document_count: expectedCount ?? expectedIds.size, section_document_count: expectedCount ?? expectedIds.size, summary_document_count: expectedCount ?? null, export_document_count: actualIds.size, export_detail_row_count: actual.length, detail_row_count: expectedDetails ?? expected.length, source_entity_ids: [...actualIds].sort() };
+    const row: Row = { control_origin: 'EXPORT', code: `EXPORT:${sheet}:${section}`, sheet, section, source_document_count: expectedCount ?? expectedIds.size, section_document_count: expectedCount ?? expectedIds.size, summary_document_count: expectedCount ?? null, export_document_count: actualIds.size, document_count_variance: expectedCount === undefined ? null : actualIds.size - expectedCount, export_detail_row_count: actual.length, detail_row_count: expectedDetails ?? expected.length, source_entity_ids: [...actualIds].sort(), expected_source_entity_ids: [...expectedIds].sort() };
     let error = [...actualIds].some(id => id.startsWith('UNRESOLVED:')) || expectedCount !== undefined && actualIds.size !== expectedCount || expectedDetails !== undefined && actual.length !== expectedDetails;
-    if (expectedCount === undefined && expectedIds.size && (actualIds.size !== expectedIds.size || [...actualIds].some(id => !expectedIds.has(id)))) error = true;
+    if (expectedIds.size && (actualIds.size !== expectedIds.size || [...actualIds].some(id => !expectedIds.has(id)))) error = true;
     for (const key of keys) {
       const source = total(expected, key), exported = total(actual, key);
       const difference = source === null || exported === null ? null : exported - source;
@@ -117,12 +120,34 @@ function exportControls(result: ExportCalculation, output: Record<SheetName, Tab
     row.message = error ? 'Export detail differs from supplied normalized control; source totals have not been repaired.' : 'Presentation rows match the supplied normalized control in integer paise.';
     checks.push(row);
   };
-  const summaryRows = (amounts: GstAmounts) => [{ ...amounts }];
+  const summaryRows = (amounts: GstAmounts) => [Object.fromEntries(AMOUNTS.map(key => [key, amounts[key]]))];
   for (const [sheet, summary] of [
     ['Sales Register', result.totals.outwardNet],
     ['Sales Notes', result.totals.outwardNotes],
     ['Purchase Returns', result.totals.inwardNotes],
-  ] as const) check(sheet, 'INCLUDED', data(sheet).filter(row => row.included === true), summaryRows(summary), AMOUNTS, summary.document_count);
+    ['Purchase Register', result.totals.inwardNet],
+  ] as const) {
+    const actual = data(sheet).filter(row => row.included === true && (sheet !== 'Purchase Register' || row.row_kind === 'DOCUMENT'));
+    check(sheet, 'INCLUDED', actual, summaryRows(summary), AMOUNTS, summary.document_count);
+    const control = checks[checks.length - 1];
+    control.expected_source_entity_ids = summary.source_entity_ids;
+    const actualSourceIds = new Set(actual.map(row => row.source_entity_id));
+    if (actual.length !== ids(actual).size || actualSourceIds.size !== new Set(summary.source_entity_ids).size || summary.source_entity_ids.some(id => !actualSourceIds.has(id))) control.status = 'ERROR';
+    control.party_count = summary.party_count;
+    control.export_party_count = new Set(actual.map(row => row.party_gstin).filter(Boolean)).size;
+    control.party_count_variance = Number(control.export_party_count) - summary.party_count;
+    if (control.party_count_variance !== 0) control.status = 'ERROR';
+  }
+  for (const [sheet, gross, notes] of [
+    ['Sales Register', result.totals.outwardGross, result.outwardNotes],
+    ['Purchase Register', result.totals.inwardGross, result.inwardNotes],
+  ] as const) {
+    const noteIds = ids(notes as unknown as Row[]);
+    const actual = data(sheet).filter(row => row.included === true && (sheet !== 'Purchase Register' || row.row_kind === 'DOCUMENT') && !noteIds.has(`${row.source_entity_type}:${row.source_entity_id}`));
+    check(sheet, 'GROSS', actual, summaryRows(gross), AMOUNTS, gross.document_count);
+    const sourceIds = new Set(actual.map(row => row.source_entity_id));
+    if (actual.length !== ids(actual).size || gross.source_entity_ids.some(id => !sourceIds.has(id))) checks[checks.length - 1].status = 'ERROR';
+  }
   for (const [section, summary] of Object.entries(result.gstr1Sections.summaries)) {
     const sheet = section === 'B2B' ? 'G1 B2B' : section === 'B2CL' ? 'G1 B2CL' : section === 'B2CS' ? 'G1 B2CS' : 'G1 Other';
     const actual = data(sheet).filter(row => row.section === section);
@@ -133,6 +158,16 @@ function exportControls(result: ExportCalculation, output: Record<SheetName, Tab
       const expectedIds = ids(sources as unknown as Row[]);
       const actualIds = ids(actual);
       if (expectedIds.size !== actualIds.size || [...expectedIds].some(id => !actualIds.has(id))) checks[checks.length - 1].status = 'ERROR';
+    }
+    if (sources) {
+      const sourceIds = new Set(sources.map(row => `${row.source_entity_type}:${row.source_entity_id}`));
+      const documents = data('Sales Register').filter(row => row.included === true && sourceIds.has(`${row.source_entity_type}:${row.source_entity_id}`));
+      check('Sales Register', `G1:${section}:DOCUMENT_VALUES`, documents, summaryRows(summary), AMOUNTS, summary.document_count);
+      const control = checks[checks.length - 1];
+      control.party_count = summary.party_count;
+      control.export_party_count = new Set(documents.map(row => row.party_gstin).filter(Boolean)).size;
+      control.party_count_variance = Number(control.export_party_count) - summary.party_count;
+      if (control.party_count_variance !== 0) control.status = 'ERROR';
     }
   }
   for (const sheet of ['G1 B2B', 'G1 B2CL', 'G1 B2CS', 'G1 Other'] as const) {
@@ -195,8 +230,10 @@ function exportControls(result: ExportCalculation, output: Record<SheetName, Tab
   for (let index = 0; index < series.length; index++) {
     for (const key of ['total_issued', 'cancelled', 'net_issued']) if (series[index][key] !== result.documentSeries[index]?.[key as keyof typeof result.documentSeries[number]]) seriesCheck.status = 'ERROR';
     if (Number(series[index].total_issued) - Number(series[index].cancelled) !== series[index].net_issued) seriesCheck.status = 'ERROR';
+    if (JSON.stringify(series[index].source_entity_ids) !== JSON.stringify(result.documentSeries[index]?.source_entity_ids)) seriesCheck.status = 'ERROR';
   }
   check('Issues', 'IMPACTS', data('Issues'), result.issues.map(row => Object.fromEntries(AMOUNTS.map(key => [`impact_${key}`, row.amount_impact?.[key] ?? null]))), AMOUNTS.map(key => `impact_${key}`), undefined, result.issues.length);
+  for (const row of checks) if (row.status === 'ERROR') row.message = 'Export detail differs from supplied normalized control; source totals have not been repaired.';
   return checks;
 }
 
@@ -218,13 +255,18 @@ function tables(results: ExportCalculation[]): Record<SheetName, Table> {
   // tagged. Only DOCUMENT rows carry bill value and round-off.
   output['Purchase Register'].columns = [...new Set(output['Purchase Register'].columns)];
   create('Purchase Returns', [...DOCUMENT_COLUMNS, ...SPECIAL_COLUMNS]);
-  create('Books ITC', ['source_entity_type', 'source_entity_id', 'ledger_entry_id', 'source_period_key', 'tax_head', 'status', 'category', 'books_tax_paise', 'eligible_paise', 'temporarily_reversed_paise', 'permanently_reversed_paise', 'reclaimable_paise', 'reclaimed_paise', 'approved_paise', 'reason', 'related_prior_entry_id']);
+  create('Books ITC', ['source_entity_type', 'source_entity_id', 'ledger_entry_id', 'source_period_key', 'tax_head', 'status', 'category', 'books_tax_paise', 'unreviewed_paise', 'eligible_paise', 'temporarily_reversed_paise', 'permanently_reversed_paise', 'reclaimable_paise', 'reclaimed_paise', 'approved_paise', 'reason_code', 'reason', 'related_prior_entry_id']);
   create('GSTR3B Working', ['row_kind', 'table_code', 'measure', 'books_derived_paise', 'gstr1_working_paise', 'approved_books_itc_paise', 'calculated_paise', 'ca_adjustment_paise', 'final_working_paise', 'source_status', 'source_document_count', 'source_entity_ids', 'adjustment_ids', 'notes', 'place_of_supply', 'recipient_category', ...AMOUNTS]);
   create('Issues', ['code', 'severity', 'source_entity_type', 'source_entity_id', 'document_number', 'field', 'message', 'recommended_correction', ...AMOUNTS.map(key => `impact_${key}`)]);
-  create('Reconciliation', ['control_origin', 'code', 'sheet', 'section', 'status', 'source_document_count', 'section_document_count', 'summary_document_count', 'export_document_count', 'detail_row_count', 'export_detail_row_count', 'party_count', 'source_entity_ids', 'message', ...AMOUNTS.flatMap(key => [`source_${key}`, `calculated_${key}`, `variance_${key}`, `export_${key}`, `export_variance_${key}`]), 'source_series_count', 'export_series_count', 'series_count_variance']);
+  create('Reconciliation', ['control_origin', 'code', 'sheet', 'section', 'status', 'source_document_count', 'section_document_count', 'summary_document_count', 'export_document_count', 'document_count_variance', 'detail_row_count', 'export_detail_row_count', 'party_count', 'source_entity_ids', 'expected_source_entity_ids', 'message', ...AMOUNTS.flatMap(key => [`source_${key}`, `calculated_${key}`, `variance_${key}`, `export_${key}`, `export_variance_${key}`]), 'source_series_count', 'export_series_count', 'series_count_variance']);
   create('Metadata', ['business_name', 'business_id', 'gstin', 'financial_year', 'filing_frequency', 'period_start', 'next_period_start', 'generated_at', 'app_version', 'schema_version', 'rule_set_version', 'source_data_hash', 'saved_report_run_id', 'saved_status', 'calculation_status', 'export_status', 'status', 'disclaimer']);
   for (const result of results) {
-    const add = (name: SheetName, row: object) => output[name].rows.push({ ...row, 'Tax Period': result.period.periodKey });
+    const add = (name: SheetName, row: object) => {
+      // Preserve normalized type extensions (notes, UIN, amendments, advances)
+      // without teaching the presentation layer their calculation semantics.
+      for (const key of Object.keys(row)) if (!output[name].columns.includes(key)) output[name].columns.push(key);
+      output[name].rows.push({ ...row, 'Tax Period': result.period.periodKey });
+    };
     add('Overview', { business_name: result.businessName, gstin: result.gstinSnapshot, financial_year: result.period.financialYear, filing_frequency: result.period.filingFrequency, status: result.status, blocking_errors: result.issues.filter(i => i.severity === 'BLOCKING_ERROR').length, warnings: result.issues.filter(i => i.severity === 'WARNING').length, disclaimer: GST_WORKING_DISCLAIMER });
     for (const section of ['outwardGross', 'outwardNotes', 'outwardNet', 'inwardGross', 'inwardNotes', 'inwardNet', 'outputLiability', 'rcmLiability', 'indicativeWorkingBalance'] as const) add('Monthly Summary', { section, ...result.totals[section] });
     for (const [status, amounts] of Object.entries(result.totals.booksItc)) add('Monthly Summary', { section: `ITC:${status}`, ...amounts });
@@ -239,31 +281,44 @@ function tables(results: ExportCalculation[]): Record<SheetName, Table> {
       if (section === 'B2CS' && aggregates !== undefined) continue;
       for (const row of rows) {
         const document = documents.get(`${row.source_entity_type}:${row.source_entity_id}`);
-        add(sheet, { ...document, ...row, section });
+        const { total_paise: _total, round_off_paise: _round, ...detail } = { ...document, ...row };
+        add(sheet, { ...detail, section });
       }
     }
-    for (const row of aggregates ?? []) add('G1 B2CS', { ...row, section: 'B2CS' });
+    for (const row of aggregates ?? []) {
+      const { total_paise: _total, round_off_paise: _round, ...detail } = row;
+      add('G1 B2CS', { ...detail, section: 'B2CS' });
+    }
     // Historical COMBINED and unclassified HSN rows must not disappear merely
     // because the fixed workbook has only two HSN sheets.
-    for (const row of result.outwardHsnRows) add(row.recipient_group === 'B2C' ? 'HSN B2C' : 'HSN B2B', row);
+    for (const row of result.outwardHsnRows) {
+      const { total_paise: _total, round_off_paise: _round, ...detail } = row;
+      add(row.recipient_group === 'B2C' ? 'HSN B2C' : 'HSN B2B', detail);
+    }
     for (const row of result.documentSeries) add('Documents', row);
     for (const row of result.inwardDocuments) add('Purchase Register', { ...row, row_kind: 'DOCUMENT' });
     for (const row of result.inwardRateRows) {
       const { total_paise: _total, round_off_paise: _round, ...detail } = row;
       add('Purchase Register', { ...detail, row_kind: 'RATE' });
     }
-    for (const row of result.inwardHsnRows) add('Purchase Register', { ...Object.fromEntries(HSN_COLUMNS.map(key => [key, row[key as keyof typeof row]])), row_kind: 'HSN' });
+    for (const row of result.inwardHsnRows) {
+      const { total_paise: _total, round_off_paise: _round, ...detail } = row;
+      add('Purchase Register', { ...detail, row_kind: 'HSN' });
+    }
     for (const row of result.inwardNotes) add('Purchase Returns', row);
-    for (const row of result.booksItcRows) add('Books ITC', row);
+    for (const row of result.booksItcRows) add('Books ITC', { ...row, unreviewed_paise: row.unreviewed_paise ?? (row.status === 'UNREVIEWED' ? row.books_tax_paise : 0) });
     for (const row of result.gstr3bSections.fields) add('GSTR3B Working', { ...row, row_kind: 'FIELD' });
     for (const row of result.gstr3bSections.interstateSupplies) add('GSTR3B Working', { ...row, row_kind: 'INTERSTATE', table_code: '3.2', notes: 'State-wise source working; not an additional liability.' });
     for (const row of result.issues) add('Issues', { ...row, ...Object.fromEntries(AMOUNTS.map(key => [`impact_${key}`, row.amount_impact?.[key] ?? null])) });
-    for (const row of result.reconciliations) add('Reconciliation', { ...row, control_origin: 'ENGINE', ...Object.fromEntries(AMOUNTS.flatMap(key => [[`source_${key}`, row.source[key]], [`calculated_${key}`, row.calculated[key]], [`variance_${key}`, row.variance[key]]])) });
+    for (const row of result.reconciliations) {
+      const { source, calculated, variance, ...detail } = row;
+      add('Reconciliation', { ...detail, control_origin: 'ENGINE', ...Object.fromEntries(AMOUNTS.flatMap(key => [[`source_${key}`, source[key]], [`calculated_${key}`, calculated[key]], [`variance_${key}`, variance[key]]])) });
+    }
     const checks = exportControls(result, output);
     for (const row of checks) add('Reconciliation', row);
     const exportStatus = checks.some(row => row.status === 'ERROR') || result.reconciliations.some(row => row.status === 'ERROR' || Object.values(row.variance).some(value => value !== 0)) || result.issues.some(row => row.severity === 'BLOCKING_ERROR') ? 'INCOMPLETE' : result.savedStatus ?? result.status;
     output.Overview.rows[output.Overview.rows.length - 1].status = exportStatus;
-    add('Metadata', { business_name: result.businessName, business_id: result.businessId, gstin: result.gstinSnapshot, financial_year: result.period.financialYear, filing_frequency: result.period.filingFrequency, period_start: result.period.periodStart, next_period_start: result.period.nextPeriodStart, generated_at: result.generatedAt, app_version: typeof __APP_VERSION__ === 'undefined' ? '0.0.0' : __APP_VERSION__, schema_version: result.schemaVersion, rule_set_version: result.ruleSetVersion, source_data_hash: result.sourceDataHash, saved_report_run_id: result.savedReportRunId ?? null, saved_status: result.savedStatus ?? null, calculation_status: result.status, export_status: exportStatus, status: result.savedStatus ?? exportStatus, disclaimer: GST_WORKING_DISCLAIMER });
+    add('Metadata', { business_name: result.businessName, business_id: result.businessId, gstin: result.gstinSnapshot, financial_year: result.period.financialYear, filing_frequency: result.period.filingFrequency, period_start: result.period.periodStart, next_period_start: result.period.nextPeriodStart, generated_at: result.generatedAt, app_version: typeof __APP_VERSION__ === 'undefined' ? '0.0.0' : __APP_VERSION__, schema_version: result.schemaVersion, rule_set_version: result.ruleSetVersion, source_data_hash: result.sourceDataHash, saved_report_run_id: result.savedReportRunId ?? null, saved_status: result.savedStatus ?? null, calculation_status: result.status, export_status: exportStatus, status: exportStatus, disclaimer: GST_WORKING_DISCLAIMER });
   }
   return output;
 }
@@ -273,7 +328,13 @@ function cell(value: unknown, column: string, excel: boolean): string | number |
   if (column.endsWith('_paise')) return excel ? excelMoney(value) : money(value);
   if (column === 'tax_rate_bps' || column === 'quantity_micros') {
     if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new Error('GST export requires safe fixed-point rate/quantity');
-    return value / (column === 'tax_rate_bps' ? 100 : 1_000_000);
+    const decimals = column === 'tax_rate_bps' ? 2 : 6;
+    const scale = 10n ** BigInt(decimals), absolute = BigInt(Math.abs(value));
+    const exact = `${value < 0 ? '-' : ''}${absolute / scale}.${String(absolute % scale).padStart(decimals, '0')}`;
+    if (!excel) return exact;
+    const numeric = Number(exact);
+    if (Math.abs(value) > EXCEL_MAX_PAISE || numeric.toFixed(decimals) !== exact) throw new Error('GST XLSX rate/quantity cannot preserve fixed-point precision. Download CSV or BusinessVault working JSON for exact values.');
+    return numeric;
   }
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new Error('GST export contains a non-finite number');
@@ -284,7 +345,7 @@ function cell(value: unknown, column: string, excel: boolean): string | number |
     if (Number.isNaN(date.valueOf())) throw new Error('GST export contains an invalid timestamp');
     return date;
   }
-  if (excel && ['document_date', 'shipping_bill_date', 'period_start', 'next_period_start'].includes(column)) {
+  if (excel && (column.endsWith('_date') || ['period_start', 'next_period_start'].includes(column))) {
     const date = new Date(`${value}T00:00:00.000Z`);
     if (Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== value) throw new Error('GST export contains an invalid date');
     return date;
@@ -336,17 +397,20 @@ export async function downloadMonthlyGstExcel(results: MonthlyGstCalculation[]):
 
 export async function downloadMonthlyGstCsv(results: MonthlyGstCalculation[]): Promise<void> {
   const selected = selectedResults(results);
-  for (const [name, table] of Object.entries(tables(selected))) {
+  // Validate the complete pack before starting any downloads.
+  const files = Object.entries(tables(selected)).map(([name, table]) => {
     const columns = table.columns.map(key => key.endsWith('_paise') ? key.replace(/_paise$/, '_inr') : key === 'tax_rate_bps' ? 'rate_percent' : key === 'quantity_micros' ? 'quantity' : key);
     const rows = table.rows.map(row => Object.fromEntries(table.columns.map((key, index) => [columns[index], cell(row[key], key, false)])));
-    triggerDownload(new Blob([writeCsv(rows, columns, { bom: true })], { type: 'text/csv;charset=utf-8' }), filename(selected, `${name.toLowerCase().replace(/ /g, '-')}.csv`));
-  }
+    return { blob: new Blob([writeCsv(rows, columns, { bom: true })], { type: 'text/csv;charset=utf-8' }), name: filename(selected, `${name.toLowerCase().replace(/ /g, '-')}.csv`) };
+  });
+  for (const file of files) triggerDownload(file.blob, file.name);
 }
 
 export async function downloadMonthlyGstJson(results: MonthlyGstCalculation[]): Promise<void> {
   const selected = selectedResults(results);
   const json = JSON.stringify({ schema: 'businessvault.gst-working.v1', money_unit: 'paise', disclaimer: GST_WORKING_DISCLAIMER, calculations: selected }, (key, value: unknown) => {
     if (key.endsWith('_paise') && value != null) money(value);
+    if ((key.endsWith('_micros') || key.endsWith('_bps')) && value != null && (typeof value !== 'number' || !Number.isSafeInteger(value))) throw new Error('GST export requires safe fixed-point rate/quantity');
     if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('GST export contains a non-finite number');
     return value;
   }, 2);
@@ -355,6 +419,7 @@ export async function downloadMonthlyGstJson(results: MonthlyGstCalculation[]): 
 
 export async function downloadMonthlyGstPdf(results: MonthlyGstCalculation[]): Promise<void> {
   const selected = selectedResults(results);
+  const presentation = tables(selected);
   const pdf = new jsPDF();
   const width = pdf.internal.pageSize.getWidth() - 28;
   const bottom = pdf.internal.pageSize.getHeight() - 18;
@@ -374,7 +439,8 @@ export async function downloadMonthlyGstPdf(results: MonthlyGstCalculation[]): P
     const result = selected[index];
     line('BusinessVault Monthly GST CA Summary', true);
     const saved = result as ExportCalculation;
-    line(`${result.businessName} | GSTIN ${result.gstinSnapshot} | ${result.period.periodKey} | ${result.period.filingFrequency} | ${saved.savedStatus ?? result.status}`);
+    const exportStatus = presentation.Metadata.rows[index].export_status;
+    line(`${result.businessName} | GSTIN ${result.gstinSnapshot} | ${result.period.periodKey} | ${result.period.filingFrequency} | ${exportStatus}`);
     if (saved.savedReportRunId) line(`Saved report run ${saved.savedReportRunId}; frozen source hash ${result.sourceDataHash}`);
     line(GST_WORKING_DISCLAIMER);
     line(result.gstr3bSections.disclaimer);
@@ -390,12 +456,13 @@ export async function downloadMonthlyGstPdf(results: MonthlyGstCalculation[]): P
     line('Draft GSTR-3B Working and CA adjustments', true);
     const amountOrUnavailable = (value: number | null) => value === null ? 'NOT_AVAILABLE' : `INR ${money(value)}`;
     for (const field of result.gstr3bSections.fields) {
-      line(`${field.table_code} / ${field.measure}: calculated ${amountOrUnavailable(field.calculated_paise)}; CA adjustment ${amountOrUnavailable(field.ca_adjustment_paise)}; final working ${amountOrUnavailable(field.final_working_paise)}; ${field.source_status}; ${field.source_document_count} source documents. ${field.notes} Adjustment IDs: ${field.adjustment_ids.join(', ') || 'none'}`);
+      line(`${field.table_code} / ${field.measure}: books ${amountOrUnavailable(field.books_derived_paise)}; GSTR-1 ${amountOrUnavailable(field.gstr1_working_paise)}; approved Books ITC ${amountOrUnavailable(field.approved_books_itc_paise)}; calculated ${amountOrUnavailable(field.calculated_paise)}; CA adjustment ${amountOrUnavailable(field.ca_adjustment_paise)}; final working ${amountOrUnavailable(field.final_working_paise)}; ${field.source_status}; ${field.source_document_count} source documents. ${field.notes} Adjustment IDs: ${field.adjustment_ids.join(', ') || 'none'}`);
     }
     for (const row of result.gstr3bSections.interstateSupplies) amounts(`3.2 POS ${row.place_of_supply} / ${row.recipient_category}`, row);
     line(`Issues: ${result.issues.filter(issue => issue.severity === 'BLOCKING_ERROR').length} blocking errors; ${result.issues.filter(issue => issue.severity === 'WARNING').length} warnings`, true);
     for (const issue of result.issues) line(`${issue.severity} ${issue.code} | ${issue.document_number ?? issue.source_entity_id}: ${issue.message} Correction: ${issue.recommended_correction}`);
     for (const row of result.reconciliations) line(`Reconciliation ${row.code}: ${row.status}. ${row.message}`);
+    for (const row of presentation.Reconciliation.rows.filter(row => row['Tax Period'] === result.period.periodKey && row.control_origin === 'EXPORT' && row.status === 'ERROR')) line(`Export reconciliation ${row.code}: ERROR. ${row.message}`);
     line(`Rules ${result.ruleSetVersion} | Schema ${result.schemaVersion} | Generated ${result.generatedAt} | Source hash ${result.sourceDataHash}`);
   }
   const pages = pdf.getNumberOfPages();

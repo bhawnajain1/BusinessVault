@@ -16,8 +16,9 @@ import {
   STORES_V13,
   STORES_V14,
   STORES_V15,
+  STORES_V16,
 } from './schema';
-import { GST_V15_NULL_FIELDS } from './migrations/index';
+import { GST_V15_NULL_FIELDS, GST_V16_NULL_FIELDS } from './migrations/index';
 import { ulid } from 'ulid';
 import { pokeSyncWorker } from '../sync/pokeChannel';
 import type {
@@ -35,6 +36,8 @@ import type {
   DriveFileMap,
   Expense,
   GstAdjustment,
+  GstNote,
+  GstNilConfirmation,
   GstAato,
   GstDocumentMetadata,
   GstItcLedgerEntry,
@@ -106,6 +109,8 @@ export class BusinessVaultDB extends Dexie {
   gst_report_runs!: Table<GstReportRun, string>;
   gst_report_rows!: Table<GstReportRow, string>;
   gst_adjustments!: Table<GstAdjustment, string>;
+  gst_notes!: Table<GstNote, string>;
+  gst_nil_confirmations!: Table<GstNilConfirmation, string>;
   gstr2b_imports!: Table<Gstr2bImport, string>;
   gstr2b_documents!: Table<Gstr2bDocument, string>;
   gst_matches!: Table<GstMatch, string>;
@@ -643,6 +648,27 @@ export class BusinessVaultDB extends Dexie {
           for (const field of fields) if (row[field] === undefined) row[field] = null;
         });
       }
+    });
+
+    this.version(19).stores(STORES_V16).upgrade(async tx => {
+      for (const [table, fields] of Object.entries(GST_V16_NULL_FIELDS)) {
+        await tx.table(table).toCollection().modify((row: Record<string, unknown>) => {
+          for (const field of fields) row[field] ??= null;
+        });
+      }
+      await tx.table('gst_document_metadata').toCollection().modify((row: Record<string, unknown>) => {
+        let keys: string[] = [];
+        try {
+          const offsets = JSON.parse(String(row.advance_adjustments_json ?? '[]'));
+          if (Array.isArray(offsets)) keys = offsets.filter(value => typeof value.advance_id === 'string').map(value => `${row.business_id}:${value.advance_id}`);
+        } catch { /* Preserve invalid JSON for a blocking reporting issue. */ }
+        row.advance_offset_keys ??= [...new Set(keys)].sort();
+      });
+    });
+
+    // Index-only upgrade: durable CSV shape remains logical schema 16.
+    this.version(20).stores({ ...STORES_V16,
+      gst_notes: `${STORES_V16.gst_notes}, [business_id+original_source_entity_type+original_source_entity_id]`,
     });
 
     // After any sync_event insert commits, kick the sync worker so the write

@@ -828,6 +828,8 @@ function tableNames(): string[] {
     'attachments',
     'audit_log',
     'gst_profiles',
+    'gst_notes',
+    'gst_nil_confirmations',
     'gst_aato',
     'gst_document_metadata',
     'gst_report_runs',
@@ -1406,7 +1408,7 @@ async function loadGstr2bAttachmentBlobs(
   const attachments = new Map<string, Record<string, unknown>>();
   const imports = new Map<string, Record<string, unknown>>();
   for (const value of snapshotTables.attachments ?? []) {
-    if (value.business_id === businessId && ['gstr2b_import', 'gst_report_run'].includes(String(value.ref_type))) {
+    if (value.business_id === businessId && ['gstr2b_import', 'gst_report_run', 'gst_adjustment'].includes(String(value.ref_type))) {
       attachments.set(String(value.id), value);
     }
   }
@@ -1414,10 +1416,19 @@ async function loadGstr2bAttachmentBlobs(
     if (value.business_id === businessId) imports.set(String(value.id), value);
   }
   const reportRuns = new Map<string, Record<string, unknown>>();
+  const adjustments = new Map<string, Record<string, unknown>>();
+  for (const value of snapshotTables.gst_adjustments ?? []) if (value.business_id === businessId) adjustments.set(String(value.id), value);
   for (const value of snapshotTables.gst_report_runs ?? []) {
     if (value.business_id === businessId) reportRuns.set(String(value.id), value);
   }
   for (const event of events) {
+    if (event.entity_type === 'gst_adjustment') {
+      const payload = event.payload as Record<string, unknown>;
+      const row = (payload.row ?? payload) as Record<string, unknown>;
+      if (row.business_id === businessId && row.id) adjustments.set(String(row.id), row);
+      const attachment = payload.attachment as Record<string, unknown> | undefined;
+      if (attachment?.business_id === businessId && attachment.ref_type === 'gst_adjustment') attachments.set(String(attachment.id), attachment);
+    }
     if (event.entity_type === 'gst_report_run') {
       const payload = event.payload as Record<string, unknown>;
       const run = (payload.row ?? payload) as Record<string, unknown>;
@@ -1438,6 +1449,7 @@ async function loadGstr2bAttachmentBlobs(
   }
 
   const requiredAttachmentIds = new Set<string>();
+  for (const row of adjustments.values()) if (row.supporting_attachment_id) requiredAttachmentIds.add(String(row.supporting_attachment_id));
   for (const imported of imports.values()) {
     if (imported.original_attachment_id) requiredAttachmentIds.add(String(imported.original_attachment_id));
   }
@@ -1514,6 +1526,8 @@ const JOURNAL_ENTITY_STORE: Record<string, string> = {
   sales_return: 'sales_returns',
   sales_return_item: 'sales_return_items',
   gst_profile: 'gst_profiles',
+  gst_note: 'gst_notes',
+  gst_nil_confirmation: 'gst_nil_confirmations',
   gst_aato: 'gst_aato',
   gst_document_metadata: 'gst_document_metadata',
   gst_report_run: 'gst_report_runs',
@@ -1527,6 +1541,8 @@ const JOURNAL_ENTITY_STORE: Record<string, string> = {
 };
 
 const GST_ROW_ENTITY_TYPES = new Set([
+  'gst_note',
+  'gst_nil_confirmation',
   'gst_profile',
   'gst_aato',
   'gst_document_metadata',

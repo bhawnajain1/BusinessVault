@@ -21,7 +21,7 @@ describe('GST snapshot table schema', () => {
     const original = { invoice_lines: [{ id: 'line', taxable_paise: 123, hsn: '01234567' }], gst_adjustments: [{ id: 'adjustment', adjusted_paise: 99 }] };
     const copy = JSON.stringify(original);
     const migrated = migrateSnapshot(original, 14).tables;
-    expect(SCHEMA_VERSION).toBe(15);
+    expect(SCHEMA_VERSION).toBe(16);
     expect(JSON.stringify(original)).toBe(copy);
     expect(migrated.invoice_lines[0]).toMatchObject({ taxable_paise: 123, hsn: '01234567', uqc_code: null, snapshot_source: null });
     expect(migrateSnapshot(migrated, 14).tables).toEqual(migrated);

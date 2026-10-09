@@ -90,6 +90,119 @@ async function workbookRows(calculation: MonthlyGstCalculation) {
 }
 
 describe('GST monthly persistence', () => {
+  it('binds nil confirmation to current source hash, emits one event and replays idempotently', async () => {
+    await setupProfile();
+    const [nil] = await service.calculateMonths(business.id, ['2026-08']);
+    const before = await db.sync_events.count();
+    const confirmation = await service.confirmNilPeriod(business.id, '2026-08', nil.sourceDataHash);
+    expect(await db.sync_events.count()).toBe(before + 1);
+    expect((await service.calculateMonths(business.id, ['2026-08']))[0].status).toBe('READY_FOR_CA_REVIEW');
+    const event = (await db.sync_events.toArray()).find(row => row.entity_type === 'gst_nil_confirmation')!;
+    const target = new BusinessVaultDB(`nil-replay-${Math.random()}`);
+    try {
+      await target.businesses.add(business);
+      await target.transaction('rw', target.tables, async () => {
+        await applyEvent(event as unknown as SyncEvent, { db: target, businessId: business.id, diagnostics: [] });
+        await applyEvent(event as unknown as SyncEvent, { db: target, businessId: business.id, diagnostics: [] });
+      });
+      expect(await target.gst_nil_confirmations.get(confirmation.id)).toEqual(confirmation);
+      const snapshot = await buildSnapshotInput(db, business.id, business.name, 'daily', '2026-08-20');
+      expect(await snapshot.files.find(file => file.name === 'gst_nil_confirmations.csv')!.content.text()).toContain(confirmation.source_data_hash);
+    } finally { await target.delete(); }
+    await db.businesses.update(business.id, { name: 'Changed source' });
+    expect((await service.calculateMonths(business.id, ['2026-08']))[0].status).toBe('DRAFT');
+    await expect(service.confirmNilPeriod(business.id, '2026-08', nil.sourceDataHash)).rejects.toThrow('unchanged');
+  });
+  it('atomically saves a supporting file with adjustment, one event and upload job', async () => {
+    await setupProfile();
+    const before = await db.sync_events.count();
+    const input = { business_id: business.id, report_run_id: null, tax_period_key: '2026-08', report_type: 'GSTR3B_DRAFT' as const,
+      table_code: '3.1(a)', tax_head: 'CGST' as const, measure: 'taxable_paise' as const, original_paise: null, adjusted_paise: null,
+      adjustment_paise: 100, reason: 'CA confirmed taxable difference', supporting_attachment_id: null, source: 'USER' as const,
+      actor_id: null, device_id: 'test-device', supportingFile: { filename: 'support.txt', mimeType: 'text/plain', blob: new Blob(['evidence']) } };
+    const adjustment = await service.addAdjustment(input);
+    expect(await db.sync_events.count()).toBe(before + 1);
+    expect(await db.sync_queue.count()).toBe(1);
+    expect((await db.attachments.get(adjustment.supporting_attachment_id!))?.ref_id).toBe(adjustment.id);
+    const event = (await db.sync_events.toArray()).find(row => row.entity_type === 'gst_adjustment')!;
+    const target = new BusinessVaultDB(`attachment-replay-${Math.random()}`);
+    try {
+      await target.businesses.add(business);
+      await target.transaction('rw', target.tables, async () => {
+        await applyEvent(event as unknown as SyncEvent, { db: target, businessId: business.id, diagnostics: [] });
+        await applyEvent(event as unknown as SyncEvent, { db: target, businessId: business.id, diagnostics: [] });
+      });
+      expect(await target.gst_adjustments.get(adjustment.id)).toEqual(adjustment);
+      expect((await target.attachments.get(adjustment.supporting_attachment_id!))?.checksum).toHaveLength(64);
+    } finally { await target.delete(); }
+    await expect(service.addAdjustment({ ...input, supportingFile: { ...input.supportingFile, filename: '' } })).rejects.toThrow('Supporting file');
+    expect(await db.gst_adjustments.count()).toBe(1);
+    expect(await db.attachments.count()).toBe(1);
+    expect(await db.sync_events.count()).toBe(before + 1);
+  });
+  it('saves delinked notes with one event and CSV/replay preservation', async () => {
+    await seedPurchase();
+    const line = (await db.purchase_lines.toArray())[0];
+    const note = await service.saveNote({ business_id: business.id, direction: 'INWARD', note_type: 'DEBIT_NOTE', note_number: 'DN-0001',
+      note_date: '2026-08-10', party_id: 'supplier', place_of_supply: '27', supplier_state_code: '27', is_interstate: 0,
+      taxable_paise: 1000, igst_paise: 0, cgst_paise: 90, sgst_paise: 90, cess_paise: 0, pre_round_total_paise: 1180,
+      round_off_paise: 0, total_paise: 1180, lines: [line] });
+    expect(await db.sync_events.count()).toBe(1);
+    const snapshot = await buildSnapshotInput(db, business.id, business.name, 'daily', '2026-08-20');
+    expect(await snapshot.files.find(file => file.name === 'gst_notes.csv')!.content.text()).toContain('DN-0001');
+    const target = new BusinessVaultDB(`note-replay-${Math.random()}`);
+    try {
+      await target.businesses.add(business);
+      const event = (await db.sync_events.toArray())[0];
+      await target.transaction('rw', target.tables, async () => {
+        await applyEvent(event as unknown as SyncEvent, { db: target, businessId: business.id, diagnostics: [] });
+        await applyEvent(event as unknown as SyncEvent, { db: target, businessId: business.id, diagnostics: [] });
+      });
+      expect(await target.gst_notes.get(note.id)).toEqual(note);
+    } finally { await target.delete(); }
+  });
+  it('restores new records, metadata and supporting file from provider-only CSV backup', async () => {
+    await setupProfile();
+    const [nil] = await service.calculateMonths(business.id, ['2026-07']);
+    const confirmation = await service.confirmNilPeriod(business.id, '2026-07', nil.sourceDataHash);
+    await seedPurchase();
+    const line = (await db.purchase_lines.toArray())[0];
+    const note = await service.saveNote({ business_id: business.id, direction: 'INWARD', note_type: 'CREDIT_NOTE', note_number: 'CN-0001',
+      note_date: '2026-08-10', party_id: 'supplier', place_of_supply: '27', supplier_state_code: '27', is_interstate: 0,
+      taxable_paise: 1000, igst_paise: 0, cgst_paise: 90, sgst_paise: 90, cess_paise: 0, pre_round_total_paise: 1180,
+      round_off_paise: 0, total_paise: 1180, lines: [line] });
+    const adjustment = await service.addAdjustment({ business_id: business.id, report_run_id: null, tax_period_key: '2026-08', report_type: 'GSTR3B_DRAFT',
+      table_code: '5.1.INTEREST', tax_head: 'CGST', original_paise: null, adjusted_paise: null, adjustment_paise: 1,
+      reason: 'CA external value', supporting_attachment_id: null, source: 'USER', actor_id: null, device_id: 'test-device',
+      supportingFile: { filename: 'support.txt', mimeType: 'text/plain', blob: new Blob(['synthetic support']) } });
+    const meta = await service.saveDocumentMetadata({ business_id: business.id, source_entity_type: 'GST_NOTE', source_entity_id: note.id,
+      document_type: 'CREDIT_NOTE', supply_category: 'DOMESTIC', recipient_category: 'REGISTERED', place_of_supply_state_code: '27', reverse_charge: 0,
+      ecommerce_operator_gstin: null, ecommerce_reporting_type: null, section_9_5_role: 'NONE', section_52_tcs: 0,
+      shipping_bill_number: null, shipping_bill_date: null, port_code: null, original_document_number: null, original_document_date: null,
+      original_return_period: null, amendment_kind: null, tax_on_advance_applicable: 0, classification_source: 'USER_CAPTURED',
+      iff_reported_period: null, advance_gst_json: null, advance_adjustments_json: null, recipient_uin: null,
+      recipient_identity_reviewed_at: null, recipient_identity_review_reason: null });
+    const [before] = await service.calculateMonths(business.id, ['2026-08']);
+    const root = await mkdtemp(join(tmpdir(), 'gst-new-records-'));
+    const target = new BusinessVaultDB(`gst-new-records-${Math.random()}`);
+    try {
+      const provider = new LocalFolderStorageProvider();
+      await provider.connect({ kind: 'local-folder', rootPath: root });
+      await provider.initializeBusiness({ businessId: business.id, businessName: business.name });
+      for (const attachment of await db.attachments.toArray()) await provider.uploadAttachment({ path: attachment.logical_path, blob: attachment.blob!, mimeType: attachment.mime_type });
+      await provider.writeSnapshot(await buildSnapshotInput(db, business.id, business.name, 'ondemand', now));
+      const report = await rebuildFromDrive(new LocalFolderStorageProvider(), { db: target, providerConfig: { kind: 'local-folder', rootPath: root } });
+      expect(report.countReconciliation.exact).toBe(true);
+      expect(await target.gst_notes.get(note.id)).toMatchObject(note);
+      expect(await target.gst_nil_confirmations.get(confirmation.id)).toEqual(confirmation);
+      expect(await target.gst_adjustments.get(adjustment.id)).toMatchObject(adjustment);
+      expect(await target.gst_document_metadata.get(meta.id)).toMatchObject(meta);
+      expect(await (await target.attachments.get(adjustment.supporting_attachment_id!))!.blob!.text()).toBe('synthetic support');
+      const [after] = await new GstMonthlyReportService(target).calculateMonths(business.id, ['2026-08']);
+      expect(after.sourceDataHash).toBe(before.sourceDataHash);
+      expect(after.totals).toEqual(before.totals);
+    } finally { await target.delete(); await rm(root, { recursive: true, force: true }); }
+  });
   it.each(['REVIEWED', 'FINALIZED_WORKING'] as const)('loads the original %s working unchanged despite live source edits', async status => {
     await setupProfile();
     await seedPurchase();
@@ -238,7 +351,7 @@ describe('GST monthly persistence', () => {
     expect(sources.purchases.map((row) => row.id).sort()).toEqual(['native-return', 'purchase']);
     expect(sources.itcEntries.map((row) => row.id)).toEqual([reviewed.id]);
   });
-  it('upgrades an actual Dexie17 database to 18 with pure nullable v15 defaults', async () => {
+  it('upgrades an actual Dexie17 database through v20 while preserving pure nullable v15 defaults', async () => {
     const name = `gst-real-upgrade-${Math.random()}`;
     const old = new Dexie(name);
     old.version(17).stores(STORES_V14);
@@ -252,7 +365,7 @@ describe('GST monthly persistence', () => {
     const upgraded = new BusinessVaultDB(name);
     try {
       await upgraded.open();
-      expect(upgraded.verno).toBe(18);
+      expect(upgraded.verno).toBe(20);
       const snapshot = migrateSnapshot(tables, 14).tables;
       for (const [table, rows] of Object.entries(snapshot)) expect(await upgraded.table(table).toArray()).toEqual(rows);
       expect(canonicalJson(tables)).toBe(frozen);
@@ -320,8 +433,8 @@ describe('GST monthly persistence', () => {
     const workspace = await service.loadWorkspace(business.id, ['purchase']);
     expect(workspace.reviewPurchases.map((row) => row!.id)).toEqual(['purchase']);
   });
-  it('test112: preserves saved working and independent workbook totals across provider-only recovery on logical15/Dexie18', async () => {
-    expect(db.verno).toBe(18);
+  it('test112: preserves saved working and independent workbook totals across provider-only recovery on logical16/Dexie20', async () => {
+    expect(db.verno).toBe(20);
     await setupProfile();
     await seedPurchase();
     const metadata = { business_id: business.id, source_entity_type: 'PURCHASE', source_entity_id: 'purchase',
