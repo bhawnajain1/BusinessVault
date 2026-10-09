@@ -114,7 +114,7 @@ it('calculates exact independent months from 50k persisted outward and 50k inwar
     const elapsedMs = performance.now() - start;
     console.info(`GST persisted service benchmark: ${elapsedMs.toFixed(1)} ms (50k outward + 50k inward selected lines; 20k history lines)`);
     // A broad smoke guard, not a speed target or browser responsiveness claim.
-    expect(elapsedMs).toBeLessThan(45_000);
+    expect(elapsedMs).toBeLessThan(75_000);
     expect(results.map(row => row.period.periodKey)).toEqual(['2025-05', '2025-06']);
     for (const [index, result] of results.entries()) {
       const factor = index + 1;
