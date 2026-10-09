@@ -4,7 +4,7 @@ import example from '../../../docs/fixtures/gst-working-example.json';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseCsv } from '../../csv/csvCodec';
 import { triggerDownload } from '../../csv/streamCsvExport';
-import { buildMonthlyGstWorkbook, downloadMonthlyGstCsv, downloadMonthlyGstExcel, downloadMonthlyGstJson, downloadMonthlyGstPdf, GST_WORKBOOK_SHEETS, GST_WORKING_DISCLAIMER } from './exports';
+import { buildGstr1CaWorkbook, buildMonthlyGstWorkbook, buildPurchaseCaWorkbook, downloadMonthlyGstCsv, downloadMonthlyGstExcel, downloadMonthlyGstJson, downloadMonthlyGstPdf, GSTR1_CA_SHEETS, GST_WORKBOOK_SHEETS, GST_WORKING_DISCLAIMER, PURCHASE_CA_SHEETS } from './exports';
 import type { BooksItcStatus, GstAmounts, GstSummary, MonthlyGstCalculation, NormalizedGstDocument, NormalizedGstRateRow, NormalizedHsnRow } from './types';
 import type { GstMonthlySources } from './types';
 import { calculateMonthlyGst } from './calculateMonthlyGst';
@@ -62,6 +62,16 @@ function rows(sheet: ExcelJS.Worksheet): Record<string, ExcelJS.CellValue>[] {
   }
   return result;
 }
+function caRows(sheet: ExcelJS.Worksheet): Record<string, ExcelJS.CellValue>[] {
+  const headers = sheet.getRow(3).values as ExcelJS.CellValue[];
+  const result: Record<string, ExcelJS.CellValue>[] = [];
+  for (let index = 4; index <= sheet.rowCount; index++) {
+    const row: Record<string, ExcelJS.CellValue> = {};
+    sheet.getRow(index).eachCell({ includeEmpty: true }, (cell, column) => { row[String(headers[column])] = cell.value; });
+    result.push(row);
+  }
+  return result;
+}
 const sum = (data: Record<string, ExcelJS.CellValue>[], column: string) => data.reduce((total, row) => total + Math.round(Number(row[column] ?? 0) * 100), 0);
 async function reopen(result: MonthlyGstCalculation[]) {
   const built = await buildMonthlyGstWorkbook(result);
@@ -93,6 +103,61 @@ describe('monthly GST presentation exports', () => {
     expect(rows(workbook.getWorksheet('Overview')!).map(row => row['Tax Period'])).toEqual(['2025-05', '2025-06']);
     expect(rows(workbook.getWorksheet('Metadata')!)[0]).toMatchObject({ business_name: 'Synthetic Business', rule_set_version: 'test-rule-v1', source_data_hash: 'hash-2025-05', disclaimer: GST_WORKING_DISCLAIMER });
     expect(JSON.stringify([june, may])).toBe(original);
+  });
+
+  it('reopens CA workbooks with familiar sheet order and reconciled normalized totals', async () => {
+    const result = fixture();
+    const [gstr1, purchase] = await Promise.all([buildGstr1CaWorkbook([result]), buildPurchaseCaWorkbook([result])]);
+    const gstr1Book = new ExcelJS.Workbook(); await gstr1Book.xlsx.load(gstr1.xlsxBuffer);
+    const purchaseBook = new ExcelJS.Workbook(); await purchaseBook.xlsx.load(purchase.xlsxBuffer);
+    expect(gstr1Book.worksheets.map(sheet => sheet.name)).toEqual(GSTR1_CA_SHEETS);
+    expect(purchaseBook.worksheets.map(sheet => sheet.name)).toEqual(PURCHASE_CA_SHEETS);
+    for (const workbook of [gstr1Book, purchaseBook]) for (const sheet of workbook.worksheets) {
+      expect(sheet.views[0]).toMatchObject({ state: 'frozen', ySplit: 3 });
+      expect(sheet.autoFilter).toBeTruthy();
+      expect(sheet.getRow(2).getCell(1).value).toBe('Period');
+      expect(sheet.getRow(3).getCell(1).value).toBeTruthy();
+    }
+    expect(purchaseBook.getWorksheet('Purchase Register')!.getCell('A1').value).toBe('Purchase Register / Books ITC Working');
+    expect(gstr1.filename).toBe('GSTR1_Report_2025_05.xlsx');
+    expect(purchase.filename).toBe('GSTR2_Purchase_Working_2025_05.xlsx');
+    const gstr1Rows = caRows(gstr1Book.getWorksheet('GSTR1 Report')!).filter(row => row['Invoice Number']);
+    const customerRows = caRows(gstr1Book.getWorksheet('b2b,sez,de')!);
+    const purchaseRows = caRows(purchaseBook.getWorksheet('Purchase Register')!).filter(row => row['Bill Number']);
+    expect(sum(gstr1Rows, 'Taxable Value')).toBe(result.totals.outwardNet.taxable_paise);
+    expect(sum(purchaseRows, 'Taxable Value')).toBe(result.totals.inwardNet.taxable_paise);
+    expect(customerRows).toHaveLength(1);
+    expect(customerRows[0]).toMatchObject({
+      'Customer Name': "'=HYPERLINK(\"https://example.invalid\",\"Injected\")",
+      'Customer GST Number': '001234567890123',
+      'Invoice Value': 346,
+    });
+    expect(customerRows[0]['Invoice Value']).toBe(gstr1Rows.find(row => row['Invoice Number'] === customerRows[0]['Invoice Number'])?.['Document Value']);
+    expect(sum(customerRows, 'Taxable Value')).toBe(result.totals.outwardGross.taxable_paise);
+    expect(sum(caRows(gstr1Book.getWorksheet('cdnr')!), 'Taxable Value')).toBe(result.totals.outwardNotes.taxable_paise);
+    expect(sum(caRows(gstr1Book.getWorksheet('hsn(b2b)')!), 'Taxable Value')).toBe(result.totals.outwardNet.taxable_paise);
+    expect(sum(caRows(gstr1Book.getWorksheet('itemSummary')!), 'Taxable Value')).toBe(result.totals.outwardNet.taxable_paise);
+    expect(caRows(gstr1Book.getWorksheet('docs')!)[0]).toMatchObject({ 'Total Issued': 1, 'Net Issued': 1 });
+    expect(sum(caRows(purchaseBook.getWorksheet('b2b')!), 'Taxable Value')).toBe(result.totals.inwardGross.taxable_paise);
+    expect(sum(caRows(purchaseBook.getWorksheet('cdnr')!), 'Taxable Value')).toBe(result.totals.inwardNotes.taxable_paise);
+    expect(sum(caRows(purchaseBook.getWorksheet('hsnsum')!), 'Taxable Value')).toBe(result.totals.inwardNet.taxable_paise);
+    expect(sum(caRows(purchaseBook.getWorksheet('itemSummary')!), 'Taxable Value')).toBe(result.totals.inwardNet.taxable_paise);
+    expect(sum(caRows(purchaseBook.getWorksheet('itcr')!), 'Approved Books ITC')).toBe(result.totals.booksItc.NET_APPROVED.igst_paise);
+    expect(gstr1Book.getWorksheet('Validation')!.getCell('A1').value).toBe('Validation / Reconciliation');
+    expect(purchaseBook.getWorksheet('Validation')!.getCell('A1').value).toBe('Validation / Reconciliation');
+    const controls = [...caRows(gstr1Book.getWorksheet('Validation')!), ...caRows(purchaseBook.getWorksheet('Validation')!)].filter(row => String(row.Control).includes('_TO_') || String(row.Control).startsWith('DOCUMENT_') || String(row.Control).startsWith('ITC_'));
+    expect(controls).toHaveLength(12);
+    expect(controls.filter(row => row.Status !== 'PASS')).toEqual([]);
+    for (const row of controls) for (const column of ['Expected Taxable Value', 'Export Taxable Value', 'Expected Integrated Tax Amount', 'Export Integrated Tax Amount', 'Expected Central Tax Amount', 'Export Central Tax Amount', 'Expected State/UT Tax Amount', 'Export State/UT Tax Amount', 'Expected Cess Amount', 'Export Cess Amount']) if (row[column] != null) expect(typeof row[column]).toBe('number');
+  });
+
+  it('keeps selected months separated in standalone CA workbook detail rows', async () => {
+    const [may, june] = [fixture(), fixture('2025-06')];
+    const built = await buildGstr1CaWorkbook([june, may]);
+    const workbook = new ExcelJS.Workbook(); await workbook.xlsx.load(built.xlsxBuffer);
+    expect(built.filename).toBe('GSTR1_Report_2025_05_to_2025_06.xlsx');
+    expect([...new Set(caRows(workbook.getWorksheet('GSTR1 Report')!).map(row => row['Tax Period']))]).toEqual(['2025-05', '2025-06']);
+    expect(workbook.getWorksheet('GSTR1 Report')!.getCell('B2').value).toBe('Multiple months - see Tax Period');
   });
 
   it('independently sums register, rate and HSN cells against monthly summaries and reconciliation for each month', async () => {

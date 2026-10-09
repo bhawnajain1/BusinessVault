@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { AlertTriangle, BarChart3, Calculator, ChevronDown, ChevronRight, CircleDollarSign, ClipboardCheck, Download, FileSpreadsheet, Landmark, PackageCheck, ReceiptIndianRupee, Save, ShieldCheck, ShoppingBag, TableProperties } from 'lucide-react';
 import { gstMonthlyReportService } from '../../domain/gstReporting';
 import type { GstMonthlyReportService, SaveGstDocumentMetadataInput, ReviewGstItcInput, SaveGstProfileInput, SaveGstNoteInput } from '../../domain/gstReporting/GstMonthlyReportService';
-import { downloadMonthlyGstExcel, downloadMonthlyGstCsv, downloadMonthlyGstPdf, downloadMonthlyGstJson } from '../../domain/gstReporting/exports';
+import { downloadGstr1CaWorkbook, downloadMonthlyGstExcel, downloadMonthlyGstCsv, downloadMonthlyGstPdf, downloadMonthlyGstJson, downloadPurchaseCaWorkbook } from '../../domain/gstReporting/exports';
 import { financialYearForDate, precedingFinancialYear, quarterPeriod } from '../../domain/gstReporting/periods';
 import { taxTotalPaise, type GstAmounts, type GstAmountKey, type GstMonthlySources, type GstSummary, type MonthlyGstCalculation, type NormalizedGstDocument, type BooksItcStatus, type BooksItcRow } from '../../domain/gstReporting/types';
 import { isValidGstin } from '../../lib/gst';
@@ -44,6 +44,19 @@ function integer(value: FormDataEntryValue | null, label: string, signed = false
   const result = Number(value);
   if (!Number.isSafeInteger(result)) throw new Error(`${label} exceeds the safe integer range.`);
   return result;
+}
+
+function rupeesToPaise(value: FormDataEntryValue | null, label: string): number {
+  if (typeof value !== 'string' || !/^\d+(?:\.\d{1,2})?$/.test(value.trim())) throw new Error(`${label} must be a nonnegative rupee amount with at most two decimal places.`);
+  const [whole, fraction = ''] = value.trim().split('.');
+  const paise = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'));
+  if (paise > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error(`${label} exceeds the safe integer range.`);
+  return Number(paise);
+}
+
+function paiseToRupees(paise: number | undefined): string {
+  if (paise === undefined) return '';
+  return `${Math.trunc(paise / 100)}.${String(paise % 100).padStart(2, '0')}`;
 }
 
 function editable<T extends { id: string; created_at: string; updated_at: string; entity_version: number }>(row: T) {
@@ -136,6 +149,7 @@ export default function GstSummaryPage() {
   const [noteDirection, setNoteDirection] = useState<'OUTWARD' | 'INWARD'>('OUTWARD');
   const [noteLines, setNoteLines] = useState([1]);
   const [exportOpen, setExportOpen] = useState(false);
+  const [caExporting, setCaExporting] = useState<'gstr1' | 'purchase' | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const nextNoteLine = useRef(2);
   const request = useRef(0);
@@ -344,6 +358,14 @@ export default function GstSummaryPage() {
       setMessage('Exported books-based working; review status unchanged.');
     });
   }
+  function exportCaWorkbook(kind: 'gstr1' | 'purchase') {
+    if (!visibleResults.length || caExporting) return;
+    setExportOpen(false);
+    setCaExporting(kind); setError('');
+    void (kind === 'gstr1' ? downloadGstr1CaWorkbook(visibleResults) : downloadPurchaseCaWorkbook(visibleResults))
+      .catch(error => setError(error instanceof Error ? error.message : String(error)))
+      .finally(() => setCaExporting(null));
+  }
 
   return <main className="gst-reports-page" aria-busy={busy}>
     <header className="gst-page-header">
@@ -351,9 +373,11 @@ export default function GstSummaryPage() {
       <div className="gst-header-actions">
         <button type="button" className="gst-button gst-button-primary" disabled={busy || !months.length || readyBusiness !== businessId} onClick={() => { invalidate(); setRevision(value => value + 1); }}><Calculator size={16} />{calculating ? 'Calculating…' : 'Calculate reports'}<span className="gst-sr-only"> Refresh live working</span></button>
         <button type="button" className="gst-button gst-button-secondary" disabled={busy || stale || immutable || current?.status !== 'READY_FOR_CA_REVIEW'} onClick={() => { if (current && window.confirm(`Save ${current.period.periodKey} as REVIEWED? This snapshot is immutable and cannot be edited or undone. Later recalculation creates a new run. This is not filing.`)) void run(async () => { await gstMonthlyReportService.saveReport(current, 'REVIEWED'); setWorkspace(await gstMonthlyReportService.loadWorkspace(businessId)); setMessage('Saved REVIEWED snapshot. No return has been filed.'); }); }}><Save size={16} />Save snapshot</button>
-        <div className="gst-export-wrap"><button ref={exportTrigger} type="button" className="gst-button gst-button-secondary" disabled={!visibleResults.length || busy || stale} aria-haspopup="menu" aria-expanded={exportOpen} onClick={() => setExportOpen(open => !open)}><Download size={16} />Export <ChevronDown size={15} /></button>
+        <button type="button" className="gst-button gst-button-secondary" disabled={!visibleResults.length || busy || stale || caExporting !== null} onClick={() => exportCaWorkbook('gstr1')}><FileSpreadsheet size={16} />{caExporting === 'gstr1' ? 'Generating GSTR-1…' : 'Download GSTR-1 Excel'}</button>
+        <button type="button" className="gst-button gst-button-secondary" disabled={!visibleResults.length || busy || stale || caExporting !== null} onClick={() => exportCaWorkbook('purchase')}><FileSpreadsheet size={16} />{caExporting === 'purchase' ? 'Generating GSTR-2…' : 'Download GSTR-2 Excel'}</button>
+        <div className="gst-export-wrap"><button ref={exportTrigger} type="button" className="gst-button gst-button-secondary" disabled={!visibleResults.length || busy || stale || caExporting !== null} aria-haspopup="menu" aria-expanded={exportOpen} onClick={() => setExportOpen(open => !open)}><Download size={16} />Export <ChevronDown size={15} /></button>
           {exportOpen && <div ref={exportMenu} className="gst-export-menu" role="menu" aria-label="Export GST reports" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setExportOpen(false); exportTrigger.current?.focus(); } }}>
-            <p>Excel</p><button role="menuitem" onClick={() => exportWorking('Excel', immutable ? 'saved' : 'all')}>Selected months workbook</button><button role="menuitem" onClick={() => exportWorking('Excel', immutable ? 'saved' : 'current')}>Current month workbook</button>
+            <p>Excel</p><button role="menuitem" onClick={() => exportWorking('Excel', immutable ? 'saved' : 'all')}>Download Complete GST Working</button>
             <p>CSV</p><button role="menuitem" onClick={() => exportWorking('Csv', immutable ? 'saved' : 'all')}>Selected months registers</button><button role="menuitem" onClick={() => exportWorking('Csv', immutable ? 'saved' : 'current')}>Current month registers</button>
             <p>PDF</p><button role="menuitem" onClick={() => exportWorking('Pdf', immutable ? 'saved' : 'current')}>Current month CA summary</button><button role="menuitem" onClick={() => exportWorking('Pdf', immutable ? 'saved' : 'all')}>Selected months summary</button>
             <p>Internal records</p><button role="menuitem" onClick={() => exportWorking('Json', immutable ? 'saved' : 'all')}>Selected months working JSON</button><button role="menuitem" onClick={() => exportWorking('Json', immutable ? 'saved' : 'current')}>Current month working JSON</button>
@@ -397,10 +421,10 @@ export default function GstSummaryPage() {
       <p className="text-sm my-3">Composition and unregistered registrations do not support normal GSTR-1 / Draft GSTR-3B workings. Enter complete taxpayer AATO, not merely turnover recorded in BusinessVault.</p>
       <form key={`${businessId}-${previousYear}-${aato?.entity_version}`} onSubmit={e => submit(e, data => gstMonthlyReportService.setAato({
         ...(aato ? editable(aato) : {}), business_id: businessId, financial_year: previousYear,
-        aato_paise: integer(data.get('aato'), 'AATO'), source: 'USER_CONFIRMED', confirmed_at: new Date().toISOString(),
+        aato_paise: rupeesToPaise(data.get('aato'), 'AATO'), source: 'USER_CONFIRMED', confirmed_at: new Date().toISOString(),
         notes: String(data.get('notes') ?? ''), ...(aato ? { id: aato.id, expectedVersion: aato.entity_version } : {}),
       }))}><fieldset disabled={busy || immutable} className="grid sm:grid-cols-3 gap-3"><legend>AATO for preceding financial year {previousYear}</legend>
-        {field('Confirmed AATO (integer paise)', 'aato', String(aato?.aato_paise ?? ''), 'number', true)}
+        {field(`Aggregate Annual Turnover for FY ${previousYear} (₹)`, 'aato', paiseToRupees(aato?.aato_paise ?? undefined), 'text', true)}
         {field('AATO notes', 'notes', aato?.notes ?? '')}<button className={button}>Save AATO</button>
       </fieldset></form>
     </div>}</section>}

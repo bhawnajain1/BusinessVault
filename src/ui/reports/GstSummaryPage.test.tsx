@@ -9,7 +9,7 @@ import { computeTotals } from '../pos/POSScreen';
 const mocks = vi.hoisted(() => ({ loadWorkspace: vi.fn(), loadSavedReport: vi.fn(), calculateMonths: vi.fn(), calculateQuarter: vi.fn(), saveNote: vi.fn(), confirmNilPeriod: vi.fn(), saveProfile: vi.fn(), setAato: vi.fn(), saveDocumentMetadata: vi.fn(), reviewItc: vi.fn(), addAdjustment: vi.fn(), saveReport: vi.fn(), excel: vi.fn(), csv: vi.fn(), pdf: vi.fn(), json: vi.fn(), setBusiness: vi.fn() }));
 vi.mock('../../lib/business', () => ({ setCurrentBusinessId: mocks.setBusiness }));
 vi.mock('../../domain/gstReporting', () => ({ gstMonthlyReportService: mocks }));
-vi.mock('../../domain/gstReporting/exports', () => ({ downloadMonthlyGstExcel: mocks.excel, downloadMonthlyGstCsv: mocks.csv, downloadMonthlyGstPdf: mocks.pdf, downloadMonthlyGstJson: mocks.json }));
+vi.mock('../../domain/gstReporting/exports', () => ({ downloadGstr1CaWorkbook: mocks.excel, downloadMonthlyGstExcel: mocks.excel, downloadMonthlyGstCsv: mocks.csv, downloadMonthlyGstPdf: mocks.pdf, downloadMonthlyGstJson: mocks.json, downloadPurchaseCaWorkbook: mocks.excel }));
 vi.mock('../hooks/useActiveBusiness', () => ({ useActiveBusiness: () => ({ businessId: 'business-a', deviceId: 'device-a', loading: false, error: null }) }));
 
 const empty: GstAmounts = { taxable_paise: 0, igst_paise: 0, cgst_paise: 0, sgst_paise: 0, cess_paise: 0, pre_round_total_paise: 0, round_off_paise: 0, total_paise: 0 };
@@ -41,6 +41,10 @@ async function open() {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.excel.mockResolvedValue(undefined);
+  mocks.csv.mockResolvedValue(undefined);
+  mocks.pdf.mockResolvedValue(undefined);
+  mocks.json.mockResolvedValue(undefined);
   mocks.loadWorkspace.mockResolvedValue({ businesses: [{ id: 'business-a', name: 'Synthetic business', gstin: '', state_code: '27' }, { id: 'business-b', name: 'Second business', gstin: '', state_code: '29' }], profiles: [], aato: [], savedRuns: [] });
   mocks.calculateMonths.mockImplementation(async (_business: string, keys: string[]) => keys.map(calculation));
   mocks.calculateQuarter.mockImplementation(async (business: string, year: string, quarter: number) => ({ ...calculation(`${year.slice(0, 4)}-04`), businessId: business, period: quarterPeriod(business, '', year, quarter) }));
@@ -197,9 +201,10 @@ describe('GST report workspace', () => {
     mocks.setAato.mockImplementationOnce(() => write.promise);
     mocks.calculateMonths.mockImplementationOnce(() => pending.promise);
     fireEvent.click(screen.getByText('GST profile and preceding FY AATO'));
-    fireEvent.change(screen.getByLabelText('Confirmed AATO (integer paise)'), { target: { value: '100000' } });
+    fireEvent.change(screen.getByLabelText(/Aggregate Annual Turnover for FY .* \(₹\)/), { target: { value: '4000000.00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save AATO' }));
     await waitFor(() => expect(mocks.setAato).toHaveBeenCalled());
+    expect(mocks.setAato.mock.calls[0][0]).toMatchObject({ aato_paise: 400000000 });
     expect(mocks.calculateMonths).toHaveBeenCalledTimes(1);
     await act(async () => write.resolve());
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(2));
@@ -228,7 +233,7 @@ describe('GST report workspace', () => {
     await open();
     mocks.setAato.mockRejectedValueOnce(new Error('AATO could not be saved'));
     fireEvent.click(screen.getByText('GST profile and preceding FY AATO'));
-    fireEvent.change(screen.getByLabelText('Confirmed AATO (integer paise)'), { target: { value: '100000' } });
+    fireEvent.change(screen.getByLabelText(/Aggregate Annual Turnover for FY .* \(₹\)/), { target: { value: '1000.00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save AATO' }));
     await screen.findByText('AATO could not be saved');
     await finished();
@@ -726,13 +731,38 @@ describe('GST report workspace', () => {
 
   it('opens the grouped export menu and restores focus after Escape', async () => {
     await open();
+    expect(screen.getByRole('button', { name: 'Download GSTR-1 Excel' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Download GSTR-2 Excel' })).toBeTruthy();
     const trigger = screen.getByRole('button', { name: 'Export' });
     fireEvent.click(trigger);
     expect(screen.getByRole('menu', { name: 'Export GST reports' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: 'Selected months workbook' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Download Complete GST Working' })).toBeTruthy();
     fireEvent.keyDown(screen.getByRole('menu', { name: 'Export GST reports' }), { key: 'Escape' });
     expect(screen.queryByRole('menu', { name: 'Export GST reports' })).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it('exports the current calculation through both CA workbook actions', async () => {
+    await open();
+    const current = mocks.calculateMonths.mock.lastCall![1][0] as string;
+    const result = calculation(current);
+    mocks.calculateMonths.mockResolvedValueOnce([result]);
+    fireEvent.click(screen.getByRole('button', { name: 'Download GSTR-1 Excel' }));
+    await waitFor(() => expect(mocks.excel).toHaveBeenCalledWith([result]));
+    fireEvent.click(screen.getByRole('button', { name: 'Download GSTR-2 Excel' }));
+    await waitFor(() => expect(mocks.excel).toHaveBeenCalledTimes(2));
+    expect(mocks.excel.mock.calls[1]).toEqual([[result]]);
+  });
+
+  it('shows generation state only on the CA workbook button being downloaded', async () => {
+    const pending = deferred<void>();
+    mocks.excel.mockReturnValueOnce(pending.promise);
+    await open();
+    fireEvent.click(screen.getByRole('button', { name: 'Download GSTR-1 Excel' }));
+    expect(screen.getByRole('button', { name: 'Generating GSTR-1…' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Download GSTR-2 Excel' }).matches(':disabled')).toBe(true);
+    await act(async () => pending.resolve());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Download GSTR-1 Excel' })).toBeTruthy());
   });
 
   it('uses accessible tabs with arrow-key navigation', async () => {

@@ -93,6 +93,14 @@ describe('pure monthly GST working', () => {
     expect(result.outwardDocuments[0].document_number).toBe('INV-1');
     expect(result.outwardDocuments[0].included).toBe(true);
   });
+  it('blocks missing historical descriptions without replacing them from today’s item master', () => {
+    const s = fixture(); const issued = invoice(s); issued.line.description = '';
+    s.currentItems = [{ id: 'item', business_id: 'b', name: 'Current master name', hsn: '84713000', tax_rate_bps: 1800, unit_id: 'unit' }] as GstMonthlySources['currentItems'];
+    const result = calculate(s);
+    expect(result.issues.map(row => row.code)).toContain('MISSING_HSN_DESCRIPTION');
+    expect(result.outwardHsnRows[0].description).toBe('');
+    expect(result.status).toBe('INCOMPLETE');
+  });
   it('uses reviewed UIN identity without GSTIN checksum and allocates Table3.2', () => {
     const s = fixture(); invoice(s, 'uin', { is_interstate: 1, place_of_supply: '29' });
     metadata(s, 'uin', { recipient_category: 'UIN', recipient_uin: '29UNREVIEWED001', recipient_identity_reviewed_at: stamp.created_at,
@@ -129,7 +137,7 @@ describe('pure monthly GST working', () => {
     expect(result.reconciliations.every(row => row.status === 'PASS')).toBe(true);
   });
   it('reports independent outward and inward delinked notes using persisted lines', () => {
-    const s = fixture(); const inv = invoice(s); s.invoices = []; s.invoiceLines = [];
+    const s = fixture(); s.customers[0].gstin = gstin('29'); const inv = invoice(s); s.invoices = []; s.invoiceLines = [];
     s.notes = ['OUTWARD', 'INWARD'].map(direction => ({ ...stamp, ...amount(), id: direction, business_id: 'b', direction,
       note_type: 'CREDIT_NOTE', note_number: `${direction}-001`, note_date: '2025-05-10', party_id: direction === 'OUTWARD' ? 'c' : 's',
       place_of_supply: '27', supplier_state_code: '27', is_interstate: 0, lines_json: JSON.stringify([inv.line]) })) as NonNullable<GstMonthlySources['notes']>;

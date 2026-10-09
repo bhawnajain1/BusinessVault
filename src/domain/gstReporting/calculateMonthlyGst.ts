@@ -243,6 +243,10 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     const sez = special === 'SEZ_WITH_PAYMENT' || special === 'SEZ_WITHOUT_PAYMENT';
     let classification: GstClassification = gstin ? 'B2B' : 'B2CS';
     let unsupported = false;
+    if (type === 'GST_NOTE' && outward && sign < 0 && gstin && document.recipient_category !== 'UIN' && gstin === period.gstinSnapshot.toUpperCase()) {
+      unsupported = true;
+      issue('POSSIBLE_SELF_GSTIN_TRANSACTION', 'BLOCKING_ERROR', type, header.id, 'Counterparty GSTIN matches the selected business GSTIN; review the party assignment or source mapping.', 'party_gstin', number);
+    }
     const compatibleType = type === 'ADVANCE' ? ['RECEIPT_VOUCHER', 'ADVANCE_ADJUSTMENT'].includes(document.document_type) : type === 'SALES_RETURN' || type === 'PURCHASE_RETURN'
       ? document.document_type === 'CREDIT_NOTE'
       : ['TAX_INVOICE', 'BILL_OF_SUPPLY', 'CREDIT_NOTE', 'DEBIT_NOTE'].includes(document.document_type);
@@ -259,6 +263,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     }
     if ((!overseas && !isValidStateCode(position)) || (interstate !== 0 && interstate !== 1)) {
       unsupported = true; issue('MISSING_PLACE_OF_SUPPLY', 'BLOCKING_ERROR', type, header.id, 'Explicit valid place of supply and supply type are required.', 'place_of_supply', number);
+      if (sign < 0) issue('CREDIT_NOTE_CLASSIFICATION_REQUIRED', 'BLOCKING_ERROR', type, header.id, 'Credit/debit note requires valid place-of-supply and classification evidence before it can enter a statutory section.', 'place_of_supply', number);
     }
     const supplierLocation = 'supplier_state_code' in header ? header.supplier_state_code ?? '' : '';
     const supplyOrigin = outward ? period.gstinSnapshot.slice(0, 2) : supplierLocation;
@@ -357,6 +362,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
       }
       if (!/^\d{4,8}$/.test(line.hsn) || (hsnMinimum !== null && line.hsn.length < hsnMinimum)) issue('INVALID_HSN', 'BLOCKING_ERROR', type, header.id, `Line ${line.id} HSN/SAC is missing or below the known minimum.`, 'hsn', number);
       if (!line.uqc_code) issue('MISSING_UQC', 'BLOCKING_ERROR', type, header.id, `Line ${line.id} has no historical UQC snapshot; current masters are not used.`, 'uqc_code', number);
+      if (!line.description.trim()) issue('MISSING_HSN_DESCRIPTION', 'BLOCKING_ERROR', type, header.id, `Line ${line.id} has no historical description snapshot; current masters are not used.`, 'description', number);
       if (line.snapshot_source === 'LEGACY_INFERRED' || !line.taxability && taxability === 'TAXABLE') issue('INFERRED_LINE_SNAPSHOT', 'WARNING', type, header.id, `Line ${line.id} includes legacy/inferred snapshot fields.`, null, number);
       const item = 'item_id' in line ? currentItems.get(line.item_id) : undefined;
       const unit = item && currentUnits.get(item.unit_id);
@@ -1252,7 +1258,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   const explicitRcm = new Set([...purchases.values()].filter(source => (metadata.get(`PURCHASE:${source.id}`) ?? metadata.get(`PURCHASE_RETURN:${source.id}`))?.reverse_charge === 1).map(source => source.id));
   reconcile('RCM_ITC_CONTEXT', sum(rcmReviewed.map(row => ({ [`${row.tax_head.toLowerCase()}_paise`]: row.approved_paise }))),
     sum(rcmReviewed.filter(row => explicitRcm.has(row.source_entity_id)).map(row => ({ [`${row.tax_head.toLowerCase()}_paise`]: row.approved_paise }))), rcmDocuments, rcmReviewed.length, [...taxKeys]);
-  const seriesSource = outwardDocuments.filter(d => d.included || d.cancelled || d.exclusion_reason === 'DUPLICATE');
+  const seriesSource = outwardDocuments.filter(d => d.included || d.cancelled || d.exclusion_reason === 'DUPLICATE' || d.classification.startsWith('UNCLASSIFIED'));
   reconcile('DOCUMENT_SERIES_COUNT', emptyAmounts(), emptyAmounts(), seriesSource, documentSeries.length, [], seriesSource.length, documentSeries.reduce((count, row) => count + row.total_issued, 0));
   const sourceCancelled = seriesSource.filter(document => document.cancelled).length;
   reconcile('DOCUMENT_SERIES_CANCELLED', emptyAmounts(), emptyAmounts(), seriesSource, documentSeries.length, [], sourceCancelled, documentSeries.reduce((count, row) => count + row.cancelled, 0));

@@ -20,3 +20,14 @@ it('keeps sequence-width changes in the same prefix series', () => {
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({ serial_from: 'INV9', serial_to: 'INV12', total_issued: 3, gaps: [{ from: 'INV11', to: 'INV11' }] });
 });
+
+it('uses the serial before a financial-year suffix instead of the final year digits', () => {
+  const rows = buildDocumentSeries(['INV/0001/2026-27', 'INV/0003/2026-27', 'CN/001/26-27'].map((document_number, index) => ({
+    source_entity_id: String(index), document_number, document_type: document_number.startsWith('CN') ? 'CREDIT_NOTE' : 'TAX_INVOICE', included: true, cancelled: false,
+  } as NormalizedGstDocument)));
+  expect(rows.find(row => row.document_nature === 'TAX_INVOICE')).toMatchObject({
+    series: 'INV//2026-27',
+    gaps: [{ from: 'INV/0002/2026-27', to: 'INV/0002/2026-27' }],
+  });
+  expect(rows.find(row => row.document_nature === 'CREDIT_NOTE')).toMatchObject({ series: 'CN//26-27', status: 'PASS' });
+});
