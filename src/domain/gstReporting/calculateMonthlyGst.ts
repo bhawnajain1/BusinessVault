@@ -681,6 +681,7 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   const fuzzyEvidence = new Map<string, Set<string>>();
   for (const evidence of sources.documentIdentityEvidence ?? []) {
     if (evidence.business_id !== businessId) continue;
+    if (evidence.reportable === false) continue;
     const fy = evidence.document_date && isDateOnly(evidence.document_date) ? financialYearForDate(evidence.document_date) : evidence.financial_year;
     if (!fy || !/^\d{4}-\d{2}$/.test(fy) || evidence.document_date && !isDateOnly(evidence.document_date)) { issue('INVALID_IDENTITY_EVIDENCE', 'BLOCKING_ERROR', evidence.source_entity_type, evidence.source_entity_id, 'Duplicate identity evidence requires a valid date or explicit financial year.'); continue; }
     const outward = evidence.direction === 'OUTWARD' || evidence.source_entity_type === 'INVOICE' || evidence.source_entity_type === 'SALES_RETURN';

@@ -248,14 +248,17 @@ export class GstReportingRepository {
       .filter((row) => row?.business_id === id).map((row) => [row!.id, row!]));
     const documentIdentityEvidence: NonNullable<GstMonthlySources['documentIdentityEvidence']> = [
       ...fyInvoices.map((row) => ({ source_entity_type: 'INVOICE' as const, source_entity_id: row.id, business_id: id,
-        financial_year: row.financial_year, document_type: 'TAX_INVOICE', document_number: row.invoice_number, party_gstin: null })),
+        financial_year: row.financial_year, document_type: 'TAX_INVOICE', document_number: row.invoice_number, party_gstin: null,
+        reportable: !row.deleted_at && !row.reverses_invoice_id && !row.reversed_by_invoice_id })),
       ...fyPurchases.map((row) => ({ source_entity_type: row.reverses_purchase_id ? 'PURCHASE_RETURN' as const : 'PURCHASE' as const, source_entity_id: row.id, business_id: id,
-        financial_year: row.financial_year, document_type: row.reverses_purchase_id ? 'CREDIT_NOTE' : 'TAX_INVOICE', document_number: row.supplier_bill_number || row.bill_number, party_gstin: fySuppliers.get(row.supplier_id)?.gstin ?? null })),
+        financial_year: row.financial_year, document_type: row.reverses_purchase_id ? 'CREDIT_NOTE' : 'TAX_INVOICE', document_number: row.supplier_bill_number || row.bill_number, party_gstin: fySuppliers.get(row.supplier_id)?.gstin ?? null,
+        reportable: !(row as Purchase & { deleted_at?: string | null }).deleted_at && !row.replaced_by_purchase_id && !row.reversed_by_purchase_id })),
       ...fyReturns.map((row) => ({ source_entity_type: 'SALES_RETURN' as const, source_entity_id: row.id, business_id: id,
-        financial_year: period.financialYear, document_type: 'CREDIT_NOTE', document_number: row.return_number, party_gstin: null })),
+        financial_year: period.financialYear, document_type: 'CREDIT_NOTE', document_number: row.return_number, party_gstin: null,
+        reportable: !row.deleted_at && row.status === 'posted' && !row.legacy_migration_classification })),
       ...fyNotes.map(row => ({ source_entity_type: 'GST_NOTE' as const, source_entity_id: row.id, business_id: id, direction: row.direction,
         financial_year: period.financialYear, document_type: row.note_type, document_number: row.note_number,
-        party_gstin: row.direction === 'OUTWARD' ? null : fySuppliers.get(row.party_id)?.gstin ?? null })),
+        party_gstin: row.direction === 'OUTWARD' ? null : fySuppliers.get(row.party_id)?.gstin ?? null, reportable: true })),
     ];
     const itemIds = [...new Set([...invoiceLines, ...purchaseLines, ...salesReturnItems].map(row => row.item_id))];
     const currentItems = (await this.db.items.bulkGet(itemIds)).filter(row => row?.business_id === id) as GstMonthlySources['currentItems'];

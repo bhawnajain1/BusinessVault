@@ -43,6 +43,8 @@ export interface GstDocumentIdentityEvidence {
   financial_year?: string;
   direction?: 'OUTWARD' | 'INWARD';
   party_gstin: string | null;
+  /** Superseded, reversal, cancelled, and deleted revisions cannot block the live document. */
+  reportable?: boolean;
 }
 
 export interface GstTaxPeriod {
