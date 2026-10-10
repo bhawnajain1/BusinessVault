@@ -539,6 +539,14 @@ describe('pure monthly GST working', () => {
     expect(result.outwardDocuments[0]).toMatchObject({ document_number: '7628', included: true });
     expect(result.totals.outwardNet.document_count).toBe(1);
   });
+  it('uses legacy edit-reversal evidence to retain the replacement legal invoice number', () => {
+    const s = fixture(); invoice(s, 'replacement', { invoice_number: '7628' });
+    s.documentIdentityEvidence = [{ business_id: 'b', source_entity_type: 'INVOICE', source_entity_id: 'legacy-original', document_type: 'TAX_INVOICE',
+      document_number: '7628', document_date: '2025-04-01', party_gstin: null, reportable: false }];
+    const result = calculate(s);
+    expect(result.outwardDocuments[0]).toMatchObject({ document_number: '7628', included: true });
+    expect(result.issues.map(row => row.code)).not.toContain('DUPLICATE_DOCUMENT');
+  });
   it('accepts repository FY-only identity evidence and scopes supplier identities by GSTIN', () => {
     const s = fixture(); purchase(s);
     s.documentIdentityEvidence = [{ business_id: 'b', source_entity_type: 'PURCHASE', source_entity_id: 'other', document_type: 'TAX_INVOICE', document_number: 'SUP-p', financial_year: '2025-26', party_gstin: gstin('29') }];

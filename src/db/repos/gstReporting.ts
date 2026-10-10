@@ -244,12 +244,16 @@ export class GstReportingRepository {
       .between([id, `${period.financialYear.slice(0, 4)}-04-01`], [id, `${Number(period.financialYear.slice(0, 4)) + 1}-04-01`], true, false).toArray();
     const fyNotes = await this.db.gst_notes.where('[business_id+note_date]')
       .between([id, `${period.financialYear.slice(0, 4)}-04-01`], [id, `${Number(period.financialYear.slice(0, 4)) + 1}-04-01`], true, false).toArray();
+    // Older edited invoices retain neither a successor pointer nor a cancelled
+    // status. Their legacy audit is the authoritative supersession evidence.
+    const legacyEditedOriginalIds = new Set((await this.db.legacy_reversal_audit.where('business_id').equals(id).toArray())
+      .filter(row => row.classification === 'EDIT_REVERSAL').map(row => row.original_invoice_id));
     const fySuppliers = new Map((await this.db.suppliers.bulkGet([...new Set([...fyPurchases.map((row) => row.supplier_id), ...fyNotes.filter(row => row.direction === 'INWARD').map(row => row.party_id)])]))
       .filter((row) => row?.business_id === id).map((row) => [row!.id, row!]));
     const documentIdentityEvidence: NonNullable<GstMonthlySources['documentIdentityEvidence']> = [
       ...fyInvoices.map((row) => ({ source_entity_type: 'INVOICE' as const, source_entity_id: row.id, business_id: id,
         financial_year: row.financial_year, document_type: 'TAX_INVOICE', document_number: row.invoice_number, party_gstin: null,
-        reportable: !row.deleted_at && !row.reverses_invoice_id && !row.reversed_by_invoice_id })),
+        reportable: !row.deleted_at && !row.reverses_invoice_id && !row.reversed_by_invoice_id && !legacyEditedOriginalIds.has(row.id) })),
       ...fyPurchases.map((row) => ({ source_entity_type: row.reverses_purchase_id ? 'PURCHASE_RETURN' as const : 'PURCHASE' as const, source_entity_id: row.id, business_id: id,
         financial_year: row.financial_year, document_type: row.reverses_purchase_id ? 'CREDIT_NOTE' : 'TAX_INVOICE', document_number: row.supplier_bill_number || row.bill_number, party_gstin: fySuppliers.get(row.supplier_id)?.gstin ?? null,
         reportable: !(row as Purchase & { deleted_at?: string | null }).deleted_at && !row.replaced_by_purchase_id && !row.reversed_by_purchase_id })),
