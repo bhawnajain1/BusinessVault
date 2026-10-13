@@ -885,7 +885,7 @@ describe('GST profile readiness on the report page', () => {
     expect(screen.getAllByText(/GST profile not configured/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/REGULAR · MONTHLY/)).toBeNull();
     expect(screen.getByText('Unsaved suggested values')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Save GST profile' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Save GST profile' }).length).toBeGreaterThan(0);
     expect(within(screen.getByRole('list', { name: 'GST profile readiness' })).getByText('Saved profile exists').closest('li')!.textContent).toContain('Not met');
     expect(screen.getByRole('button', { name: /Calculate reports/ }).matches(':disabled')).toBe(true);
     expect(mocks.calculateMonths).not.toHaveBeenCalled();
@@ -897,7 +897,7 @@ describe('GST profile readiness on the report page', () => {
     const persisted = { ...savedProfile, id: 'new-profile', effective_from: '2026-04-01' };
     mocks.saveProfile.mockResolvedValue(persisted);
     mocks.loadWorkspace.mockResolvedValue(baseWorkspace([persisted]));
-    fireEvent.click(screen.getByRole('button', { name: 'Save GST profile' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Save GST profile' })[0]);
     expect(await screen.findByText('GST profile saved. Reports recalculated.')).toBeTruthy();
     expect(mocks.saveProfile.mock.calls[0][0]).not.toHaveProperty('id');
     expect(mocks.loadWorkspace).toHaveBeenCalledTimes(2);
@@ -935,6 +935,24 @@ describe('GST profile readiness on the report page', () => {
     mocks.loadWorkspace.mockResolvedValue(baseWorkspace([old, { ...current, active: 0 }]));
     fireEvent.click(screen.getByRole('button', { name: 'Deactivate GST profile from 2026-04-01' }));
     await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledWith(expect.objectContaining({ id: 'current', active: 0 })));
-    expect(await screen.findByText(/The saved GST profile for the .* tax period is inactive\./)).toBeTruthy();
+    expect((await screen.findAllByText(/The saved GST profile for the .* tax period is inactive\./)).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: 'Reactivate profile' }).length).toBeGreaterThan(0);
+  });
+
+  it('explains every unmet check and offers a button that leads to the fix', async () => {
+    mocks.loadWorkspace.mockResolvedValue(baseWorkspace([{ ...savedProfile, effective_from: '2099-04-01' }]));
+    render(<MemoryRouter><GstSummaryPage /></MemoryRouter>);
+    await screen.findByText('Save a valid GST profile before calculating GST reports.');
+    await finished();
+    expect(mocks.calculateMonths).not.toHaveBeenCalled();
+    // The banner names the problem and the button opens the exact field.
+    expect(screen.getAllByText(/Set Effective from on or before 01 /).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit Effective from' })[0]);
+    await waitFor(() => expect(document.activeElement?.id).toBe('gst-profile-effective_from'));
+    const aatoItem = within(screen.getByRole('list', { name: 'GST profile readiness' })).getByText('Preceding-FY AATO is confirmed').closest('li')!;
+    expect(aatoItem.textContent).toContain('Not met');
+    expect(aatoItem.textContent).toMatch(/How to fix: Enter the complete AATO for FY \d{4}-\d{2}/);
+    fireEvent.click(within(aatoItem as HTMLElement).getByRole('button', { name: 'Enter AATO' }));
+    await waitFor(() => expect(document.activeElement?.id).toBe('gst-aato-input'));
   });
 });

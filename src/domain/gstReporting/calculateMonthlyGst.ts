@@ -91,8 +91,9 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   if (!isValidGstin(period.gstinSnapshot) || period.gstinSnapshot.toUpperCase() !== sources.business.gstin?.toUpperCase()) {
     issue('INVALID_BUSINESS_GSTIN', 'BLOCKING_ERROR', 'BUSINESS', businessId, 'GSTIN is invalid or does not match the selected registration.');
   }
-  // Inactive rows only decide between MISSING and INACTIVE; they are not evidence.
-  const readiness = gstProfileReadiness([...sources.profiles, ...(sources.inactiveProfiles ?? [])], period);
+  // Profile history only explains why nothing covers the period (inactive, outside dates); it is not evidence.
+  const readinessRows = new Map([...(sources.profileHistory ?? []), ...sources.profiles].map(p => [p.id, p]));
+  const readiness = gstProfileReadiness([...readinessRows.values()], period);
   for (const profile of readiness.covering) remember('GST_PROFILE', profile.id, profile, profile.entity_version);
   for (const problem of readiness.problems) {
     issue(problem.code, 'BLOCKING_ERROR', 'BUSINESS', businessId, problem.message, problem.field, null, null, problem.correction);
@@ -102,7 +103,8 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   const aatoRows = sources.aato.filter(a => a.business_id === businessId && a.financial_year === previousYear);
   for (const row of aatoRows) remember('GST_AATO', row.id, row, row.entity_version);
   const hsnMinimum = aatoRows.length === 1 && aatoRows[0].confirmed_at ? minimumHsnDigits(aatoRows[0].aato_paise, period.periodStart) : null;
-  if (hsnMinimum === null) issue('AATO_UNKNOWN', 'BLOCKING_ERROR', 'BUSINESS', businessId, 'Confirmed preceding-financial-year AATO is required; no HSN minimum has been guessed.');
+  if (hsnMinimum === null) issue('AATO_UNKNOWN', 'BLOCKING_ERROR', 'BUSINESS', businessId, `Confirmed AATO for the preceding financial year ${previousYear || ''} is required; no HSN minimum has been guessed.`, 'aato_paise', null, null,
+    `Open GST profile summary, enter the complete Aggregate Annual Turnover for FY ${previousYear || 'the preceding year'} (all GSTINs on the same PAN, not only BusinessVault sales) and click Save AATO.`);
   if (period.periodStart < '2021-04-01') issue('HISTORICAL_HSN_RULE_UNSUPPORTED', 'BLOCKING_ERROR', 'REPORT', period.periodKey, 'Pre-April-2021 HSN requirements are not modeled; the later minimum is not applied retroactively.');
   if (hsnMinimum !== null && aatoRows[0]?.source === 'USER_CONFIRMED') issue('AATO_USER_CONFIRMED', 'WARNING', 'GST_AATO', aatoRows[0].id, 'AATO is user-confirmed, not independently verified.');
   const rules = rulesForDate(period.periodStart);

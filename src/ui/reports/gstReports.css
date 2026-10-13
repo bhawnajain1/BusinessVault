@@ -156,3 +156,9 @@
 .gst-profile-list th, .gst-profile-list td { padding: 6px 8px; border-bottom: 1px solid rgb(var(--bv-border)); text-align: left; white-space: nowrap; }
 .gst-profile-list td button { margin-right: 6px; padding: 3px 10px; }
 .gst-unsaved-badge { display: inline-block; margin-left: 6px; padding: 1px 8px; border: 1px solid rgb(var(--bv-warning) / .4); border-radius: 999px; background: rgb(var(--bv-warning-bg)); color: rgb(var(--bv-warning)); font-size: 12px; font-weight: 650; }
+.gst-readiness li small span { display: block; }
+.gst-reports-page .gst-fix-button { margin-top: 4px; padding: 3px 10px; min-height: 28px; border: 1px solid rgb(var(--bv-accent)) !important; border-radius: 6px !important; background: rgb(var(--bv-surface)) !important; color: rgb(var(--bv-accent)) !important; font-size: 12px; font-weight: 650; }
+.gst-reports-page .gst-fix-button:disabled { opacity: .48; cursor: not-allowed; }
+.gst-fix-list { margin: 6px 0 0; padding-left: 18px; }
+.gst-fix-list li { margin: 4px 0; }
+.gst-fix-list .gst-fix-button { margin-left: 4px; }

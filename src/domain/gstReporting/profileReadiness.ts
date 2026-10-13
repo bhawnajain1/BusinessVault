@@ -65,8 +65,15 @@ export function gstProfileReadiness(profiles: GstProfile[], period: ReadinessPer
   const problem = (code: GstProfileIssueCode, field: string | null, message: string, correction: string) => problems.push({ code, field, message, correction });
 
   if (covering.length === 0) {
+    const elsewhere = profiles.filter(p => p.business_id === period.businessId && p.active);
     if (own.length) problem('GST_PROFILE_INACTIVE', 'active', `The saved GST profile for the ${label} tax period is inactive.`,
       'Open GST profile summary, edit the profile, tick Active profile and click Save profile.');
+    else if (elsewhere.some(p => p.effective_from >= period.nextPeriodStart)) problem('GST_PROFILE_EFFECTIVE_DATE_GAP', 'effective_from',
+      `The saved GST profile starts after the ${label} tax period.`,
+      `Set Effective from on or before ${gstDisplayDate(period.periodStart)} and leave Effective to blank for an ongoing registration.`);
+    else if (elsewhere.length) problem('GST_PROFILE_EFFECTIVE_DATE_GAP', 'effective_to',
+      `The saved GST profile ends before the ${label} tax period.`,
+      `Set Effective to (exclusive) on or after ${gstDisplayDate(period.nextPeriodStart)}, or leave it blank for an ongoing registration.`);
     else problem('GST_PROFILE_MISSING', null, 'No saved GST profile exists for this business.',
       'Open GST profile summary, confirm the registration details and click Save profile.');
     return { covering, problems };

@@ -16,10 +16,10 @@ function profile(values: Partial<GstProfile> = {}): GstProfile {
     registration_start_date: null, registration_end_date: null, filing_frequency: 'MONTHLY', gst_reporting_enabled: 1,
     effective_from: '2026-04-01', effective_to: null, active: 1, ...values };
 }
-function sources(profiles: GstProfile[], inactiveProfiles: GstProfile[] = []): GstMonthlySources {
+function sources(profiles: GstProfile[], profileHistory: GstProfile[] = []): GstMonthlySources {
   return {
     business: { ...stamp, id: 'b', name: 'Synthetic Books', gstin, state_code: '27' } as Business,
-    profiles, inactiveProfiles,
+    profiles, profileHistory,
     aato: [{ ...stamp, id: 'aato', business_id: 'b', financial_year: '2025-26', aato_paise: 10000000, source: 'USER_CONFIRMED', confirmed_at: stamp.created_at } as GstAato],
     customers: [], suppliers: [], invoices: [], invoiceLines: [], purchases: [], purchaseLines: [], salesReturns: [], salesReturnItems: [], originalInvoices: [],
     metadata: [], itcEntries: [], adjustments: [], expenses: [], advances: [], legacyAudits: [],
@@ -57,7 +57,8 @@ describe('GST profile readiness', () => {
     expect(codes(sources([], [profile({ active: 0 })]))).toEqual(['GST_PROFILE_INACTIVE']);
     // Inactive rows passed in the active list are filtered the same way.
     expect(codes(sources([profile({ active: 0 })]))).toEqual(['GST_PROFILE_INACTIVE']);
-    // Saved snapshot hashes must not change because inactive rows are now loaded.
+    // Saved snapshot hashes must not change because profile history is now loaded.
+    expect(codes(sources([profile()], [profile()]))).toEqual([]);
     expect(canonicalGstSources(sources([], [profile({ active: 0 })]))).toEqual(canonicalGstSources(sources([])));
   });
 
@@ -80,6 +81,11 @@ describe('GST profile readiness', () => {
   it('treats effective-to as exclusive: before the next period start is a gap, on it covers the month', () => {
     expect(profileIssues(sources([profile({ effective_to: '2026-10-31' })]))).toEqual([expect.objectContaining({ code: 'GST_PROFILE_EFFECTIVE_DATE_GAP', field: 'effective_to' })]);
     expect(codes(sources([profile({ effective_to: '2026-11-01' })]))).toEqual([]);
+  });
+
+  it('reports a profile outside the period as a date gap, not MISSING', () => {
+    expect(profileIssues(sources([], [profile({ effective_from: '2027-01-01' })]))).toEqual([expect.objectContaining({ code: 'GST_PROFILE_EFFECTIVE_DATE_GAP', field: 'effective_from' })]);
+    expect(profileIssues(sources([], [profile({ effective_to: '2026-07-01' })]))).toEqual([expect.objectContaining({ code: 'GST_PROFILE_EFFECTIVE_DATE_GAP', field: 'effective_to' })]);
   });
 
   it('reports two overlapping active profiles as MULTIPLE', () => {

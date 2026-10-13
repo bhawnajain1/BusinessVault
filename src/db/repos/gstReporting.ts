@@ -277,8 +277,7 @@ export class GstReportingRepository {
       customers: customers as GstMonthlySources['customers'], suppliers: suppliers as GstMonthlySources['suppliers'],
       profiles: await this.db.gst_profiles.where('[business_id+active]').equals([id, 1])
         .filter((row) => row.effective_from < period.nextPeriodStart && (!row.effective_to || row.effective_to > period.periodStart)).toArray(),
-      inactiveProfiles: await this.db.gst_profiles.where('[business_id+active]').equals([id, 0])
-        .filter((row) => row.effective_from < period.nextPeriodStart && (!row.effective_to || row.effective_to > period.periodStart)).toArray(),
+      profileHistory: await this.db.gst_profiles.where('business_id').equals(id).toArray(),
       aato: await this.db.gst_aato.where('[business_id+financial_year]').equals([id, `${Number(period.financialYear.slice(0, 4)) - 1}-${period.financialYear.slice(2, 4)}`]).toArray(),
       metadata: [...new Map(metadata.filter((row) => relevantIds.has(row.source_entity_id)).map((row) => [row.id, row])).values()],
       itcEntries,

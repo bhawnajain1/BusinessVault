@@ -260,9 +260,10 @@ Date boundaries: `effective_from` and `registration_start_date` are inclusive
 starts; `effective_to` is exclusive (a follow-on profile starts on the same
 date); `registration_end_date` is inclusive (the last valid day), so a
 registration ending 31 October 2026 covers the October 2026 period. AATO stays a
-separate `AATO_UNKNOWN` check. Inactive profile rows are loaded only to report
-`GST_PROFILE_INACTIVE` instead of `GST_PROFILE_MISSING` and are excluded from
-the source hash. The UI does not auto-calculate until a saved, unedited profile
+separate `AATO_UNKNOWN` check. All profile rows of the business are loaded as
+`profileHistory` only to report `GST_PROFILE_INACTIVE` or a date gap instead of
+`GST_PROFILE_MISSING`; that key is excluded from the source hash. Every unmet
+checklist item shows how to fix it plus a button that opens the exact field. The UI does not auto-calculate until a saved, unedited profile
 matches the selected frequency and covers every selected period.
 
 Reconciliation codes are `OUTWARD_RATE_HEADERS`, `INWARD_RATE_HEADERS`,

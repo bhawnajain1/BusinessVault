@@ -15,6 +15,7 @@ per-PR-version-bump policy.
 ### Added
 
 - Profile readiness checklist (icon + text) in the GST profile panel, a list of all saved profiles (dates, registration type, frequency, active and reporting state, GSTIN) with Edit, Deactivate (never delete) and New profile, and a **Profile frequency mismatch** banner with **Update and save profile** / **Restore saved frequency**. Saving a profile reloads the stored row, marks results stale and recalculates ("GST profile saved. Reports recalculated.").
+- Every unmet readiness check now explains what is wrong, shows a **How to fix:** step and offers a button that goes straight to the fix: **Enter AATO** (focuses the AATO field), **Reactivate profile**, **Turn on GST reporting**, **Change registration type**, **Edit Effective from / Effective to / Registration start / Registration end**, **Restore <frequency>**, **Review saved profiles**, **Open business settings** (GSTIN mismatch) and **Save / Create GST profile**. The AATO item now reads "Confirmed AATO for the preceding financial year … is required" with the instruction to enter the complete turnover for all GSTINs on the same PAN and click **Save AATO**. A profile saved for other dates is reported as an effective-date gap instead of "No saved GST profile exists".
 
 ## 1.1.1 — 2026-10-13
 
