@@ -20,7 +20,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { INDIAN_BANKS } from './indianBanks';
-import { DateWithTime, formatDateTimeCsv } from '../components/DateTime';
+import { DateTimeCell, formatDateTimeCsv } from '../components/DateTime';
 
 const METHODS: PaymentMethod[] = ['cash', 'bank', 'upi', 'card', 'cheque'];
 
@@ -253,7 +253,9 @@ export default function PaymentsPage() {
       filterable: true,
       render: (r) => r.payment_number,
     },
-    { key: 'payment_date', header: 'Date', render: (r) => <DateWithTime date={r.payment_date} at={r.created_at} /> },
+    { key: 'payment_date', header: 'Date', render: (r) => r.payment_date },
+    { key: 'created_at', header: 'Created', sortValue: (r) => r.created_at, render: (r) => <DateTimeCell iso={r.created_at} /> },
+    { key: 'updated_at', header: 'Last modified', sortValue: (r) => r.updated_at, render: (r) => <DateTimeCell iso={r.updated_at} /> },
     {
       key: 'direction',
       header: 'Direction',
@@ -305,6 +307,7 @@ export default function PaymentsPage() {
         { header: 'Payment #', get: (r: Payment) => r.payment_number },
         { header: 'Date', get: (r: Payment) => r.payment_date },
         { header: 'Created At', get: (r: Payment) => formatDateTimeCsv(r.created_at) },
+        { header: 'Modified At', get: (r: Payment) => formatDateTimeCsv(r.updated_at) },
         { header: 'Direction', get: (r: Payment) => r.direction },
         { header: 'Party Type', get: (r: Payment) => r.party_type },
         {

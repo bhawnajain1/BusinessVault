@@ -57,6 +57,7 @@ export interface RecentInvoiceRow {
   date: string;
   due_date: string | null;
   created_at: string;
+  updated_at: string;
   total_paise: number;
   balance_paise: number;
   status: Invoice['status'];
@@ -205,6 +206,7 @@ export function computeDashboardStats(inputs: DashboardInputs): DashboardStats {
       date: i.invoice_date,
       due_date: i.due_date,
       created_at: i.created_at,
+      updated_at: i.updated_at,
       total_paise: i.total_paise,
       balance_paise: i.balance_paise,
       status: i.status,

@@ -20,7 +20,6 @@ import Money, { formatMoney } from '../components/Money';
 import type { DashboardAnalytics, RecentInvoiceRow } from '../../domain/dashboardStats';
 import type { ProfitAndLoss } from '../../domain/AccountingService';
 import { RANGE_OPTIONS, type RangeKey } from './dateRange';
-import { DateWithTime } from '../components/DateTime';
 
 // Building blocks for the Overview page. Everything is presentational: data
 // comes in as props, already computed by domain code (dashboardStats.ts,
@@ -611,7 +610,7 @@ export function RecentInvoicesTable({ rows, todayYmd }: { rows: RecentInvoiceRow
                     {r.number}
                   </Link>
                 </td>
-                <td className="h-14 whitespace-nowrap border-b border-slate-100 px-4 tabular-nums text-slate-600"><DateWithTime date={r.date} at={r.created_at} /></td>
+                <td className="h-14 whitespace-nowrap border-b border-slate-100 px-4 tabular-nums text-slate-600">{r.date}</td>
                 <td className="h-14 max-w-[240px] truncate border-b border-slate-100 px-4 text-slate-700">{r.customerName}</td>
                 <td className="h-14 whitespace-nowrap border-b border-slate-100 px-4 text-right tabular-nums text-slate-900">{formatMoney(r.total_paise)}</td>
                 <td className={`h-14 whitespace-nowrap border-b border-slate-100 px-4 text-right tabular-nums ${r.balance_paise > 0 ? 'font-semibold text-slate-900' : 'text-slate-500'}`}>

@@ -19,7 +19,7 @@ import Money from '../components/Money';
 import Qty from '../components/Qty';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { log } from '../../lib/log';
-import { formatDateTime, formatTime } from '../components/DateTime';
+import { SavedTimes, formatDateTime } from '../components/DateTime';
 
 // Dedicated view for a single Sales Return. Shows header, per-line rows,
 // stock movements, the reversing JE (with lines), customer-credit advance
@@ -234,7 +234,7 @@ export default function SalesReturnDetail() {
             </span>
           </h1>
           <div className="text-sm text-fg-muted">
-            {sr.return_date}{formatTime(sr.created_at) && ` ${formatTime(sr.created_at)}`} · Against{' '}
+            {sr.return_date} · Against{' '}
             {originalInvoice ? (
               <Link
                 to={`/invoices/${originalInvoice.id}`}
@@ -257,6 +257,7 @@ export default function SalesReturnDetail() {
               </>
             )}
           </div>
+          <SavedTimes createdAt={sr.created_at} updatedAt={sr.updated_at} />
         </div>
         <div className="flex gap-2">
           {sr.status === 'posted' && (

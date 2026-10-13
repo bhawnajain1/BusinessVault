@@ -5,7 +5,7 @@ import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
-import { DateWithTime } from '../components/DateTime';
+import { DateTimeCell } from '../components/DateTime';
 
 const MOVEMENT_TYPES = [
   'purchase',
@@ -85,7 +85,9 @@ export default function StockMovements() {
   );
 
   const columns: ColumnDef<StockMovement>[] = [
-    { key: 'occurred_at', header: 'Date', render: (r) => <DateWithTime date={r.occurred_at.slice(0, 10)} at={r.occurred_at.length > 10 ? r.occurred_at : null} /> },
+    { key: 'occurred_at', header: 'Date', render: (r) => r.occurred_at.slice(0, 10) },
+    // Only movements with a full timestamp have a time; invoice-driven ones store a date.
+    { key: 'created_at', header: 'Created', render: (r) => <DateTimeCell iso={r.occurred_at.length > 10 ? r.occurred_at : null} /> },
     {
       key: 'item',
       header: 'Item',

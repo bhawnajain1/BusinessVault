@@ -41,31 +41,22 @@ export function formatDateTimeCsv(iso: string | null | undefined): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-// Table cell: the business date, with the time it was saved underneath.
-export function DateWithTime({ date, at }: { date: string; at?: string | null }) {
-  const time = formatTime(at);
-  return (
-    <span className="inline-flex flex-col leading-tight">
-      <span>{date}</span>
-      {time && (
-        <span className="text-xs text-slate-500" title={`Saved ${formatDateTime(at)}`}>
-          {time}
-        </span>
-      )}
-    </span>
-  );
+// Table cell for the "Created" / "Last modified" columns: full local date
+// and time, or a dash when the timestamp is missing.
+export function DateTimeCell({ iso }: { iso?: string | null }) {
+  const text = formatDateTime(iso);
+  return <span className="whitespace-nowrap">{text || '—'}</span>;
 }
 
-// Detail pages: "Created 12 Oct 2026, 4:35 pm · Last edited 13 Oct 2026, 9:10 am"
+// Detail pages: "Created 12 Oct 2026, 4:35 pm" / "Last modified 13 Oct 2026, 9:10 am"
 export function SavedTimes({ createdAt, updatedAt }: { createdAt?: string | null; updatedAt?: string | null }) {
   const created = formatDateTime(createdAt);
-  const updated = formatDateTime(updatedAt);
-  if (!created) return null;
-  const edited = updated && updatedAt !== createdAt && updated !== created;
+  const modified = formatDateTime(updatedAt);
+  if (!created && !modified) return null;
   return (
-    <div className="text-xs text-slate-500">
-      Created {created}
-      {edited && <> · Last edited {updated}</>}
+    <div className="space-y-0.5 text-xs text-slate-500">
+      {created && <div>Created {created}</div>}
+      {modified && <div>Last modified {modified}</div>}
     </div>
   );
 }
