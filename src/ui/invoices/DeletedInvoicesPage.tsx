@@ -89,8 +89,8 @@ export default function DeletedInvoicesPage() {
       sortValue: (r) => r.invoice_number,
       render: (r) => <Link to={`/invoices/${r.id}`} className="text-indigo-700 hover:underline">{r.invoice_number}</Link>,
     },
-    { key: 'created_at', header: 'Created', sortValue: (r) => r.created_at, render: (r) => <DateTimeCell iso={r.created_at} /> },
-    { key: 'updated_at', header: 'Last modified', sortValue: (r) => r.updated_at, render: (r) => <DateTimeCell iso={r.updated_at} /> },
+    { key: 'created_at', header: 'Created Date', sortValue: (r) => r.created_at, render: (r) => <DateTimeCell iso={r.created_at} /> },
+    { key: 'updated_at', header: 'Last Modified Date', sortValue: (r) => r.updated_at, render: (r) => <DateTimeCell iso={r.updated_at} /> },
     {
       key: 'customer',
       header: 'Customer',

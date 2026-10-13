@@ -173,8 +173,8 @@ export default function Returns() {
             <table className="w-full text-sm">
               <thead className="bg-surface-hover text-xs uppercase text-fg-muted sticky top-0">
                 <tr>
-                  <th className="text-left px-3 py-2">Created</th>
-                  <th className="text-left px-3 py-2">Last modified</th>
+                  <th className="text-left px-3 py-2">Created Date</th>
+                  <th className="text-left px-3 py-2">Last Modified Date</th>
                   <th className="text-left px-3 py-2">Invoice #</th>
                   <th className="text-left px-3 py-2">Customer</th>
                   <th className="text-right px-3 py-2">Total</th>
@@ -239,8 +239,8 @@ export default function Returns() {
           <table className="w-full text-sm">
             <thead className="bg-surface-hover text-xs uppercase text-fg-muted">
               <tr>
-                  <th className="text-left px-3 py-2">Created</th>
-                  <th className="text-left px-3 py-2">Last modified</th>
+                  <th className="text-left px-3 py-2">Created Date</th>
+                  <th className="text-left px-3 py-2">Last Modified Date</th>
                 <th className="text-left px-3 py-2">Return #</th>
                 <th className="text-left px-3 py-2">Against invoice</th>
                 <th className="text-left px-3 py-2">Customer</th>

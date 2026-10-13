@@ -735,8 +735,8 @@ export default function CustomerDetailPage() {
             <thead>
               <tr>
                 <th scope="col" aria-sort={invoiceSort.key === 'invoice_number' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Invoice #', 'invoice_number')}</th>
-                <th scope="col">Created</th>
-                <th scope="col">Last modified</th>
+                <th scope="col">Created Date</th>
+                <th scope="col">Last Modified Date</th>
                 <th scope="col" aria-sort={invoiceSort.key === 'due_date' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Due date', 'due_date')}</th>
                 <th scope="col" className="text-right" aria-sort={invoiceSort.key === 'total_paise' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Amount', 'total_paise', 'customer-table-sort-button-right')}</th>
                 <th scope="col" className="text-right" aria-sort={invoiceSort.key === 'paid_paise' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Paid', 'paid_paise', 'customer-table-sort-button-right')}</th>
@@ -814,8 +814,8 @@ export default function CustomerDetailPage() {
           <table className="customer-table data-table min-w-[760px]">
             <thead>
               <tr>
-                <th scope="col">Created</th>
-                <th scope="col">Last modified</th>
+                <th scope="col">Created Date</th>
+                <th scope="col">Last Modified Date</th>
                 <th scope="col">Receipt #</th>
                 <th scope="col" className="text-right">Amount</th>
                 <th scope="col">Method</th>

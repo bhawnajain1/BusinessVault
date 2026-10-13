@@ -590,8 +590,8 @@ export function RecentInvoicesTable({ rows, todayYmd }: { rows: RecentInvoiceRow
         <thead className="bg-slate-50 text-slate-500">
           <tr>
             {header('number', 'Invoice #')}
-            {header('created_at', 'Created')}
-            {header('updated_at', 'Last modified')}
+            {header('created_at', 'Created Date')}
+            {header('updated_at', 'Last Modified Date')}
             {header('customerName', 'Customer')}
             {header('total_paise', 'Amount', true)}
             {header('balance_paise', 'Balance', true)}
