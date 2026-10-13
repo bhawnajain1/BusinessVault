@@ -20,6 +20,7 @@ import Money, { formatMoney } from '../components/Money';
 import type { DashboardAnalytics, RecentInvoiceRow } from '../../domain/dashboardStats';
 import type { ProfitAndLoss } from '../../domain/AccountingService';
 import { RANGE_OPTIONS, type RangeKey } from './dateRange';
+import { formatDateTime } from '../components/DateTime';
 
 // Building blocks for the Overview page. Everything is presentational: data
 // comes in as props, already computed by domain code (dashboardStats.ts,
@@ -540,10 +541,10 @@ export function invoiceDisplayStatus(row: RecentInvoiceRow, todayYmd: string): I
   return { label: 'Unpaid', className: 'bg-indigo-50 text-indigo-700', icon: Clock };
 }
 
-type SortKey = 'number' | 'date' | 'customerName' | 'total_paise' | 'balance_paise';
+type SortKey = 'number' | 'created_at' | 'updated_at' | 'customerName' | 'total_paise' | 'balance_paise';
 
 export function RecentInvoicesTable({ rows, todayYmd }: { rows: RecentInvoiceRow[]; todayYmd: string }) {
-  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'date', dir: 'desc' });
+  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'created_at', dir: 'desc' });
 
   if (rows.length === 0) {
     return <EmptyState icon={FileText} title="No invoices yet" hint="Create your first invoice to see it here." />;
@@ -585,11 +586,12 @@ export function RecentInvoicesTable({ rows, todayYmd }: { rows: RecentInvoiceRow
 
   return (
     <div className="relative -mx-5 overflow-x-auto sm:-mx-6">
-      <table className="w-full min-w-[760px] border-separate border-spacing-0 text-sm">
+      <table className="w-full min-w-[920px] border-separate border-spacing-0 text-sm">
         <thead className="bg-slate-50 text-slate-500">
           <tr>
             {header('number', 'Invoice #')}
-            {header('date', 'Date')}
+            {header('created_at', 'Created')}
+            {header('updated_at', 'Last modified')}
             {header('customerName', 'Customer')}
             {header('total_paise', 'Amount', true)}
             {header('balance_paise', 'Balance', true)}
@@ -610,7 +612,8 @@ export function RecentInvoicesTable({ rows, todayYmd }: { rows: RecentInvoiceRow
                     {r.number}
                   </Link>
                 </td>
-                <td className="h-14 whitespace-nowrap border-b border-slate-100 px-4 tabular-nums text-slate-600">{r.date}</td>
+                <td className="h-14 whitespace-nowrap border-b border-slate-100 px-4 tabular-nums text-slate-600">{formatDateTime(r.created_at) || '—'}</td>
+                <td className="h-14 whitespace-nowrap border-b border-slate-100 px-4 tabular-nums text-slate-600">{formatDateTime(r.updated_at) || '—'}</td>
                 <td className="h-14 max-w-[240px] truncate border-b border-slate-100 px-4 text-slate-700">{r.customerName}</td>
                 <td className="h-14 whitespace-nowrap border-b border-slate-100 px-4 text-right tabular-nums text-slate-900">{formatMoney(r.total_paise)}</td>
                 <td className={`h-14 whitespace-nowrap border-b border-slate-100 px-4 text-right tabular-nums ${r.balance_paise > 0 ? 'font-semibold text-slate-900' : 'text-slate-500'}`}>

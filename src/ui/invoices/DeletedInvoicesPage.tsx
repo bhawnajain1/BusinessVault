@@ -7,6 +7,7 @@ import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import Money from '../components/Money';
 import StatusBadge from '../components/StatusBadge';
 import DataTable, { type ColumnDef } from '../components/DataTable';
+import { DateTimeCell } from '../components/DateTime';
 
 export default function DeletedInvoicesPage() {
   const { businessId, loading } = useActiveBusiness();
@@ -88,7 +89,8 @@ export default function DeletedInvoicesPage() {
       sortValue: (r) => r.invoice_number,
       render: (r) => <Link to={`/invoices/${r.id}`} className="text-indigo-700 hover:underline">{r.invoice_number}</Link>,
     },
-    { key: 'invoice_date', header: 'Date', sortValue: (r) => r.invoice_date, render: (r) => r.invoice_date },
+    { key: 'created_at', header: 'Created', sortValue: (r) => r.created_at, render: (r) => <DateTimeCell iso={r.created_at} /> },
+    { key: 'updated_at', header: 'Last modified', sortValue: (r) => r.updated_at, render: (r) => <DateTimeCell iso={r.updated_at} /> },
     {
       key: 'customer',
       header: 'Customer',
