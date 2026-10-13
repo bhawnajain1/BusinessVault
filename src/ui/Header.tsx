@@ -60,6 +60,23 @@ export default function Header({ onOpenMobileNav }: { onOpenMobileNav: () => voi
       </div>
       <div className="flex shrink-0 items-center gap-2 sm:gap-3">
         {onOverview && <HeaderRangePicker />}
+        <span
+          className="hidden rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium tabular-nums text-slate-500 sm:inline"
+          aria-label={`BusinessVault version ${APP_VERSION}`}
+          title={`BusinessVault v${APP_VERSION}`}
+        >
+          v{APP_VERSION}
+        </span>
+        {FEEDBACK_EMAIL && (
+          <a
+            href={buildFeedbackHref()}
+            className="hidden h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 sm:inline-flex"
+            aria-label="Send feedback"
+          >
+            <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+            Feedback
+          </a>
+        )}
         <NotificationBell />
         <CloudIndicator />
         <ProfileMenu />
