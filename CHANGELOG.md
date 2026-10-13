@@ -4,6 +4,18 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.1.2 — 2026-10-13
+
+### Fixed
+
+- GST Reports no longer presents an unsaved default profile as configured. With no saved profile the summary reads **GST profile not configured**, the editor is marked **Unsaved suggested values**, and a **Save GST profile** action is shown. Reports are not calculated automatically until a saved, unedited profile matches the selected filing frequency and covers every selected period ("Save a valid GST profile before calculating GST reports."). The engine still blocks independently.
+- The generic `GST_PROFILE_NOT_READY` issue is replaced by precise codes, each with a specific correction: `GST_PROFILE_MISSING`, `GST_PROFILE_MULTIPLE`, `GST_PROFILE_NOT_REGULAR`, `GST_PROFILE_DISABLED`, `GST_PROFILE_INACTIVE`, `GST_PROFILE_GSTIN_MISMATCH`, `GST_PROFILE_FREQUENCY_MISMATCH`, `GST_PROFILE_EFFECTIVE_DATE_GAP` and `GST_REGISTRATION_DATE_GAP`. AATO remains a separate check.
+- Registration end is now inclusive (a registration ending 31 October 2026 covers October 2026); Effective to stays exclusive. Both are documented in `docs/gst-reporting.md` and labelled in the editor.
+
+### Added
+
+- Profile readiness checklist (icon + text) in the GST profile panel, a list of all saved profiles (dates, registration type, frequency, active and reporting state, GSTIN) with Edit, Deactivate (never delete) and New profile, and a **Profile frequency mismatch** banner with **Update and save profile** / **Restore saved frequency**. Saving a profile reloads the stored row, marks results stale and recalculates ("GST profile saved. Reports recalculated.").
+
 ## 1.1.1 — 2026-10-13
 
 ### Fixed

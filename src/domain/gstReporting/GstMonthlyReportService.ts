@@ -27,6 +27,8 @@ export type SaveGstNoteInput = Omit<Editable<GstNote>, 'lines_json'> & { lines: 
 export function canonicalGstSources(sources: GstMonthlySources): unknown {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(sources)) {
+    // Inactive profiles only refine the readiness message (MISSING vs INACTIVE).
+    if (key === 'inactiveProfiles') continue;
     if (!Array.isArray(value)) {
       const business = normalizeGstSourceRow('businesses', value);
       // Provider linkage and sequence allocators are operational state, not GST

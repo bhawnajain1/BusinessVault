@@ -136,3 +136,23 @@
 .gst-reports-page :is(.gst-period-table, .gst-tax-head-table) :is(tbody, tfoot) th { color: rgb(var(--bv-fg)) !important; font-size: 13px !important; font-weight: 650 !important; letter-spacing: 0 !important; text-transform: none !important; }
 /* Overview cards sit directly in the tab panel, which has no gap of its own. */
 .gst-reports-page [role="tabpanel"] > * + :is(.gst-section-card, .gst-overview-split) { margin-top: 16px; }
+
+/* GST profile readiness: state is carried by icon + text, colour is secondary. */
+.gst-profile-gate { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1px solid rgb(var(--bv-warning) / .35); border-radius: 10px; background: rgb(var(--bv-warning-bg)); color: rgb(var(--bv-fg)); font-size: 13px; }
+.gst-profile-gate > svg { flex: none; margin-top: 2px; color: rgb(var(--bv-warning)); }
+.gst-profile-gate > div:first-of-type { flex: 1; }
+.gst-profile-gate p { margin: 2px 0; }
+.gst-profile-gate-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.gst-readiness { list-style: none; margin: 4px 0 14px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px 16px; font-size: 13px; }
+.gst-readiness li { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 6px; }
+.gst-readiness li small { grid-column: 2 / -1; color: rgb(var(--bv-fg-muted)); }
+.gst-readiness strong { font-size: 12px; font-weight: 650; }
+.gst-readiness-pass svg { color: rgb(var(--bv-success)); }
+.gst-readiness-fail svg, .gst-readiness-fail strong { color: rgb(var(--bv-danger)); }
+.gst-readiness-unknown svg, .gst-readiness-unknown strong { color: rgb(var(--bv-fg-muted)); }
+.gst-profile-list { margin: 0 0 12px; font-size: 13px; overflow-x: auto; }
+.gst-profile-list h3 { margin: 0 0 6px; font-size: 13px; font-weight: 700; }
+.gst-profile-list table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+.gst-profile-list th, .gst-profile-list td { padding: 6px 8px; border-bottom: 1px solid rgb(var(--bv-border)); text-align: left; white-space: nowrap; }
+.gst-profile-list td button { margin-right: 6px; padding: 3px 10px; }
+.gst-unsaved-badge { display: inline-block; margin-left: 6px; padding: 1px 8px; border: 1px solid rgb(var(--bv-warning) / .4); border-radius: 999px; background: rgb(var(--bv-warning-bg)); color: rgb(var(--bv-warning)); font-size: 12px; font-weight: 650; }

@@ -243,7 +243,8 @@ rejections are thrown errors before writes, not additional engine issue codes.
 
 | Severity / concern | Exact codes |
 | --- | --- |
-| BLOCKING_ERROR: scope/rules/profile | INVALID_PERIOD_SCOPE, INVALID_BUSINESS_GSTIN, GST_PROFILE_NOT_READY, AATO_UNKNOWN, RULE_NOT_AVAILABLE |
+| BLOCKING_ERROR: scope/rules/profile | INVALID_PERIOD_SCOPE, INVALID_BUSINESS_GSTIN, AATO_UNKNOWN, RULE_NOT_AVAILABLE |
+| BLOCKING_ERROR: GST profile | GST_PROFILE_MISSING, GST_PROFILE_MULTIPLE, GST_PROFILE_NOT_REGULAR, GST_PROFILE_DISABLED, GST_PROFILE_INACTIVE, GST_PROFILE_GSTIN_MISMATCH, GST_PROFILE_FREQUENCY_MISMATCH, GST_PROFILE_EFFECTIVE_DATE_GAP, GST_REGISTRATION_DATE_GAP |
 | BLOCKING_ERROR: duplicate identity | DUPLICATE_SOURCE_ID, DUPLICATE_LINE_ID, DUPLICATE_METADATA, DUPLICATE_DOCUMENT |
 | BLOCKING_ERROR: source completeness | INVALID_DOCUMENT_DATE, INVALID_REPORTING_PERIOD, MISSING_PARTY, MISSING_DOCUMENT_NUMBER, MISSING_LINE_DATA |
 | BLOCKING_ERROR: fixed-point/invariants | UNSAFE_MONEY, UNEXPECTED_NEGATIVE_AMOUNT, HEADER_TOTAL_MISMATCH, UNSAFE_LINE_VALUE, INVALID_LINE_SIGN, LINE_TOTAL_MISMATCH, LINE_HEADER_MISMATCH, UNSAFE_AGGREGATE, UNSAFE_QUANTITY_AGGREGATE |
@@ -252,6 +253,17 @@ rejections are thrown errors before writes, not additional engine issue codes.
 | BLOCKING_ERROR: working controls | DOCUMENT_SERIES_DUPLICATE, DOCUMENT_SERIES_REQUIRED, INVALID_CA_ADJUSTMENT, UNSAFE_CA_ADJUSTMENT, TABLE4_FINAL_NET_CONFLICT, RECONCILIATION_VARIANCE |
 | WARNING | AATO_USER_CONFIRMED, LEGACY_NEGATIVE_NOTE, MISSING_ORIGINAL_NOTE_LINK, INFERRED_LINE_SNAPSHOT, ITC_UNREVIEWED, BOOKS_ITC_PORTAL_RECONCILIATION_REQUIRED, INSUFFICIENT_GST_DETAIL, DOCUMENT_SERIES_REVIEW, MANUAL_CA_ADJUSTMENT, NIL_PERIOD_NOT_CONFIRMED |
 | INFORMATION | RULE_SET, FULL_NATIVE_RETURN_ORIGINAL_RETAINED |
+
+GST profile readiness lives in `profileReadiness.ts` and is shared by the engine
+and the GST Reports checklist. Each profile issue carries a specific correction.
+Date boundaries: `effective_from` and `registration_start_date` are inclusive
+starts; `effective_to` is exclusive (a follow-on profile starts on the same
+date); `registration_end_date` is inclusive (the last valid day), so a
+registration ending 31 October 2026 covers the October 2026 period. AATO stays a
+separate `AATO_UNKNOWN` check. Inactive profile rows are loaded only to report
+`GST_PROFILE_INACTIVE` instead of `GST_PROFILE_MISSING` and are excluded from
+the source hash. The UI does not auto-calculate until a saved, unedited profile
+matches the selected frequency and covers every selected period.
 
 Reconciliation codes are `OUTWARD_RATE_HEADERS`, `INWARD_RATE_HEADERS`,
 `OUTWARD_HSN_LINES`, `INWARD_HSN_LINES`, `GSTR1_SECTION_TOTALS`, `GSTR1_TO_3B`,

@@ -21,6 +21,8 @@ export interface GstMonthlySources {
   customers: Customer[];
   suppliers: Supplier[];
   profiles: GstProfile[];
+  /** Inactive rows touching the period. Readiness messaging only; excluded from the source hash. */
+  inactiveProfiles?: GstProfile[];
   aato: GstAato[];
   metadata: GstDocumentMetadata[];
   itcEntries: GstItcLedgerEntry[];
