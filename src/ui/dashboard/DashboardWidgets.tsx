@@ -677,6 +677,9 @@ function RowActions({ invoiceId, invoiceNumber }: { invoiceId: string; invoiceNu
           <Link role="menuitem" to={`/invoices/${invoiceId}`} className={item}>
             View invoice
           </Link>
+          <Link role="menuitem" to={`/invoices/${invoiceId}/edit`} className={item}>
+            Edit invoice
+          </Link>
           <Link role="menuitem" to={`/invoices/${invoiceId}/print`} className={item}>
             Print / PDF
           </Link>
