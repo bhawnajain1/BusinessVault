@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type FormEvent, type KeyboardEvent } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode, type FormEvent, type KeyboardEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertTriangle, BarChart3, Calculator, Calendar, ChevronDown, ChevronRight, CircleDollarSign, ClipboardCheck, Download, FileSpreadsheet, Info, Landmark, PackageCheck, ReceiptIndianRupee, Save, ShieldCheck, ShoppingBag, TableProperties } from 'lucide-react';
 import { gstMonthlyReportService } from '../../domain/gstReporting';
@@ -12,6 +12,7 @@ import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { money, toDateString } from './reportUtils';
 import { log } from '../../lib/log';
 import GstDataTable from './gst/table/GstDataTable';
+import GstMonthlyChart from './gst/GstMonthlyChart';
 import './gstReports.css';
 
 type Workspace = Awaited<ReturnType<GstMonthlyReportService['loadWorkspace']>> & {
@@ -37,6 +38,8 @@ const itcStatuses: BooksItcStatus[] = ['UNREVIEWED', 'ELIGIBLE_IN_BOOKS', 'INELI
 const control = 'block w-full border border-slate-300 rounded px-2 py-1.5 bg-white text-slate-900';
 const button = 'border border-slate-300 rounded px-3 py-2 text-sm hover:bg-slate-100 disabled:opacity-50';
 const linkButton = 'text-indigo-700 underline rounded px-1 py-1 focus-visible:outline focus-visible:outline-2';
+// Zero amounts stay clickable but read as muted text, so real figures stand out.
+const zeroButton = 'text-slate-400 rounded px-1 py-1 hover:text-indigo-700 focus-visible:outline focus-visible:outline-2';
 
 const Table = GstDataTable;
 
@@ -186,6 +189,7 @@ export default function GstSummaryPage() {
   const [exportOpen, setExportOpen] = useState(false);
   const [caExporting, setCaExporting] = useState<'gstr1' | 'purchase' | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [openPeriods, setOpenPeriods] = useState<string[]>([]);
   const nextNoteLine = useRef(2);
   const request = useRef(0);
   const quarterRequest = useRef(0);
@@ -351,7 +355,7 @@ export default function GstSummaryPage() {
   }
   function metric(value: number | null, ids: string[], label: string, result = current, monetary = true) {
     const display = value === null ? 'Not available' : !Number.isFinite(value) || monetary && !Number.isSafeInteger(value) ? 'Invalid source amount' : monetary ? money(value) : value;
-    return <button type="button" className={linkButton} aria-label={`${label}: ${display}. Show contributing sources`} onClick={() => drill(ids, label, result)}>{display}</button>;
+    return <button type="button" className={value === 0 ? zeroButton : linkButton} aria-label={`${label}: ${display}. Show contributing sources`} onClick={() => drill(ids, label, result)}>{display}</button>;
   }
   function amountCells(row: GstAmounts, ids: string[], label: string, result = current) {
     return amounts.map(([key, name]) => metric(row[key], ids, `${label} ${name}`, result));
@@ -530,22 +534,85 @@ export default function GstSummaryPage() {
         <button type="button" className={`gst-metric ${blockingIssueCount ? 'gst-metric-danger' : 'gst-metric-green'}`} onClick={() => changeTab('Validation Issues')}><AlertTriangle size={22} /><span><small>Validation issues</small><strong>{issueCount}</strong><em>{blockingIssueCount ? `${blockingIssueCount} blocking issues` : 'No blocking issues'}</em></span></button>
       </div>
       {blockingIssueCount > 0 && <aside className="gst-issues-banner"><AlertTriangle size={24} /><div><strong>{blockingIssueCount} blocking {blockingIssueCount === 1 ? 'issue must' : 'issues must'} be fixed before finalization</strong><p>Review and resolve validation issues to ensure accurate GST reporting.</p></div><button type="button" onClick={() => changeTab('Validation Issues')}>Review issues <ChevronRight size={16} /></button></aside>}</>}
-      <section className="gst-section-card"><div className="gst-card-heading"><div><BarChart3 size={22} /><div><h2>Monthly comparison</h2><p>Independent monthly calculations for the selected period.</p></div></div><TableProperties size={19} aria-label="Columns available in table" /></div>
-      <Table title="Independent monthly comparison (not a combined return period)" headers={['Month', 'Status', 'Sales documents', 'Net taxable outward', 'Output IGST', 'Output CGST', 'Output SGST', 'Output cess', 'Sales round-off', 'Note effect', 'Purchase documents', 'Purchase taxable', 'Purchase IGST', 'Purchase CGST', 'Purchase SGST', 'Purchase cess', 'Blocking errors', 'Warnings']} rows={visibleResults.map(r => {
-        const o = r.totals.outwardNet, p = r.totals.inwardNet;
-        return [r.period.periodKey, savedResult?.savedStatus ?? r.status, metric(o.document_count, o.source_entity_ids, 'Sales documents', r, false), metric(o.taxable_paise, o.source_entity_ids, 'Outward Taxable', r), ...amounts.slice(1, 5).map(([key, label]) => metric(r.totals.outputLiability[key], outputGstSourceIds(r), `Output ${label}`, r)), metric(o.round_off_paise, o.source_entity_ids, 'Outward round-off', r), metric(r.totals.outwardNotes.total_paise, r.totals.outwardNotes.source_entity_ids, 'Note effect', r), metric(p.document_count, p.source_entity_ids, 'Purchase documents', r, false), ...amountCells(p, p.source_entity_ids, 'Purchase', r).slice(0, 5), ...(['BLOCKING_ERROR', 'WARNING'] as const).map(severity => metric(r.issues.filter(i => i.severity === severity).length, r.issues.filter(i => i.severity === severity).map(i => i.source_entity_id), `${severity} sources`, r, false))];
-      })} /></section>
-      <section className="gst-section-card"><div className="gst-card-heading"><div><CircleDollarSign size={22} /><div><h2>ITC and liability by tax head</h2><p>Books ITC is subject to CA review and GSTR-2B reconciliation.</p></div></div></div><Table title="Monthly ITC and indicative balance by tax head" headers={['Month', 'Measure', 'IGST', 'CGST', 'SGST / UTGST', 'Cess']} rows={visibleResults.flatMap(r => [...itcStatuses, 'TOTAL_BOOKS_TAX', 'NET_APPROVED', 'INDICATIVE_BALANCE'].map(status => {
+      <section className="gst-section-card" aria-labelledby="gst-period-summary-heading"><div className="gst-card-heading"><div><TableProperties size={22} /><div><h2 id="gst-period-summary-heading">Period-wise summary</h2><p>Each month is calculated independently. Select a month to see its full GST breakdown.</p></div></div></div>
+        <div className="gst-period-scroll"><table className="gst-period-table" aria-label="Period-wise GST summary">
+          <thead><tr><th scope="col">Period</th><th scope="col">Status</th><th scope="col" className="num">Sales documents</th><th scope="col" className="num">Taxable sales</th><th scope="col" className="num">Output GST</th><th scope="col" className="num">Taxable purchases</th><th scope="col" className="num">Input GST (ITC)</th><th scope="col" className="num">Actions</th></tr></thead>
+          <tbody>{visibleResults.map(r => {
+            const key = r.period.periodKey, o = r.totals.outwardNet, p = r.totals.inwardNet, open = openPeriods.includes(key);
+            const name = r.period.periodType === 'MONTH' ? `${monthName(key)} ${key.slice(0, 4)}` : key;
+            const blocking = r.issues.filter(i => i.severity === 'BLOCKING_ERROR'), warnings = r.issues.filter(i => i.severity === 'WARNING');
+            const workingStatus = savedResult?.savedStatus ?? r.status;
+            const badge = blocking.length ? ['Blocked', 'gst-badge-blocked'] : workingStatus === 'INCOMPLETE' || workingStatus === 'DRAFT' ? ['Incomplete', 'gst-badge-incomplete'] : ['Complete', 'gst-badge-complete'];
+            const toggle = () => {
+              setCurrentKey(key);
+              setOpenPeriods(keys => open ? keys.filter(k => k !== key) : [...keys, key]);
+              log.info('gst-reports', 'period breakdown toggled', { businessId, period: key, open: !open });
+            };
+            return <Fragment key={key}>
+              <tr className={key === current?.period.periodKey ? 'current' : ''}>
+                <th scope="row"><button type="button" className="gst-period-name" aria-expanded={open} aria-controls={`gst-breakdown-${key}`} aria-label={`${open ? 'Hide' : 'Show'} GST breakdown for ${name}`} onClick={toggle}><ChevronRight size={16} aria-hidden="true" />{name}</button></th>
+                <td><span className={`gst-badge ${badge[1]}`} title={`Working status: ${workingStatus}`}>{badge[0]}</span></td>
+                <td className="num">{metric(o.document_count, o.source_entity_ids, 'Sales documents', r, false)}</td>
+                <td className="num">{metric(o.taxable_paise, o.source_entity_ids, 'Outward Taxable', r)}</td>
+                <td className="num">{metric(taxTotalPaise(r.totals.outputLiability), outputGstSourceIds(r), 'Total output tax', r)}</td>
+                <td className="num">{metric(p.taxable_paise, p.source_entity_ids, 'Purchase Taxable', r)}</td>
+                <td className="num">{metric(taxTotalPaise(r.totals.booksItc.NET_APPROVED), approvedBooksItcSourceIds(r), 'Approved input tax credit', r)}</td>
+                <td className="num"><button type="button" className="gst-row-action" onClick={() => { setCurrentKey(key); setFilter(null); setMetadata(null); setTab('Draft GSTR-3B'); log.info('gst-reports', 'period opened in draft GSTR-3B', { businessId, period: key }); }} aria-label={`Open Draft GSTR-3B for ${name}`}>GSTR-3B</button></td>
+              </tr>
+              {open && <tr className="gst-breakdown-row" id={`gst-breakdown-${key}`}><td colSpan={8}><div className="gst-breakdown">
+                <dl><dt>Output tax</dt>{amounts.slice(1, 5).map(([amountKey, label]) => <div key={amountKey}><dd>{label}</dd><dd>{metric(r.totals.outputLiability[amountKey], outputGstSourceIds(r), `Output ${label}`, r)}</dd></div>)}
+                  <div><dd>Sales round-off</dd><dd>{metric(o.round_off_paise, o.source_entity_ids, 'Outward round-off', r)}</dd></div>
+                  <div><dd>Note effect</dd><dd>{metric(r.totals.outwardNotes.total_paise, r.totals.outwardNotes.source_entity_ids, 'Note effect', r)}</dd></div></dl>
+                <dl><dt>Purchases</dt><div><dd>Purchase documents</dd><dd>{metric(p.document_count, p.source_entity_ids, 'Purchase documents', r, false)}</dd></div>
+                  {amounts.slice(1, 5).map(([amountKey, label]) => <div key={amountKey}><dd>Purchase {label}</dd><dd>{metric(p[amountKey], p.source_entity_ids, `Purchase ${label}`, r)}</dd></div>)}</dl>
+                <dl><dt>Validation</dt><div><dd>Working status</dd><dd>{workingStatus}</dd></div>
+                  <div><dd>Blocking errors</dd><dd>{metric(blocking.length, blocking.map(i => i.source_entity_id), 'BLOCKING_ERROR sources', r, false)}</dd></div>
+                  <div><dd>Warnings</dd><dd>{metric(warnings.length, warnings.map(i => i.source_entity_id), 'WARNING sources', r, false)}</dd></div></dl>
+              </div></td></tr>}
+            </Fragment>;
+          })}</tbody>
+        </table></div>
+      </section>
+      <div className="gst-overview-split">
+      {(() => {
+        // Sum of the selected months' own workings; the calculation itself is unchanged.
+        const output = sumAmounts(visibleResults, r => r.totals.outputLiability), rcm = sumAmounts(visibleResults, r => r.totals.rcmLiability);
+        const itc = sumAmounts(visibleResults, r => r.totals.booksItc.NET_APPROVED), net = sumAmounts(visibleResults, r => r.totals.indicativeWorkingBalance);
+        const showRcm = amounts.slice(1, 5).some(([key]) => rcm[key] !== 0);
+        const rcmIds = (key?: GstAmountKey) => visibleResults.flatMap(r => r.inwardDocuments.filter(d => d.included && d.classification === 'RCM' && (key ? d[key] !== 0 : taxTotalPaise(d) !== 0)).map(d => d.source_entity_id));
+        const cell = (value: number, ids: string[], label: string, due = false) => <button type="button" className={`gst-amount ${value === 0 ? 'zero' : due && value > 0 ? 'due' : ''}`} aria-label={`${label}: ${money(value)}. Show contributing sources`} onClick={() => visibleResults.length === 1 ? drill(ids, label, visibleResults[0]) : drillSelectedMonths(ids, label)}>{money(value)}</button>;
+        return <section className="gst-section-card" aria-labelledby="gst-tax-head-heading"><div className="gst-card-heading"><div><CircleDollarSign size={22} /><div><h2 id="gst-tax-head-heading">ITC and liability by tax head</h2><p>{selectedPeriod?.label ?? 'Selected period'}. Books ITC is subject to CA review and GSTR-2B reconciliation.</p></div></div></div>
+          <div className="gst-period-scroll"><table className="gst-tax-head-table" aria-label="ITC and liability by tax head">
+            <thead><tr><th scope="col">Tax head</th><th scope="col" className="num">Output liability</th>{showRcm && <th scope="col" className="num">Reverse charge</th>}<th scope="col" className="num">Eligible ITC</th><th scope="col" className="num">Net liability</th></tr></thead>
+            <tbody>{amounts.slice(1, 5).map(([key, label]) => <tr key={key}><th scope="row">{label}</th>
+              <td className="num">{cell(output[key], visibleResults.flatMap(outputGstSourceIds), `Output liability ${label}`)}</td>
+              {showRcm && <td className="num">{cell(rcm[key], rcmIds(key), `Reverse charge ${label}`)}</td>}
+              <td className="num">{cell(itc[key], visibleResults.flatMap(r => itcSources(r, 'NET_APPROVED', key)), `Eligible ITC ${label}`)}</td>
+              <td className="num">{cell(net[key], visibleResults.flatMap(indicativeLiabilitySourceIds), `Net liability ${label}`, true)}</td></tr>)}</tbody>
+            <tfoot><tr><th scope="row">Total</th>
+              <td className="num">{cell(taxTotalPaise(output), visibleResults.flatMap(outputGstSourceIds), 'Output liability total')}</td>
+              {showRcm && <td className="num">{cell(taxTotalPaise(rcm), rcmIds(), 'Reverse charge total')}</td>}
+              <td className="num">{cell(taxTotalPaise(itc), visibleResults.flatMap(approvedBooksItcSourceIds), 'Eligible ITC total')}</td>
+              <td className="num">{cell(taxTotalPaise(net), visibleResults.flatMap(indicativeLiabilitySourceIds), 'Net liability total', true)}</td></tr></tfoot>
+          </table></div>
+          <p className="gst-card-note">Net liability = output liability + reverse charge − eligible ITC, before payment and adjustments. A negative figure is credit available.</p>
+          <details className="gst-disclosure" onToggle={e => log.info('gst-reports', 'ITC status breakdown toggled', { open: e.currentTarget.open })}><summary>ITC status breakdown by month</summary>
+            <Table title="Monthly ITC and indicative balance by tax head" headers={['Month', 'Measure', 'IGST', 'CGST', 'SGST / UTGST', 'Cess']} rows={visibleResults.flatMap(r => [...itcStatuses, 'TOTAL_BOOKS_TAX', 'NET_APPROVED', 'INDICATIVE_BALANCE'].map(status => {
         const total = status === 'INDICATIVE_BALANCE' ? r.totals.indicativeWorkingBalance : r.totals.booksItc[status as keyof typeof r.totals.booksItc];
         return [r.period.periodKey, status, ...amounts.slice(1, 5).map(([key, label]) => metric(total[key], status === 'INDICATIVE_BALANCE' ? indicativeLiabilitySourceIds(r) : itcSources(r, status, key), `${status} ${label}`, r))];
-      }))} /></section>
+      }))} />
+          </details>
+        </section>;
+      })()}
+      {!immutable && <GstMonthlyChart businessId={businessId} financialYear={financialYear} frequency={frequency} revision={revision} ready={readyBusiness === businessId} />}
+      </div>
       {!immutable && frequency === 'QRMP' && (() => {
         const period = quarterPeriod(businessId, business?.gstin ?? '', financialYear, quarter);
         const selected = results.filter(r => r.period.periodStart >= period.periodStart && r.period.periodStart < period.nextPeriodStart);
-        return <section className="border rounded p-3"><h2 className="font-semibold">{period.periodKey} quarter analysis, not a statutory return</h2>
-          {quarterResult && <button type="button" className={button} onClick={() => { setCurrentKey(quarterResult.period.periodKey); setTab('GSTR-1 Working'); setFilter(null); setMetadata(null); }}>Open separate QRMP quarter working</button>}
-          <p>Monthly books comparisons below retain IFF supplies. The separate quarter GSTR-1 pending register excludes already-IFF-reported sources; quarter books and Draft GSTR-3B retain them.</p>
-          <p>{selected.length === 3 ? 'All three months calculated independently.' : 'Partial analysis: calculate all three quarter months for a complete comparison.'}</p>
+        return <section className="gst-section-card" aria-labelledby="gst-quarter-heading"><div className="gst-card-heading"><div><Landmark size={22} /><div><h2 id="gst-quarter-heading">{period.periodKey} quarter analysis, not a statutory return</h2><p>{selected.length === 3 ? 'All three months calculated independently.' : 'Partial analysis: calculate all three quarter months for a complete comparison.'}</p></div></div>
+          {quarterResult && <button type="button" className="gst-button gst-button-secondary" onClick={() => { setCurrentKey(quarterResult.period.periodKey); setTab('GSTR-1 Working'); setFilter(null); setMetadata(null); }}>Open separate QRMP quarter working</button>}</div>
+          <p className="gst-card-note">Monthly books comparisons retain IFF supplies. The separate quarter GSTR-1 pending register excludes already-IFF-reported sources; quarter books and Draft GSTR-3B retain them.</p>
+          <details className="gst-disclosure" onToggle={e => log.info('gst-reports', 'quarter analysis tables toggled', { open: e.currentTarget.open })}><summary>Quarter working tables</summary>
           <Table title="Quarter analysis by measure" headers={['Measure', 'Analysis amount']} rows={amounts.map(([key, label]) => {
             const total = selected.reduce((sum, r) => sum + r.totals.outwardNet[key], 0);
             return [label, Number.isSafeInteger(total) ? <button type="button" className={linkButton} onClick={() => { setFilter({ ids: selected.flatMap(r => r.totals.outwardNet.source_entity_ids), label: 'Quarter analysis (selected months)', allMonths: true }); setTab('Source Transactions'); setTimeout(() => sourceHeading.current?.focus(), 0); }}> {money(total)}</button> : 'Unsafe total: analysis unavailable'];
@@ -558,8 +625,9 @@ export default function GstSummaryPage() {
               total += source[key];
                ids.push(...(purchase ? purchase.source_entity_ids : component === 'OUTPUT_LIABILITY' ? outputGstSourceIds(r) : component === 'RCM_LIABILITY' ? r.inwardDocuments.filter(d => d.included && d.classification === 'RCM' && d[key] !== 0).map(d => d.source_entity_id) : component === 'INDICATIVE_BALANCE' ? indicativeLiabilitySourceIds(r) : itcSources(r, component, key)));
             }
-            return Number.isSafeInteger(total) ? <button type="button" className={linkButton} aria-label={`Quarter ${component} ${label}: ${money(total)}. Show contributing sources`} onClick={() => { setFilter({ ids: [...new Set(ids)], label: `Quarter ${component} ${label}`, allMonths: true }); setTab('Source Transactions'); }}>{money(total)}</button> : 'Unsafe total: analysis unavailable';
+            return Number.isSafeInteger(total) ? <button type="button" className={total === 0 ? zeroButton : linkButton} aria-label={`Quarter ${component} ${label}: ${money(total)}. Show contributing sources`} onClick={() => { setFilter({ ids: [...new Set(ids)], label: `Quarter ${component} ${label}`, allMonths: true }); setTab('Source Transactions'); }}>{money(total)}</button> : 'Unsafe total: analysis unavailable';
           })])} />
+          </details>
         </section>;
       })()}
     </>}

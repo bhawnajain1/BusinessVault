@@ -50,3 +50,75 @@
 @media (max-width: 760px) { .gst-reports-page { padding: 18px 16px 34px; gap: 14px; }.gst-page-header { flex-direction: column; }.gst-header-actions { width: 100%; }.gst-header-actions > * { flex: 1 1 150px; }.gst-header-actions .gst-button { width: 100%; }.gst-selection-grid, .gst-period-row, .gst-metrics { grid-template-columns: 1fr; }.gst-issues-banner { align-items: flex-start; flex-direction: column; }.gst-reports-page .gst-issues-banner button { width: 100%; }.gst-profile-summary em { display: none; } }
 @media (max-width: 440px) { .gst-reports-page { padding: 14px 12px 28px; }.gst-page-header h1 { font-size: 26px; }.gst-header-actions { display: grid; grid-template-columns: 1fr; }.gst-export-wrap { width: 100%; }.gst-export-menu { left: 0; right: auto; width: 100%; }.gst-title-line { align-items: flex-start; flex-direction: column; gap: 6px; } }
 @media (prefers-reduced-motion: reduce) { .gst-reports-page *, .gst-reports-page *::before, .gst-reports-page *::after { transition: none !important; } }
+/* Overview: period-wise summary, tax-head table, monthly comparison chart */
+.gst-period-scroll { overflow-x: auto; }
+.gst-period-table, .gst-tax-head-table { width: 100%; border-collapse: collapse !important; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.gst-period-table { min-width: 900px; }
+.gst-tax-head-table { min-width: 460px; }
+.gst-period-table thead th, .gst-tax-head-table thead th { position: sticky; top: 0; z-index: 1; height: 40px; padding: 0 16px; border-bottom: 1px solid rgb(var(--bv-border)); background: rgb(var(--bv-app)) !important; color: rgb(var(--bv-fg-muted)) !important; font-size: 12px !important; font-weight: 650 !important; letter-spacing: 0 !important; text-align: left; text-transform: none !important; }
+.gst-period-table tbody > tr > *, .gst-tax-head-table tbody > tr > *, .gst-tax-head-table tfoot > tr > * { height: 46px; padding: 0 16px; border-bottom: 1px solid rgb(var(--bv-border) / .6); color: rgb(var(--bv-fg)); text-align: left; vertical-align: middle; font-weight: 500; }
+.gst-period-table tbody > tr:not(.gst-breakdown-row):hover, .gst-tax-head-table tbody tr:hover { background: rgb(var(--bv-surface-hover)); }
+.gst-period-table tr.current > th { box-shadow: inset 3px 0 0 rgb(var(--bv-accent)); }
+.gst-period-table .num, .gst-tax-head-table .num { text-align: right !important; }
+.gst-period-table td button, .gst-tax-head-table .gst-amount, .gst-breakdown button { padding: 4px 6px; border-radius: 6px; color: rgb(var(--bv-fg)) !important; font-weight: 600; text-decoration: none; }
+.gst-period-table td button:hover, .gst-tax-head-table .gst-amount:hover, .gst-breakdown button:hover { color: rgb(var(--bv-accent)) !important; text-decoration: underline; }
+.gst-period-table button.text-slate-400, .gst-breakdown button.text-slate-400, .gst-tax-head-table .gst-amount.zero { color: rgb(var(--bv-fg-muted) / .75) !important; font-weight: 500; }
+.gst-tax-head-table .gst-amount.due { color: rgb(var(--bv-danger)) !important; }
+.gst-period-name { display: inline-flex; align-items: center; gap: 6px; color: rgb(var(--bv-fg)); font-weight: 650; }
+.gst-period-name svg { color: rgb(var(--bv-fg-muted)); transition: transform .15s ease; }
+.gst-period-name[aria-expanded="true"] svg { transform: rotate(90deg); color: rgb(var(--bv-accent)); }
+.gst-period-name:hover { color: rgb(var(--bv-accent)); }
+.gst-reports-page .gst-period-table .gst-row-action { padding: 5px 10px; border: 1px solid rgb(var(--bv-border-strong)); border-radius: 7px; color: rgb(var(--bv-accent)) !important; font-size: 12px; font-weight: 650; }
+.gst-reports-page .gst-period-table .gst-row-action:hover { background: rgb(var(--bv-accent) / .06); text-decoration: none; }
+.gst-badge { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 650; }
+.gst-badge-complete { background: rgb(var(--bv-success-bg)); color: rgb(var(--bv-success)); }
+.gst-badge-incomplete { background: rgb(var(--bv-warning-bg)); color: rgb(var(--bv-warning)); }
+.gst-badge-blocked { background: rgb(var(--bv-danger-bg)); color: rgb(var(--bv-danger)); }
+.gst-breakdown-row > td { padding: 0 !important; background: rgb(var(--bv-app) / .6); }
+.gst-breakdown { padding: 14px 16px 16px 40px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 28px; white-space: normal; }
+.gst-breakdown dl { margin: 0; }
+.gst-breakdown dt { margin-bottom: 6px; color: rgb(var(--bv-fg-muted)); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.gst-breakdown dl > div { min-height: 30px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px dashed rgb(var(--bv-border) / .8); }
+.gst-breakdown dd { margin: 0; font-size: 13px; }
+.gst-breakdown dd:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.gst-tax-head-table tfoot > tr > * { border-bottom: 0; background: rgb(var(--bv-accent) / .07); font-weight: 750; }
+.gst-card-note { margin: 0; padding: 10px 16px; color: rgb(var(--bv-fg-muted)); font-size: 12px; line-height: 1.45; }
+.gst-disclosure { border-top: 1px solid rgb(var(--bv-border)); }
+.gst-disclosure > summary { padding: 11px 16px; color: rgb(var(--bv-accent)); font-size: 13px; font-weight: 650; cursor: pointer; list-style-position: inside; }
+.gst-disclosure > summary:hover { background: rgb(var(--bv-surface-hover)); }
+.gst-disclosure[open] > summary { border-bottom: 1px solid rgb(var(--bv-border)); }
+.gst-overview-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; align-items: start; }
+.gst-chart-toggle { display: inline-flex; padding: 3px; border: 1px solid rgb(var(--bv-border)); border-radius: 9px; background: rgb(var(--bv-app)); }
+.gst-chart-toggle button { height: 30px; padding: 0 12px; border-radius: 7px; color: rgb(var(--bv-fg-muted)); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.gst-chart-toggle button.active { background: rgb(var(--bv-surface)); color: rgb(var(--bv-accent)); box-shadow: 0 1px 3px rgb(15 23 42 / .1); }
+.gst-chart-body { padding: 16px; }
+.gst-chart-legend { margin-bottom: 14px; display: flex; gap: 18px; color: rgb(var(--bv-fg-muted)); font-size: 13px; }
+.gst-chart-legend span, .gst-chart-tooltip span { display: inline-flex; align-items: center; gap: 7px; }
+.gst-chart-legend i, .gst-chart-tooltip i { width: 10px; height: 10px; border-radius: 999px; }
+.gst-bar-sales { background: #4f46e5; }
+.gst-bar-purchases { background: #059669; }
+.gst-chart-message { margin: 0; padding: 36px 8px; color: rgb(var(--bv-fg-muted)); font-size: 13px; text-align: center; }
+.gst-chart-frame { display: flex; gap: 10px; }
+.gst-chart-axis { position: relative; height: 220px; flex: 0 0 auto; color: rgb(var(--bv-fg-muted)); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
+.gst-chart-axis span { position: absolute; right: 0; transform: translateY(-50%); white-space: nowrap; }
+.gst-chart-axis .gst-chart-axis-width { position: static; display: block; height: 0; overflow: hidden; visibility: hidden; transform: none; }
+.gst-chart-plot-wrap { min-width: 0; flex: 1; }
+.gst-chart-plot { position: relative; height: 220px; }
+.gst-chart-grid { position: absolute; left: 0; right: 0; border-top: 1px dashed rgb(var(--bv-border)); }
+.gst-chart-grid.base { border-top-style: solid; border-color: rgb(var(--bv-border-strong)); }
+.gst-chart-overlay { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; pointer-events: none; }
+.gst-chart-overlay p { margin: 0; padding: 6px 12px; border-radius: 8px; background: rgb(var(--bv-surface) / .92); color: rgb(var(--bv-fg-muted)); font-size: 13px; }
+.gst-chart-bars { position: absolute; inset: 0; display: flex; align-items: flex-end; }
+.gst-chart-month { position: relative; height: 100%; min-width: 0; flex: 1; display: flex; align-items: flex-end; justify-content: center; gap: 3px; padding: 0 3px; border-radius: 6px; outline: none; }
+.gst-chart-month.active { background: rgb(var(--bv-app)); }
+.gst-chart-month:focus-visible { box-shadow: 0 0 0 2px rgb(var(--bv-accent)); }
+.gst-bar { width: 100%; max-width: 16px; border-radius: 4px 4px 0 0; transition: height .2s ease; }
+.gst-chart-tooltip { position: absolute; top: 6px; z-index: 3; min-width: 200px; padding: 9px 12px; border: 1px solid rgb(var(--bv-border)); border-radius: 9px; background: rgb(var(--bv-surface)); box-shadow: 0 10px 24px rgb(15 23 42 / .12); display: grid; gap: 5px; font-size: 12px; pointer-events: none; }
+.gst-chart-tooltip.start { left: 0; }.gst-chart-tooltip.end { right: 0; }.gst-chart-tooltip.middle { left: 50%; transform: translateX(-50%); }
+.gst-chart-tooltip strong { color: rgb(var(--bv-fg)); font-size: 12px; }
+.gst-chart-tooltip span { justify-content: flex-start; color: rgb(var(--bv-fg-muted)); }
+.gst-chart-tooltip b { margin-left: auto; padding-left: 14px; color: rgb(var(--bv-fg)); font-variant-numeric: tabular-nums; }
+.gst-chart-labels { margin-top: 8px; display: flex; }
+.gst-chart-labels span { min-width: 0; flex: 1; overflow: hidden; color: rgb(var(--bv-fg-muted)); font-size: 11px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1100px) { .gst-overview-split { grid-template-columns: 1fr; } .gst-breakdown { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .gst-breakdown { padding-left: 16px; grid-template-columns: 1fr; } .gst-chart-card .gst-card-heading { flex-direction: column; align-items: flex-start; gap: 10px; } .gst-chart-axis, .gst-chart-plot { height: 180px; } }

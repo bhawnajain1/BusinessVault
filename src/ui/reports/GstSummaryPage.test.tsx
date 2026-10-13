@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({ loadWorkspace: vi.fn(), loadSavedReport: vi.fn
 vi.mock('../../lib/business', () => ({ setCurrentBusinessId: mocks.setBusiness }));
 vi.mock('../../domain/gstReporting', () => ({ gstMonthlyReportService: mocks }));
 vi.mock('../../domain/gstReporting/exports', () => ({ downloadGstr1CaWorkbook: mocks.excel, downloadMonthlyGstExcel: mocks.excel, downloadMonthlyGstCsv: mocks.csv, downloadMonthlyGstPdf: mocks.pdf, downloadMonthlyGstJson: mocks.json, downloadPurchaseCaWorkbook: mocks.excel }));
+// The FY chart runs its own calculateMonths call; it has its own test file.
+vi.mock('./gst/GstMonthlyChart', () => ({ default: () => null }));
 vi.mock('../hooks/useActiveBusiness', () => ({ useActiveBusiness: () => ({ businessId: 'business-a', deviceId: 'device-a', loading: false, error: null }) }));
 
 const empty: GstAmounts = { taxable_paise: 0, igst_paise: 0, cgst_paise: 0, sgst_paise: 0, cess_paise: 0, pre_round_total_paise: 0, round_off_paise: 0, total_paise: 0 };
@@ -280,9 +282,56 @@ describe('GST report workspace', () => {
     });
     await open();
     await screen.findByText('Calculated independent monthly workings. No return has been filed.');
+    expect(screen.queryByRole('button', { name: 'Output IGST: 9.00. Show contributing sources' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Show GST breakdown for / }));
     fireEvent.click(screen.getByRole('button', { name: 'Output IGST: 9.00. Show contributing sources' }));
     expect(screen.getByRole('link', { name: 'LIABLE' })).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'SUPPLIER95' })).toBeNull();
+  });
+
+  it('summarises each period in a compact row with status badge and an expandable breakdown', async () => {
+    mocks.calculateMonths.mockImplementationOnce(async (_b: string, keys: string[]) => {
+      const r = calculation(keys[0]);
+      r.totals.outwardNet = { ...summary, taxable_paise: 50_000, document_count: 2 };
+      r.totals.outputLiability = { ...empty, cgst_paise: 4500, sgst_paise: 4500 };
+      r.issues = [{ code: 'X', severity: 'BLOCKING_ERROR', message: 'Missing GSTIN', source_entity_type: 'INVOICE', source_entity_id: 'inv-1' } as MonthlyGstCalculation['issues'][number]];
+      return [r];
+    });
+    await open();
+    const table = screen.getByRole('table', { name: 'Period-wise GST summary' });
+    expect(within(table).getAllByRole('columnheader').map(h => h.textContent)).toEqual(['Period', 'Status', 'Sales documents', 'Taxable sales', 'Output GST', 'Taxable purchases', 'Input GST (ITC)', 'Actions']);
+    expect(within(table).getByText('Blocked')).toBeTruthy();
+    expect(within(table).getByRole('button', { name: 'Total output tax: 90.00. Show contributing sources' })).toBeTruthy();
+    expect(within(table).getByRole('button', { name: 'Purchase Taxable: 0.00. Show contributing sources' }).className).toContain('text-slate-400');
+    const toggle = within(table).getByRole('button', { name: /^Show GST breakdown for [A-Z][a-z]+ \d{4}$/ });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(within(table).getByRole('button', { name: 'Output CGST: 45.00. Show contributing sources' })).toBeTruthy();
+    expect(within(table).getByRole('button', { name: 'BLOCKING_ERROR sources: 1. Show contributing sources' })).toBeTruthy();
+    expect(within(table).getByText('INCOMPLETE')).toBeTruthy();
+    fireEvent.click(within(table).getByRole('button', { name: /^Open Draft GSTR-3B for / }));
+    expect(screen.getByRole('tab', { name: 'Draft GSTR-3B' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('shows liability by tax head with a total row and red only for a payable net balance', async () => {
+    mocks.calculateMonths.mockImplementationOnce(async (_b: string, keys: string[]) => {
+      const r = calculation(keys[0]);
+      r.totals.outputLiability = { ...empty, igst_paise: 1800, cgst_paise: 300 };
+      r.totals.booksItc.NET_APPROVED = { ...empty, igst_paise: 900, cgst_paise: 500 };
+      r.totals.indicativeWorkingBalance = { ...empty, igst_paise: 900, cgst_paise: -200 };
+      return [r];
+    });
+    await open();
+    const table = screen.getByRole('table', { name: 'ITC and liability by tax head' });
+    expect(within(table).getAllByRole('rowheader').map(h => h.textContent)).toEqual(['IGST', 'CGST', 'SGST / UTGST', 'Cess', 'Total']);
+    expect(within(table).queryByRole('columnheader', { name: 'Reverse charge' })).toBeNull();
+    expect(within(table).getByRole('button', { name: 'Net liability IGST: 9.00. Show contributing sources' }).className).toContain('due');
+    expect(within(table).getByRole('button', { name: 'Net liability CGST: -2.00. Show contributing sources' }).className).not.toContain('due');
+    expect(within(table).getByRole('button', { name: 'Output liability total: 21.00. Show contributing sources' })).toBeTruthy();
+    expect(within(table).getByRole('button', { name: 'Eligible ITC total: 14.00. Show contributing sources' })).toBeTruthy();
+    expect(within(table).getByRole('button', { name: 'Net liability total: 7.00. Show contributing sources' })).toBeTruthy();
+    expect(screen.getByText('ITC status breakdown by month')).toBeTruthy();
   });
 
   it('drills each tax-only overview card into only its contributing sources', async () => {
@@ -546,7 +595,7 @@ describe('GST report workspace', () => {
     expect(Array.from(periodSelect().options).map(o => o.textContent)).toEqual([
       `Q1 — April to June ${year}`, `Q2 — July to September ${year}`, `Q3 — October to December ${year}`, `Q4 — January to March ${year + 1}`,
     ]);
-    expect(screen.getByRole('table', { name: 'Independent monthly comparison (not a combined return period)' })).toBeTruthy();
+    expect(screen.getByRole('table', { name: 'Period-wise GST summary' })).toBeTruthy();
   });
 
   it('shows a selected-months analysis total without merging monthly return workings', async () => {
@@ -560,7 +609,7 @@ describe('GST report workspace', () => {
     await finished();
     expect(screen.getByText('Total across 3 independently calculated months. This is for review only, not a combined GST return period.')).toBeTruthy();
     expect(within(screen.getByRole('heading', { name: 'Selected-months analysis' }).closest('section')!).getByText('600.00')).toBeTruthy();
-    expect(screen.getByRole('table', { name: 'Independent monthly comparison (not a combined return period)' })).toBeTruthy();
+    expect(screen.getByRole('table', { name: 'Period-wise GST summary' })).toBeTruthy();
   });
 
   it('announces calculation failures without leaving busy controls', async () => {
