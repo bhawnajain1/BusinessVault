@@ -128,8 +128,17 @@ export async function getCustomerDueForInvoice(
   }
 
   const advances = await db.advances.where('business_id').equals(invoice.business_id).toArray();
+  // Money the customer paid on account before this invoice and had not yet used.
+  // Applications to this invoice count in Received, so they never offset Previous Due too.
+  let unusedAdvanceBefore = 0;
   for (const advance of advances) {
     if (advance.deleted_at || advance.party_type !== 'customer' || advance.party_id !== invoice.customer_id) continue;
+    if (transactionKey(advance) < cutoff) {
+      const usedBefore = advance.applications
+        .filter((application) => application.invoice_id === invoiceId || application.applied_at < cutoff)
+        .reduce((sum, application) => sum + application.amount_paise, 0);
+      unusedAdvanceBefore += Math.max(0, advance.amount_paise - usedBefore);
+    }
     for (const application of advance.applications) {
       if (application.invoice_id === invoiceId) receivedForInvoice += application.amount_paise;
       if (!application.invoice_id || !priorInvoiceIds.has(application.invoice_id)) continue;
@@ -163,13 +172,17 @@ export async function getCustomerDueForInvoice(
     )
     .toArray();
   const customer = await db.customers.get(invoice.customer_id);
-  const previousDue = computeReceivables(
+  const grossPreviousDue = computeReceivables(
     [...priorOriginals, ...priorCreditNotes],
     invoice.invoice_date,
     [],
     customer ? [customer] : [],
     priorReturns,
   ).perCustomer.find((row) => row.customer_id === invoice.customer_id)?.outstanding_paise ?? 0;
+  const previousDue = Math.max(0, grossPreviousDue - unusedAdvanceBefore);
+  log.info('partyLedger', 'previous due for invoice', {
+    invoiceId, customerId: invoice.customer_id, grossPreviousDue, unusedAdvanceBefore, previousDue,
+  });
 
   const received = Math.max(0, receivedForInvoice);
   const balance = Math.max(0, invoice.total_paise - received);

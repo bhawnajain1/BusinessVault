@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.1.3 — 2026-10-13
+
+### Fixed
+
+- Invoice **Previous Due** now deducts money the customer paid on account (advance / payment-in held without an invoice) before that invoice was created. Previously only payments allocated to earlier invoices were deducted, so Total Due was overstated. Advances used on the invoice itself still show under Received and are not deducted twice; payments made after the invoice are still left out so a printed invoice stays a snapshot. Previous Due never goes below zero.
+
 ## 1.1.2 — 2026-10-13
 
 ### Fixed

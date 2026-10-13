@@ -402,6 +402,48 @@ describe('getCustomerDueForInvoice', () => {
     });
   });
 
+  it('subtracts money paid on account (advance) before the invoice from Previous Due', async () => {
+    await dueDb.customers.add(mkCust({ id: 'C1' }));
+    const prior = mkInv({ id: 'A', total_paise: 100_000 });
+    prior.created_at = '2026-08-01T09:00:00.000Z';
+    const current = mkInv({ id: 'B', total_paise: 50_000 });
+    current.created_at = '2026-08-03T09:00:00.000Z';
+    await dueDb.invoices.bulkAdd([prior, current]);
+    const advance = (id: string, createdAt: string, amount: number, applications: Advance['applications'] = []): Advance => ({
+      id, business_id: 'B', advance_number: id, advance_date: createdAt.slice(0, 10), party_type: 'customer', party_id: 'C1',
+      method: 'cash', account_id: 'cash', amount_paise: amount, remaining_paise: amount, reference: '', notes: '',
+      applications, journal_entry_id: `JE-${id}`, created_at: createdAt, updated_at: createdAt, entity_version: 1,
+    });
+    await dueDb.advances.bulkAdd([
+      advance('ADV-1', '2026-08-02T09:00:00.000Z', 30_000),
+      // Used on this invoice: shows in Received, must not also reduce Previous Due.
+      advance('ADV-2', '2026-08-02T10:00:00.000Z', 10_000, [{ invoice_id: 'B', amount_paise: 10_000, applied_at: '2026-08-03T09:30:00.000Z', journal_entry_id: 'JE-X' }]),
+      // Paid after the invoice: not part of the snapshot.
+      advance('ADV-3', '2026-08-04T09:00:00.000Z', 99_000),
+    ]);
+    await expect(getCustomerDueForInvoice('B', dueDb)).resolves.toEqual({
+      received_paise: 10_000,
+      balance_paise: 40_000,
+      previous_due_paise: 70_000,
+      total_due_paise: 110_000,
+    });
+  });
+
+  it('never lets Previous Due go negative when advances exceed what was owed', async () => {
+    await dueDb.customers.add(mkCust({ id: 'C1' }));
+    const prior = mkInv({ id: 'A', total_paise: 10_000 });
+    prior.created_at = '2026-08-01T09:00:00.000Z';
+    const current = mkInv({ id: 'B', total_paise: 5_000 });
+    current.created_at = '2026-08-03T09:00:00.000Z';
+    await dueDb.invoices.bulkAdd([prior, current]);
+    await dueDb.advances.add({
+      id: 'ADV', business_id: 'B', advance_number: 'ADV', advance_date: '2026-08-02', party_type: 'customer', party_id: 'C1',
+      method: 'cash', account_id: 'cash', amount_paise: 50_000, remaining_paise: 50_000, reference: '', notes: '',
+      applications: [], journal_entry_id: 'JE', created_at: '2026-08-02T09:00:00.000Z', updated_at: '2026-08-02T09:00:00.000Z', entity_version: 1,
+    });
+    await expect(getCustomerDueForInvoice('B', dueDb)).resolves.toMatchObject({ previous_due_paise: 0, total_due_paise: 5_000 });
+  });
+
   it('orders same-day invoices by created time and remains stable when later payments are added', async () => {
     await dueDb.customers.add(mkCust({ id: 'C1' }));
     const first = mkInv({ id: 'A', total_paise: 100_000 });
