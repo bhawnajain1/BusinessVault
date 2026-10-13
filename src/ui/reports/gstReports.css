@@ -122,3 +122,17 @@
 .gst-chart-labels span { min-width: 0; flex: 1; overflow: hidden; color: rgb(var(--bv-fg-muted)); font-size: 11px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1100px) { .gst-overview-split { grid-template-columns: 1fr; } .gst-breakdown { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .gst-breakdown { padding-left: 16px; grid-template-columns: 1fr; } .gst-chart-card .gst-card-heading { flex-direction: column; align-items: flex-start; gap: 10px; } .gst-chart-axis, .gst-chart-plot { height: 180px; } }
+/* The app-wide action palette (index.css) paints every button without a bg-*
+   class solid indigo with white text. Inside GST tables, breakdowns and the
+   chart toggle, buttons are clickable figures, so render them as plain text. */
+.gst-reports-page :is(.gst-period-table, .gst-tax-head-table, .gst-data-table, .gst-breakdown, .gst-chart-toggle) button { border-color: transparent !important; background: transparent !important; box-shadow: none !important; }
+.gst-reports-page .gst-data-table button.text-indigo-700 { color: rgb(var(--bv-accent)) !important; font-weight: 600; }
+.gst-reports-page .gst-data-table button.text-slate-400 { color: rgb(var(--bv-fg-muted) / .75) !important; text-decoration: none; }
+.gst-reports-page .gst-period-table .gst-row-action { border-color: rgb(var(--bv-border-strong)) !important; background: rgb(var(--bv-surface)) !important; }
+.gst-reports-page .gst-period-table .gst-row-action:hover { border-color: rgb(var(--bv-accent)) !important; background: rgb(var(--bv-accent) / .06) !important; }
+.gst-reports-page .gst-chart-toggle button { color: rgb(var(--bv-fg-muted)) !important; }
+.gst-reports-page .gst-chart-toggle button.active { background: rgb(var(--bv-surface)) !important; color: rgb(var(--bv-accent)) !important; box-shadow: 0 1px 3px rgb(15 23 42 / .1) !important; }
+/* Row labels are <th scope="row">; keep them out of the app's uppercase column-header style. */
+.gst-reports-page :is(.gst-period-table, .gst-tax-head-table) :is(tbody, tfoot) th { color: rgb(var(--bv-fg)) !important; font-size: 13px !important; font-weight: 650 !important; letter-spacing: 0 !important; text-transform: none !important; }
+/* Overview cards sit directly in the tab panel, which has no gap of its own. */
+.gst-reports-page [role="tabpanel"] > * + :is(.gst-section-card, .gst-overview-split) { margin-top: 16px; }
