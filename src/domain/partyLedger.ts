@@ -172,16 +172,22 @@ export async function getCustomerDueForInvoice(
     )
     .toArray();
   const customer = await db.customers.get(invoice.customer_id);
-  const grossPreviousDue = computeReceivables(
+  const previousRow = computeReceivables(
     [...priorOriginals, ...priorCreditNotes],
     invoice.invoice_date,
     [],
     customer ? [customer] : [],
     priorReturns,
-  ).perCustomer.find((row) => row.customer_id === invoice.customer_id)?.outstanding_paise ?? 0;
-  const previousDue = Math.max(0, grossPreviousDue - unusedAdvanceBefore);
+  ).perCustomer.find((row) => row.customer_id === invoice.customer_id);
+  // Ledger view: opening balance + earlier invoices - credit notes/returns - payments in.
+  // `advance_paise` is customer credit (negative opening balance, overpaid invoices);
+  // unusedAdvanceBefore is money paid on account. Either one reduces what is owed, and a
+  // net credit shows as a negative Previous Due that offsets this invoice.
+  const owedBefore = previousRow?.outstanding_paise ?? 0;
+  const creditBefore = (previousRow?.advance_paise ?? 0) + unusedAdvanceBefore;
+  const previousDue = owedBefore - creditBefore;
   log.info('partyLedger', 'previous due for invoice', {
-    invoiceId, customerId: invoice.customer_id, grossPreviousDue, unusedAdvanceBefore, previousDue,
+    invoiceId, customerId: invoice.customer_id, owedBefore, creditBefore, previousDue,
   });
 
   const received = Math.max(0, receivedForInvoice);
@@ -190,7 +196,7 @@ export async function getCustomerDueForInvoice(
     received_paise: received,
     balance_paise: balance,
     previous_due_paise: previousDue,
-    total_due_paise: previousDue + balance,
+    total_due_paise: Math.max(0, previousDue + balance),
   };
 }
 

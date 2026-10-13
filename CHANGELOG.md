@@ -8,7 +8,7 @@ per-PR-version-bump policy.
 
 ### Fixed
 
-- Invoice **Previous Due** now deducts money the customer paid on account (advance / payment-in held without an invoice) before that invoice was created. Previously only payments allocated to earlier invoices were deducted, so Total Due was overstated. Advances used on the invoice itself still show under Received and are not deducted twice; payments made after the invoice are still left out so a printed invoice stays a snapshot. Previous Due never goes below zero.
+- Invoice **Previous Due** is now the customer's full ledger balance at the time the invoice was created: opening balance (a negative opening balance counts as credit) + earlier invoices - credit notes and returns - payments in, including money paid on account (advance) that was not yet used. Previously only payments allocated to earlier invoices were deducted, so Total Due was overstated. If the customer has net credit, Previous Due is negative and offsets the invoice (Total Due never below zero). Advances used on the invoice itself still show under Received and are not deducted twice; payments made after the invoice are left out, so only invoices created after a payment reflect it and printed invoices stay snapshots.
 
 ## 1.1.2 — 2026-10-13
 

@@ -429,7 +429,7 @@ describe('getCustomerDueForInvoice', () => {
     });
   });
 
-  it('never lets Previous Due go negative when advances exceed what was owed', async () => {
+  it('carries customer credit (advance above what was owed) as a negative Previous Due that offsets the invoice', async () => {
     await dueDb.customers.add(mkCust({ id: 'C1' }));
     const prior = mkInv({ id: 'A', total_paise: 10_000 });
     prior.created_at = '2026-08-01T09:00:00.000Z';
@@ -441,7 +441,29 @@ describe('getCustomerDueForInvoice', () => {
       method: 'cash', account_id: 'cash', amount_paise: 50_000, remaining_paise: 50_000, reference: '', notes: '',
       applications: [], journal_entry_id: 'JE', created_at: '2026-08-02T09:00:00.000Z', updated_at: '2026-08-02T09:00:00.000Z', entity_version: 1,
     });
-    await expect(getCustomerDueForInvoice('B', dueDb)).resolves.toMatchObject({ previous_due_paise: 0, total_due_paise: 5_000 });
+    await expect(getCustomerDueForInvoice('B', dueDb)).resolves.toMatchObject({ previous_due_paise: -40_000, balance_paise: 5_000, total_due_paise: 0 });
+  });
+
+  it('includes a negative opening balance and credit notes: opening + invoices - credit notes - payments', async () => {
+    await dueDb.customers.add(mkCust({ id: 'C1', opening_balance_paise: 20_000 }));
+    const prior = mkInv({ id: 'A', total_paise: 100_000 });
+    prior.created_at = '2026-08-01T09:00:00.000Z';
+    const creditNote = mkInv({ id: 'CN', total_paise: -30_000, reverses_invoice_id: 'A' });
+    creditNote.created_at = '2026-08-01T10:00:00.000Z';
+    const current = mkInv({ id: 'B', total_paise: 50_000 });
+    current.created_at = '2026-08-03T09:00:00.000Z';
+    await dueDb.invoices.bulkAdd([prior, creditNote, current]);
+    await dueDb.payments.add({
+      id: 'PAY-A', business_id: 'B', payment_number: 'PAY-A', payment_date: '2026-08-02',
+      direction: 'in', party_type: 'customer', party_id: 'C1', method: 'cash',
+      bank_name: null, account_id: 'cash', amount_paise: 25_000, reference: '', notes: '',
+      allocations: [{ invoice_id: 'A', amount_paise: 25_000 }], journal_entry_id: 'JE-A',
+      created_at: '2026-08-02T12:00:00.000Z', updated_at: '2026-08-02T12:00:00.000Z', entity_version: 1,
+    });
+    // 20,000 opening + 100,000 invoice - 30,000 credit note - 25,000 payment = 65,000
+    await expect(getCustomerDueForInvoice('B', dueDb)).resolves.toMatchObject({ previous_due_paise: 65_000, total_due_paise: 115_000 });
+    await dueDb.customers.update('C1', { opening_balance_paise: -20_000 });
+    await expect(getCustomerDueForInvoice('B', dueDb)).resolves.toMatchObject({ previous_due_paise: 25_000, total_due_paise: 75_000 });
   });
 
   it('orders same-day invoices by created time and remains stable when later payments are added', async () => {
