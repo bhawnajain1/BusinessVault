@@ -4,19 +4,17 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
-## 1.0.100 — 2026-10-13
-
-### Fixed
-
-- Purchases: a bill can now be edited to correct a data-entry mistake. **Edit bill** on the bill page (and **Edit** in the purchases list) opens `/purchases/:id/edit` with the bill prefilled; previously the list's Edit button opened a blank New Purchase form. Saving keeps the bill number, reverses the original posting and re-posts the corrected bill (the original stays as a cancelled audit row linked to the correction) and opens the corrected bill. Lines keep their original warehouse. Edit is disabled, with the reason shown, for cancelled bills, bills with a purchase return and bills with payments applied.
-- Purchase edits are now all-or-nothing: if the corrected bill fails validation (zero quantity, bad HSN, duplicate bill number), the reversal is rolled back and the original bill, journal and stock are left untouched instead of being cancelled with no replacement.
-
-## 1.0.99 — 2026-10-13
+## 1.1.0 — 2026-10-13
 
 ### Changed
 
 - GST Reports: the 12-month checkbox grid, Select all / Clear and the separate Quarter picker are replaced by one **Reporting period** dropdown under Business, GSTIN, Financial year (now a dropdown, e.g. 2026–27) and Filing frequency. Monthly lists April–March of the chosen FY ("October 2026"); Quarterly (QRMP) lists "Q1 — April to June 2026" … "Q4 — January to March 2027". The chosen period is confirmed as "October 2026 selected". Changing frequency keeps the period that contains the current selection (a month maps to its quarter, a quarter to its first month); changing FY resets to the period containing today, otherwise April / Q1. Every change clears the previous figures and recalculates, so old numbers never show under a new period. Calculation, tax rules, snapshots and exports are unchanged; a quarter still calculates its three months independently plus the separate quarter working.
 - GST Reports Overview: the bottom tables are redesigned, summary first. A **Period-wise summary** (Period, Status, Sales documents, Taxable sales, Output GST, Taxable purchases, Input GST (ITC), Actions) replaces the 18-column comparison. Months read "October 2026", status shows as soft Complete / Incomplete / Blocked badges, and zero values are muted. Selecting a month opens its full breakdown (output IGST/CGST/SGST/cess, round-off, note effect, purchase tax heads, blocking errors, warnings, working status). **ITC and liability by tax head** is a compact IGST / CGST / SGST / Cess table (Output liability, Reverse charge when present, Eligible ITC, Net liability) with an indigo Total row; only a payable net balance is red. The full ITC status table and the QRMP quarter working tables are behind "Show" disclosures. A new **Monthly comparison** bar chart (indigo sales, emerald purchases, hover tooltips) switches between the financial year and the last 6 months. Every figure still drills into its source transactions, and calculations, statuses, exports and snapshots are unchanged.
+
+### Fixed
+
+- Purchases: a bill can now be edited to correct a data-entry mistake. **Edit bill** on the bill page (and **Edit** in the purchases list) opens `/purchases/:id/edit` with the bill prefilled; previously the list's Edit button opened a blank New Purchase form. Saving keeps the bill number, reverses the original posting and re-posts the corrected bill (the original stays as a cancelled audit row linked to the correction) and opens the corrected bill. Lines keep their original warehouse. Edit is disabled, with the reason shown, for cancelled bills, bills with a purchase return and bills with payments applied.
+- Purchase edits are now all-or-nothing: if the corrected bill fails validation (zero quantity, bad HSN, duplicate bill number), the reversal is rolled back and the original bill, journal and stock are left untouched instead of being cancelled with no replacement.
 
 ## 1.0.98 — 2026-10-13
 
