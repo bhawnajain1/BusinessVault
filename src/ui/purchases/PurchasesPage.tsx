@@ -21,6 +21,7 @@ import StatusBadge from '../components/StatusBadge';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { addDaysYmd } from '../../lib/date';
 import { log } from '../../lib/log';
+import { DateWithTime, formatDateTimeCsv } from '../components/DateTime';
 
 const STATUSES: PurchaseStatus[] = ['draft', 'received', 'partial', 'paid', 'cancelled'];
 
@@ -179,7 +180,7 @@ export default function PurchasesPage() {
         </Link>
       ),
     },
-    { key: 'bill_date', header: 'Date', render: (r) => r.bill_date },
+    { key: 'bill_date', header: 'Date', render: (r) => <DateWithTime date={r.bill_date} at={r.created_at} /> },
     {
       key: 'supplier',
       header: 'Supplier',
@@ -258,6 +259,7 @@ export default function PurchasesPage() {
         { header: 'Bill #', get: (r: Purchase) => r.bill_number },
         { header: 'Supplier Bill #', get: (r: Purchase) => r.supplier_bill_number },
         { header: 'Date', get: (r: Purchase) => r.bill_date },
+        { header: 'Created At', get: (r: Purchase) => formatDateTimeCsv(r.created_at) },
         {
           header: 'Supplier',
           get: (r: Purchase) => supplierById.get(r.supplier_id)?.name ?? r.supplier_id,

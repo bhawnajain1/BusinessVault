@@ -8,6 +8,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import StatusBadge from '../components/StatusBadge';
 import { paginateCollection, matchesText } from '../components/pagination';
+import { DateWithTime, formatDateTimeCsv } from '../components/DateTime';
 
 const STATUSES: InvoiceStatus[] = ['draft', 'issued', 'partial', 'paid', 'cancelled'];
 
@@ -130,7 +131,7 @@ export default function InvoicesPage() {
         </Link>
       ),
     },
-    { key: 'invoice_date', header: 'Date', sortValue: (r) => r.invoice_date, render: (r) => r.invoice_date },
+    { key: 'invoice_date', header: 'Date', sortValue: (r) => r.invoice_date, render: (r) => <DateWithTime date={r.invoice_date} at={r.created_at} /> },
     {
       key: 'customer',
       header: 'Customer',
@@ -222,6 +223,7 @@ export default function InvoicesPage() {
       columns: [
         { header: 'Invoice #', get: (r: Invoice) => r.invoice_number },
         { header: 'Date', get: (r: Invoice) => r.invoice_date },
+        { header: 'Created At', get: (r: Invoice) => formatDateTimeCsv(r.created_at) },
         { header: 'Due Date', get: (r: Invoice) => r.due_date ?? '' },
         {
           header: 'Customer',

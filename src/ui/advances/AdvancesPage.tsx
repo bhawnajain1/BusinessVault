@@ -17,6 +17,7 @@ import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { AdvanceService } from '../../domain/AdvanceService';
 import { isActivePurchase } from '../../domain/partyLedger';
+import { DateWithTime, formatDateTimeCsv } from '../components/DateTime';
 
 const METHODS: PaymentMethod[] = ['cash', 'card', 'upi', 'bank', 'cheque'];
 
@@ -267,7 +268,7 @@ export default function AdvancesPage() {
       filterable: true,
       render: (r) => r.advance_number,
     },
-    { key: 'advance_date', header: 'Date', render: (r) => r.advance_date },
+    { key: 'advance_date', header: 'Date', render: (r) => <DateWithTime date={r.advance_date} at={r.created_at} /> },
     {
       key: 'direction',
       header: 'Type',
@@ -339,6 +340,7 @@ export default function AdvancesPage() {
       columns: [
         { header: 'Advance #', get: (r: Advance) => r.advance_number },
         { header: 'Date', get: (r: Advance) => r.advance_date },
+        { header: 'Created At', get: (r: Advance) => formatDateTimeCsv(r.created_at) },
         { header: 'Type', get: (r: Advance) => r.party_type },
         {
           header: 'Party',

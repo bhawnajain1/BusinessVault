@@ -7,6 +7,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { ExpenseService } from '../../domain/ExpenseService';
+import { DateWithTime, formatDateTimeCsv } from '../components/DateTime';
 
 export default function ExpensesPage() {
   const navigate = useNavigate();
@@ -192,7 +193,7 @@ export default function ExpensesPage() {
       filterable: true,
       render: (r) => r.expense_number,
     },
-    { key: 'expense_date', header: 'Date', render: (r) => r.expense_date },
+    { key: 'expense_date', header: 'Date', render: (r) => <DateWithTime date={r.expense_date} at={r.created_at} /> },
     {
       key: 'category',
       header: 'Category',
@@ -248,6 +249,7 @@ export default function ExpensesPage() {
       columns: [
         { header: 'Expense #', get: (r: Expense) => r.expense_number },
         { header: 'Date', get: (r: Expense) => r.expense_date },
+        { header: 'Created At', get: (r: Expense) => formatDateTimeCsv(r.created_at) },
         {
           header: 'Category',
           get: (r: Expense) =>

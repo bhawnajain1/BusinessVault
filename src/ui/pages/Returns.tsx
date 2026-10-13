@@ -7,6 +7,7 @@ import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import SalesReturnPicker from '../returns/SalesReturnPicker';
 import Money from '../components/Money';
 import { log } from '../../lib/log';
+import { DateWithTime } from '../components/DateTime';
 
 // Sales Returns are per-line, first-class documents (schema v5). Distinct
 // from Invoice Edits, which reissue the invoice. This page:
@@ -182,7 +183,7 @@ export default function Returns() {
               <tbody>
                 {filteredReturnable.map((inv) => (
                   <tr key={inv.id} className="border-t border-border">
-                    <td className="px-3 py-1.5 text-fg-muted">{inv.invoice_date}</td>
+                    <td className="px-3 py-1.5 text-fg-muted"><DateWithTime date={inv.invoice_date} at={inv.created_at} /></td>
                     <td className="px-3 py-1.5 font-mono text-xs">
                       {inv.invoice_number}
                     </td>
@@ -250,7 +251,7 @@ export default function Returns() {
                 const original = invoicesById.get(sr.original_invoice_id);
                 return (
                   <tr key={sr.id} className="border-t border-border">
-                    <td className="px-3 py-1.5 text-fg-muted">{sr.return_date}</td>
+                    <td className="px-3 py-1.5 text-fg-muted"><DateWithTime date={sr.return_date} at={sr.created_at} /></td>
                     <td className="px-3 py-1.5 font-mono text-xs">
                       <Link
                         to={`/returns/${sr.id}`}

@@ -5,6 +5,7 @@ import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
+import { DateWithTime } from '../components/DateTime';
 
 const MOVEMENT_TYPES = [
   'purchase',
@@ -84,7 +85,7 @@ export default function StockMovements() {
   );
 
   const columns: ColumnDef<StockMovement>[] = [
-    { key: 'occurred_at', header: 'Date', render: (r) => r.occurred_at.slice(0, 10) },
+    { key: 'occurred_at', header: 'Date', render: (r) => <DateWithTime date={r.occurred_at.slice(0, 10)} at={r.occurred_at.length > 10 ? r.occurred_at : null} /> },
     {
       key: 'item',
       header: 'Item',

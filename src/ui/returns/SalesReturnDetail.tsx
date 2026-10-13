@@ -19,6 +19,7 @@ import Money from '../components/Money';
 import Qty from '../components/Qty';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { log } from '../../lib/log';
+import { formatDateTime, formatTime } from '../components/DateTime';
 
 // Dedicated view for a single Sales Return. Shows header, per-line rows,
 // stock movements, the reversing JE (with lines), customer-credit advance
@@ -233,7 +234,7 @@ export default function SalesReturnDetail() {
             </span>
           </h1>
           <div className="text-sm text-fg-muted">
-            {sr.return_date} · Against{' '}
+            {sr.return_date}{formatTime(sr.created_at) && ` ${formatTime(sr.created_at)}`} · Against{' '}
             {originalInvoice ? (
               <Link
                 to={`/invoices/${originalInvoice.id}`}
@@ -404,7 +405,7 @@ export default function SalesReturnDetail() {
               <tbody>
                 {data.stockMovements.map((mv) => (
                   <tr key={mv.id} className="border-t border-border">
-                    <td className="px-3 py-1.5 font-mono text-xs">{mv.occurred_at}</td>
+                    <td className="px-3 py-1.5 text-xs">{mv.occurred_at.length > 10 ? formatDateTime(mv.occurred_at) : mv.occurred_at}</td>
                     <td className="px-3 py-1.5">
                       {itemById.get(mv.item_id)?.name ?? mv.item_id}
                     </td>

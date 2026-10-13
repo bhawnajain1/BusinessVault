@@ -16,6 +16,7 @@ import { PaymentService } from '../../domain/PaymentService';
 import { SYSTEM_ACCOUNT_CODES } from '../../domain/coa';
 import Money from '../components/Money';
 import { streamCsvExport } from '../../csv/streamCsvExport';
+import { DateWithTime } from '../components/DateTime';
 
 type Tab = 'invoices' | 'payments' | 'statement';
 type InvoiceSortKey =
@@ -761,7 +762,7 @@ export default function CustomerDetailPage() {
                       {r.inv.invoice_number}
                     </Link>
                   </td>
-                  <td>{fmtDateShort(r.inv.invoice_date)}</td>
+                  <td><DateWithTime date={fmtDateShort(r.inv.invoice_date)} at={r.inv.created_at} /></td>
                   <td>
                     {r.inv.due_date ? fmtDateShort(r.inv.due_date) : '—'}
                   </td>
@@ -833,7 +834,7 @@ export default function CustomerDetailPage() {
                 const unalloc = Math.max(0, p.amount_paise - allocTotal);
                 return (
                   <tr key={p.id} className="align-top">
-                    <td>{fmtDateShort(p.payment_date)}</td>
+                    <td><DateWithTime date={fmtDateShort(p.payment_date)} at={p.created_at} /></td>
                     <td className="font-mono text-xs">{p.payment_number}</td>
                     <td className="text-right customer-money">
                       <Money paise={p.amount_paise} />

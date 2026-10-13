@@ -16,6 +16,7 @@ import Qty from '../components/Qty';
 import StatusBadge from '../components/StatusBadge';
 import SalesReturnPicker from '../returns/SalesReturnPicker';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
+import { SavedTimes } from '../components/DateTime';
 
 interface Loaded {
   invoice: Invoice;
@@ -175,6 +176,7 @@ export default function InvoiceDetail() {
           <div>Invoice: {invoice.invoice_date}</div>
           <div>Due: {invoice.due_date ?? '—'}</div>
           <div>FY: {invoice.financial_year}</div>
+          <div className="mt-1"><SavedTimes createdAt={invoice.created_at} updatedAt={invoice.updated_at} /></div>
         </div>
         <div className="border border-slate-200 rounded p-3">
           <div className="text-slate-500">Place of Supply</div>

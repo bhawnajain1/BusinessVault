@@ -20,6 +20,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { INDIAN_BANKS } from './indianBanks';
+import { DateWithTime, formatDateTimeCsv } from '../components/DateTime';
 
 const METHODS: PaymentMethod[] = ['cash', 'bank', 'upi', 'card', 'cheque'];
 
@@ -252,7 +253,7 @@ export default function PaymentsPage() {
       filterable: true,
       render: (r) => r.payment_number,
     },
-    { key: 'payment_date', header: 'Date', render: (r) => r.payment_date },
+    { key: 'payment_date', header: 'Date', render: (r) => <DateWithTime date={r.payment_date} at={r.created_at} /> },
     {
       key: 'direction',
       header: 'Direction',
@@ -303,6 +304,7 @@ export default function PaymentsPage() {
       columns: [
         { header: 'Payment #', get: (r: Payment) => r.payment_number },
         { header: 'Date', get: (r: Payment) => r.payment_date },
+        { header: 'Created At', get: (r: Payment) => formatDateTimeCsv(r.created_at) },
         { header: 'Direction', get: (r: Payment) => r.direction },
         { header: 'Party Type', get: (r: Payment) => r.party_type },
         {

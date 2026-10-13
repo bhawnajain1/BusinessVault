@@ -5,6 +5,7 @@ import { db } from '../db';
 import { useActiveBusiness } from './hooks/useActiveBusiness';
 import { formatMoney } from './components/Money';
 import { log } from '../lib/log';
+import { formatTime } from './components/DateTime';
 
 // Header search across invoices, customers, suppliers and items of the active
 // business. Read-only Dexie scans (small per-business tables), capped at five
@@ -49,7 +50,7 @@ async function searchBusiness(businessId: string, query: string): Promise<Hit[]>
       id: `inv-${i.id}`,
       group: 'Invoices',
       label: `#${i.invoice_number}`,
-      detail: `${customerName.get(i.customer_id) ?? '—'} · ${i.invoice_date} · ${formatMoney(i.total_paise)}`,
+      detail: `${customerName.get(i.customer_id) ?? '—'} · ${i.invoice_date}${formatTime(i.created_at) ? ` ${formatTime(i.created_at)}` : ''} · ${formatMoney(i.total_paise)}`,
       to: `/invoices/${i.id}`,
     }));
   const customerHits: Hit[] = customers
