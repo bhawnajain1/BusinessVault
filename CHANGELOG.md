@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.1.1 — 2026-10-13
+
+### Fixed
+
+- GST Reports Overview: amounts in the Period-wise summary, tax-head, breakdown and ITC status tables (and the chart range toggle) rendered as solid purple pills with unreadable text, because the app-wide button palette painted every unstyled button indigo. They now read as plain figures (muted when zero, red when net liability is payable) and still open their source transactions. Row labels (IGST, Total, months) are no longer forced to small uppercase, the monthly ITC status table is a full-width card instead of being squeezed beside the chart, and the Overview cards are spaced apart.
+
 ## 1.1.0 — 2026-10-13
 
 ### Changed

@@ -596,16 +596,18 @@ export default function GstSummaryPage() {
               <td className="num">{cell(taxTotalPaise(net), visibleResults.flatMap(indicativeLiabilitySourceIds), 'Net liability total', true)}</td></tr></tfoot>
           </table></div>
           <p className="gst-card-note">Net liability = output liability + reverse charge − eligible ITC, before payment and adjustments. A negative figure is credit available.</p>
-          <details className="gst-disclosure" onToggle={e => log.info('gst-reports', 'ITC status breakdown toggled', { open: e.currentTarget.open })}><summary>ITC status breakdown by month</summary>
+        </section>;
+      })()}
+      {!immutable && <GstMonthlyChart businessId={businessId} financialYear={financialYear} frequency={frequency} revision={revision} ready={readyBusiness === businessId} />}
+      </div>
+      <section className="gst-section-card" aria-label="ITC status breakdown">
+        <details className="gst-disclosure" onToggle={e => log.info('gst-reports', 'ITC status breakdown toggled', { open: e.currentTarget.open })}><summary>ITC status breakdown by month</summary>
             <Table title="Monthly ITC and indicative balance by tax head" headers={['Month', 'Measure', 'IGST', 'CGST', 'SGST / UTGST', 'Cess']} rows={visibleResults.flatMap(r => [...itcStatuses, 'TOTAL_BOOKS_TAX', 'NET_APPROVED', 'INDICATIVE_BALANCE'].map(status => {
         const total = status === 'INDICATIVE_BALANCE' ? r.totals.indicativeWorkingBalance : r.totals.booksItc[status as keyof typeof r.totals.booksItc];
         return [r.period.periodKey, status, ...amounts.slice(1, 5).map(([key, label]) => metric(total[key], status === 'INDICATIVE_BALANCE' ? indicativeLiabilitySourceIds(r) : itcSources(r, status, key), `${status} ${label}`, r))];
       }))} />
           </details>
-        </section>;
-      })()}
-      {!immutable && <GstMonthlyChart businessId={businessId} financialYear={financialYear} frequency={frequency} revision={revision} ready={readyBusiness === businessId} />}
-      </div>
+      </section>
       {!immutable && frequency === 'QRMP' && (() => {
         const period = quarterPeriod(businessId, business?.gstin ?? '', financialYear, quarter);
         const selected = results.filter(r => r.period.periodStart >= period.periodStart && r.period.periodStart < period.nextPeriodStart);
