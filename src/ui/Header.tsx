@@ -181,9 +181,6 @@ function ProfileMenu() {
               </a>
             )}
           </div>
-          <div className="border-t border-slate-100 px-3 pb-1 pt-2 text-xs text-slate-500" aria-label={`BusinessVault version ${APP_VERSION}`}>
-            BusinessVault v{APP_VERSION}
-          </div>
         </div>
       )}
     </div>
