@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { BusinessVaultDB } from '../db/database';
-import { PurchaseService } from './PurchaseService';
+import { PurchaseService, editBlockedReason } from './PurchaseService';
 import { computePayables } from './partyLedger';
 
 const BIZ = 'biz-purch';
@@ -338,6 +338,45 @@ describe('PurchaseService', () => {
     const next = await svc.update(replacement.id, input);
     expect((await db.purchase_lines.where('purchase_id').equals(next.id).toArray())[0]).toMatchObject({ uqc_code: 'NOS', snapshot_source: 'LEGACY_INFERRED' });
     await db.delete();
+  });
+
+  it('rolls the whole edit back when the corrected bill is invalid', async () => {
+    const db = freshDb();
+    const svc = new PurchaseService({ db, now: () => '2026-08-19T10:00:00.000Z' });
+    const input = { businessId: BIZ, deviceId: DEV, billNumber: 'BILL-ATOMIC', billDate: '2026-08-19',
+      supplierId: 'sup-1', supplierStateCode: '29', isInterstate: false, financialYear: '2026-27', accounts: ACCOUNTS,
+      lines: [{ itemId: 'item-1', warehouseId: 'wh-1', qtyMicros: 5_000_000, unitCostPaise: 1000, taxRateBps: 1800 }] };
+    const original = await svc.create(input);
+    const counts = async () => ({
+      purchases: await db.purchases.count(),
+      journals: await db.journal_entries.count(),
+      movements: await db.stock_movements.count(),
+      events: await db.sync_events.count(),
+    });
+    const before = await counts();
+
+    // Typo'd quantity of 0 fails validation inside create(), after the reversal ran.
+    await expect(svc.update(original.id, { ...input, lines: [{ ...input.lines[0], qtyMicros: 0 }] }))
+      .rejects.toThrow('qtyMicros must be positive integer');
+
+    const after = await db.purchases.get(original.id);
+    expect(after).toMatchObject({ status: 'received', bill_number: 'BILL-ATOMIC', reversal_journal_entry_id: null });
+    expect((await db.journal_entries.get(original.journal_entry_id))?.reversed_by_id).toBeNull();
+    expect((await db.item_stock.get(`${BIZ}:item-1:wh-1`))?.qty_micros).toBe(5_000_000);
+    expect(await counts()).toEqual(before);
+
+    // The same bill can still be corrected afterwards.
+    const fixed = await svc.update(original.id, { ...input, lines: [{ ...input.lines[0], qtyMicros: 4_000_000 }] });
+    expect(fixed).toMatchObject({ bill_number: 'BILL-ATOMIC', replaces_purchase_id: original.id });
+    expect((await db.item_stock.get(`${BIZ}:item-1:wh-1`))?.qty_micros).toBe(4_000_000);
+  });
+
+  it('explains why a bill cannot be edited', () => {
+    const base = { status: 'received', reversed_by_purchase_id: null, paid_paise: 0 } as Parameters<typeof editBlockedReason>[0];
+    expect(editBlockedReason(base)).toBeNull();
+    expect(editBlockedReason({ ...base, status: 'cancelled' })).toMatch(/cancelled/);
+    expect(editBlockedReason({ ...base, reversed_by_purchase_id: 'dn-1' })).toMatch(/purchase return/);
+    expect(editBlockedReason({ ...base, paid_paise: 100 })).toMatch(/payments applied/);
   });
 
   it('cancels an unpaid bill and removes it from payables while preserving journals', async () => {

@@ -4,6 +4,13 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.100 — 2026-10-13
+
+### Fixed
+
+- Purchases: a bill can now be edited to correct a data-entry mistake. **Edit bill** on the bill page (and **Edit** in the purchases list) opens `/purchases/:id/edit` with the bill prefilled; previously the list's Edit button opened a blank New Purchase form. Saving keeps the bill number, reverses the original posting and re-posts the corrected bill (the original stays as a cancelled audit row linked to the correction) and opens the corrected bill. Lines keep their original warehouse. Edit is disabled, with the reason shown, for cancelled bills, bills with a purchase return and bills with payments applied.
+- Purchase edits are now all-or-nothing: if the corrected bill fails validation (zero quantity, bad HSN, duplicate bill number), the reversal is rolled back and the original bill, journal and stock are left untouched instead of being cancelled with no replacement.
+
 ## 1.0.99 — 2026-10-13
 
 ### Changed

@@ -77,6 +77,20 @@ function bpsMul(base: number, bps: number): number {
   return bankersRound((base * bps) / 10_000);
 }
 
+// Same guards as update(), worded for the UI so the Edit button / form can say
+// why a bill is locked before the user retypes anything. update() re-checks on
+// save (it also checks payment allocations, which need a query).
+export function editBlockedReason(purchase: Purchase): string | null {
+  if (purchase.status === 'cancelled') return 'This bill is cancelled and cannot be edited.';
+  if (purchase.reversed_by_purchase_id) {
+    return 'This bill has a purchase return. Cancel the debit note before editing the bill.';
+  }
+  if (purchase.paid_paise > 0) {
+    return 'This bill has payments applied. Reverse the payments before editing the bill.';
+  }
+  return null;
+}
+
 export class PurchaseService {
   private readonly db: BusinessVaultDB;
   private readonly now: () => string;
@@ -755,6 +769,47 @@ export class PurchaseService {
     purchaseId: string,
     input: Omit<CreatePurchaseInput, 'idempotencyKey'>,
   ): Promise<Purchase> {
+    const db = this.db;
+    log.info('purchase.edit', 'purchase edit started', { purchaseId, lineCount: input.lines.length });
+    // One outer transaction so reverse + re-issue + link commit together. If
+    // the corrected bill fails validation (bad HSN, zero qty, duplicate bill #)
+    // the reversal rolls back and the original bill stays exactly as it was.
+    const reissuedId = await db.transaction(
+      'rw',
+      [
+        db.purchases,
+        db.purchase_lines,
+        db.stock_movements,
+        db.item_stock,
+        db.items,
+        db.units,
+        db.journal_entries,
+        db.journal_lines,
+        db.sync_events,
+        db.payments,
+      ],
+      () => this.updateInTransaction(purchaseId, input),
+    ).catch((e: unknown) => {
+      log.info('purchase.edit', 'purchase edit rolled back', { purchaseId, error: String(e) });
+      throw e;
+    });
+    // §17: reverse + reissue is a two-JE dance; verify TB net effect
+    // equals the new bill and inventory identity holds.
+    await reconcileAfter(input.businessId, 'purchase.recycle', { db });
+    const reissued = await db.purchases.get(reissuedId);
+    if (!reissued) throw new Error('Edited purchase missing after save');
+    log.info('purchase.edit', 'purchase edit saved', {
+      purchaseId,
+      replacementId: reissued.id,
+      totalPaise: reissued.total_paise,
+    });
+    return reissued;
+  }
+
+  private async updateInTransaction(
+    purchaseId: string,
+    input: Omit<CreatePurchaseInput, 'idempotencyKey'>,
+  ): Promise<string> {
     const original = await this.db.purchases.get(purchaseId);
     if (!original) throw new Error(`Purchase not found: ${purchaseId}`);
     if (original.status === 'cancelled') {
@@ -823,12 +878,7 @@ export class PurchaseService {
         timestamp: now,
       });
     });
-    // §17: reverse + reissue is a two-JE dance; verify TB net effect
-    // equals the new bill and inventory identity holds.
-    await reconcileAfter(original.business_id, 'purchase.recycle', {
-      db: this.db,
-    });
-    return (await this.db.purchases.get(reissued.id)) ?? reissued;
+    return reissued.id;
   }
 
   async cancel(purchaseId: string, deviceId: string, reason = 'cancelled by user'): Promise<Purchase> {
