@@ -150,6 +150,7 @@
 .gst-readiness-pass svg { color: rgb(var(--bv-success)); }
 .gst-readiness-fail svg, .gst-readiness-fail strong { color: rgb(var(--bv-danger)); }
 .gst-readiness-unknown svg, .gst-readiness-unknown strong { color: rgb(var(--bv-fg-muted)); }
+.gst-readiness-warn svg, .gst-readiness-warn strong { color: rgb(var(--bv-warning)); }
 .gst-profile-list { margin: 0 0 12px; font-size: 13px; overflow-x: auto; }
 .gst-profile-list h3 { margin: 0 0 6px; font-size: 13px; font-weight: 700; }
 .gst-profile-list table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }

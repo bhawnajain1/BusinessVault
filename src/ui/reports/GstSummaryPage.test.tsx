@@ -950,8 +950,8 @@ describe('GST profile readiness on the report page', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Edit Effective from' })[0]);
     await waitFor(() => expect(document.activeElement?.id).toBe('gst-profile-effective_from'));
     const aatoItem = within(screen.getByRole('list', { name: 'GST profile readiness' })).getByText('Preceding-FY AATO is confirmed').closest('li')!;
-    expect(aatoItem.textContent).toContain('Not met');
-    expect(aatoItem.textContent).toMatch(/How to fix: Enter the complete AATO for FY \d{4}-\d{2}/);
+    expect(aatoItem.textContent).toContain('Warning');
+    expect(aatoItem.textContent).toMatch(/What to do: If AATO for FY \d{4}-\d{2}.*was above ₹5 crore/);
     fireEvent.click(within(aatoItem as HTMLElement).getByRole('button', { name: 'Enter AATO' }));
     await waitFor(() => expect(document.activeElement?.id).toBe('gst-aato-input'));
   });

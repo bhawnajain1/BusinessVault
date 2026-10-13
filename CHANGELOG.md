@@ -12,6 +12,10 @@ per-PR-version-bump policy.
 - The generic `GST_PROFILE_NOT_READY` issue is replaced by precise codes, each with a specific correction: `GST_PROFILE_MISSING`, `GST_PROFILE_MULTIPLE`, `GST_PROFILE_NOT_REGULAR`, `GST_PROFILE_DISABLED`, `GST_PROFILE_INACTIVE`, `GST_PROFILE_GSTIN_MISMATCH`, `GST_PROFILE_FREQUENCY_MISMATCH`, `GST_PROFILE_EFFECTIVE_DATE_GAP` and `GST_REGISTRATION_DATE_GAP`. AATO remains a separate check.
 - Registration end is now inclusive (a registration ending 31 October 2026 covers October 2026); Effective to stays exclusive. Both are documented in `docs/gst-reporting.md` and labelled in the editor.
 
+### Changed
+
+- Missing preceding-FY AATO no longer blocks GST reports. `AATO_UNKNOWN` is now a warning: reports assume AATO up to ₹5 crore and require at least 4-digit HSN codes. The readiness checklist shows **Warning** with an **Enter AATO** button. Enter AATO only if it was above ₹5 crore, so 6-digit HSN codes are enforced.
+
 ### Added
 
 - Profile readiness checklist (icon + text) in the GST profile panel, a list of all saved profiles (dates, registration type, frequency, active and reporting state, GSTIN) with Edit, Deactivate (never delete) and New profile, and a **Profile frequency mismatch** banner with **Update and save profile** / **Restore saved frequency**. Saving a profile reloads the stored row, marks results stale and recalculates ("GST profile saved. Reports recalculated.").

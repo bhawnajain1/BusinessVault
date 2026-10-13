@@ -125,6 +125,9 @@ describe('GST profile readiness', () => {
     const s = sources([profile()]); s.aato = [];
     const all = calculateMonthlyGst(s, october, stamp.created_at).issues.map(i => i.code);
     expect(all).toContain('AATO_UNKNOWN');
+    // Missing AATO warns and assumes the 4-digit minimum; it never blocks the report.
+    const aatoIssue = calculateMonthlyGst(s, october, stamp.created_at).issues.find(i => i.code === 'AATO_UNKNOWN');
+    expect(aatoIssue?.severity).toBe('WARNING');
     expect(codes(s)).toEqual([]);
     expect(gstProfileReadiness([profile()], october).problems).toEqual([]);
   });

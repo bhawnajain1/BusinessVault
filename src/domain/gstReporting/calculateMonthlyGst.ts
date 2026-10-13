@@ -102,11 +102,13 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   try { previousYear = precedingFinancialYear(period.financialYear); } catch { /* Invalid period is already blocking. */ }
   const aatoRows = sources.aato.filter(a => a.business_id === businessId && a.financial_year === previousYear);
   for (const row of aatoRows) remember('GST_AATO', row.id, row, row.entity_version);
-  const hsnMinimum = aatoRows.length === 1 && aatoRows[0].confirmed_at ? minimumHsnDigits(aatoRows[0].aato_paise, period.periodStart) : null;
-  if (hsnMinimum === null) issue('AATO_UNKNOWN', 'BLOCKING_ERROR', 'BUSINESS', businessId, `Confirmed AATO for the preceding financial year ${previousYear || ''} is required; no HSN minimum has been guessed.`, 'aato_paise', null, null,
-    `Open GST profile summary, enter the complete Aggregate Annual Turnover for FY ${previousYear || 'the preceding year'} (all GSTINs on the same PAN, not only BusinessVault sales) and click Save AATO.`);
+  const confirmedHsnMinimum = aatoRows.length === 1 && aatoRows[0].confirmed_at ? minimumHsnDigits(aatoRows[0].aato_paise, period.periodStart) : null;
+  // Missing AATO does not block: assume AATO up to INR 5 crore (4-digit HSN minimum) and warn.
+  const hsnMinimum = confirmedHsnMinimum ?? minimumHsnDigits(0, period.periodStart);
+  if (confirmedHsnMinimum === null) issue('AATO_UNKNOWN', 'WARNING', 'BUSINESS', businessId, `AATO for the preceding financial year ${previousYear || ''} is not entered; assumed up to ₹5 crore, so at least 4-digit HSN codes are required.`, 'aato_paise', null, null,
+    `If the Aggregate Annual Turnover for FY ${previousYear || 'the preceding year'} (all GSTINs on the same PAN, not only BusinessVault sales) was above ₹5 crore, open GST profile summary, enter it and click Save AATO so 6-digit HSN codes are enforced.`);
   if (period.periodStart < '2021-04-01') issue('HISTORICAL_HSN_RULE_UNSUPPORTED', 'BLOCKING_ERROR', 'REPORT', period.periodKey, 'Pre-April-2021 HSN requirements are not modeled; the later minimum is not applied retroactively.');
-  if (hsnMinimum !== null && aatoRows[0]?.source === 'USER_CONFIRMED') issue('AATO_USER_CONFIRMED', 'WARNING', 'GST_AATO', aatoRows[0].id, 'AATO is user-confirmed, not independently verified.');
+  if (confirmedHsnMinimum !== null && aatoRows[0]?.source === 'USER_CONFIRMED') issue('AATO_USER_CONFIRMED', 'WARNING', 'GST_AATO', aatoRows[0].id, 'AATO is user-confirmed, not independently verified.');
   const rules = rulesForDate(period.periodStart);
   if (!rules) issue('RULE_NOT_AVAILABLE', 'BLOCKING_ERROR', 'REPORT', period.periodKey, 'No rule set covers this period.');
   issue('RULE_SET', 'INFORMATION', 'REPORT', period.periodKey, GST_RULE_SET_VERSION);

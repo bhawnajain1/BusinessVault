@@ -251,8 +251,8 @@ export default function GstSummaryPage() {
     { label: 'Preceding-FY AATO is confirmed', codes: [], passed: Boolean(aato?.confirmed_at) },
   ];
   const aatoHelp = {
-    message: `Confirmed Aggregate Annual Turnover (AATO) for FY ${previousYear} is missing. It decides how many HSN digits GSTR-1 needs.`,
-    correction: `Enter the complete AATO for FY ${previousYear} (all GSTINs on the same PAN, not only BusinessVault sales) and click Save AATO.`,
+    message: `Aggregate Annual Turnover (AATO) for FY ${previousYear} is not entered. Reports assume it was ₹5 crore or less, so HSN codes need at least 4 digits. This does not block reports.`,
+    correction: `If AATO for FY ${previousYear} (all GSTINs on the same PAN, not only BusinessVault sales) was above ₹5 crore, enter it and click Save AATO so 6-digit HSN codes are checked.`,
   };
   const uniqueProblems = [...new Map(readinessProblems.map(p => [`${p.code}:${p.field}`, p])).values()];
 
@@ -604,12 +604,13 @@ export default function GstSummaryPage() {
       {profileOpen && <div id="gst-profile-details" className="gst-profile-details">
       <ul className="gst-readiness" aria-label="GST profile readiness">{readinessChecks.map(check => {
         const problem = readinessProblems.find(p => check.codes.includes(p.code));
-        const state = check.passed !== undefined ? check.passed ? 'pass' : 'fail' : check.needsProfile && noActiveProfile ? 'unknown' : problem ? 'fail' : 'pass';
-        const Icon = state === 'pass' ? CheckCircle2 : state === 'fail' ? XCircle : MinusCircle;
         const isAato = check.label.startsWith('Preceding-FY AATO');
+        // Missing AATO is a warning (4-digit HSN assumed), not a blocking failure.
+        const state = check.passed !== undefined ? check.passed ? 'pass' : isAato ? 'warn' : 'fail' : check.needsProfile && noActiveProfile ? 'unknown' : problem ? 'fail' : 'pass';
+        const Icon = state === 'pass' ? CheckCircle2 : state === 'fail' ? XCircle : state === 'warn' ? AlertTriangle : MinusCircle;
         const help = isAato ? aatoHelp : problem ?? (check.codes[0] === 'GST_PROFILE_MISSING' ? readinessProblems.find(p => p.code === 'GST_PROFILE_MISSING') : undefined);
-        return <li key={check.label} className={`gst-readiness-${state}`}><Icon size={16} aria-hidden="true" /><span>{check.label}</span><strong>{state === 'pass' ? 'Passed' : state === 'fail' ? 'Not met' : 'Not checked'}</strong>
-          {state === 'fail' && help && <small><span>{help.message}</span> <span>How to fix: {help.correction}</span> {fixButton(isAato ? 'AATO' : problem?.code ?? 'GST_PROFILE_MISSING', problem?.field ?? null)}</small>}
+        return <li key={check.label} className={`gst-readiness-${state}`}><Icon size={16} aria-hidden="true" /><span>{check.label}</span><strong>{state === 'pass' ? 'Passed' : state === 'fail' ? 'Not met' : state === 'warn' ? 'Warning' : 'Not checked'}</strong>
+          {(state === 'fail' || state === 'warn') && help && <small><span>{help.message}</span> <span>{state === 'warn' ? 'What to do' : 'How to fix'}: {help.correction}</span> {fixButton(isAato ? 'AATO' : problem?.code ?? 'GST_PROFILE_MISSING', problem?.field ?? null)}</small>}
           {state === 'unknown' && <small>Checked after a saved, active profile covers the selected period.</small>}</li>;
       })}</ul>
       <div className="gst-profile-list">
