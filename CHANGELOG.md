@@ -12,6 +12,7 @@ per-PR-version-bump policy.
 - Overview redesigned: four KPI cards (receivables, payables, revenue, net income — % change shown only when the previous period has a non-zero figure), Sales & collections chart with axes, tooltips and its own range filter, Cash snapshot by payment mode, Top 5 customer balances, P&L donut, and a sortable Recent invoices table with status pills and row actions.
 - Dashboard date range (`?range=`) drives the monthly series, payment mix and P&L; receivables, payables and top balances stay as of today.
 - Record lists (invoices, payments, purchases, expenses, advances, returns, stock movements, customer invoices/payments, Recycle Bin, dashboard Recent invoices) replace the Date column with sortable "Created Date" and "Last Modified Date" columns shown as `2026-10-05 11:14 am`, from the existing created_at/updated_at timestamps; invoice, purchase and sales-return details show both too. CSV exports keep the Date column and add "Created At" / "Modified At" in the same format. Stored business dates are unchanged, so GST, FY and ledger figures are unaffected.
+- Invoice print / PDF no longer shows the Unit column, which printed an internal unit ID instead of anything meaningful to the customer.
 - Light theme only across all pages: removed the unused dark-theme CSS and the old dashboard styles, swapped blue/slate-900 accents for indigo, replaced dark modal scrims with a light blurred scrim, and restyled status badges as pastel pills.
 
 ## 1.0.84 — 2026-09-30
