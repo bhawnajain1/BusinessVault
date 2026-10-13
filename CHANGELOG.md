@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.1.3 — 2026-10-13
+
+### Fixed
+
+- Invoice **Previous Due** is now the customer's full ledger balance at the time the invoice was created: opening balance (a negative opening balance counts as credit) + earlier invoices - credit notes and returns - payments in, including money paid on account (advance) that was not yet used. Previously only payments allocated to earlier invoices were deducted, so Total Due was overstated. If the customer has net credit, Previous Due is negative and offsets the invoice (Total Due never below zero). Advances used on the invoice itself still show under Received and are not deducted twice; payments made after the invoice are left out, so only invoices created after a payment reflect it and printed invoices stay snapshots.
+
 ## 1.1.2 — 2026-10-13
 
 ### Fixed
