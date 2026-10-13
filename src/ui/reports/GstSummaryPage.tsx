@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type FormEvent, type KeyboardEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { AlertTriangle, BarChart3, Calculator, ChevronDown, ChevronRight, CircleDollarSign, ClipboardCheck, Download, FileSpreadsheet, Landmark, PackageCheck, ReceiptIndianRupee, Save, ShieldCheck, ShoppingBag, TableProperties } from 'lucide-react';
+import { AlertTriangle, BarChart3, Calculator, Calendar, ChevronDown, ChevronRight, CircleDollarSign, ClipboardCheck, Download, FileSpreadsheet, Info, Landmark, PackageCheck, ReceiptIndianRupee, Save, ShieldCheck, ShoppingBag, TableProperties } from 'lucide-react';
 import { gstMonthlyReportService } from '../../domain/gstReporting';
 import type { GstMonthlyReportService, SaveGstDocumentMetadataInput, ReviewGstItcInput, SaveGstProfileInput, SaveGstNoteInput } from '../../domain/gstReporting/GstMonthlyReportService';
 import { downloadGstr1CaWorkbook, downloadMonthlyGstExcel, downloadMonthlyGstCsv, downloadMonthlyGstPdf, downloadMonthlyGstJson, downloadPurchaseCaWorkbook } from '../../domain/gstReporting/exports';
@@ -10,6 +10,7 @@ import { isValidGstin } from '../../lib/gst';
 import { setCurrentBusinessId } from '../../lib/business';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { money, toDateString } from './reportUtils';
+import { log } from '../../lib/log';
 import GstDataTable from './gst/table/GstDataTable';
 import './gstReports.css';
 
@@ -117,6 +118,40 @@ function sumSummary(results: MonthlyGstCalculation[], select: (result: MonthlyGs
   return total;
 }
 
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const FIRST_GST_YEAR = 2017;
+
+type Frequency = 'MONTHLY' | 'QRMP';
+type ReportingPeriod = { value: string; label: string; months: string[]; quarter: number };
+
+// April–March month keys for an Indian financial year: 2026 -> 2026-04 … 2027-03.
+function financialYearMonths(startYear: number): string[] {
+  return Array.from({ length: 12 }, (_, i) => `${i < 9 ? startYear : startYear + 1}-${String((i + 3) % 12 + 1).padStart(2, '0')}`);
+}
+
+function monthName(key: string): string {
+  return MONTH_NAMES[Number(key.slice(5, 7)) - 1];
+}
+
+// One entry per selectable period. A month is "October 2026"; a quarter is
+// "Q3 — October to December 2026" and covers its three tax months.
+function reportingPeriods(frequency: Frequency, startYear: number): ReportingPeriod[] {
+  const months = financialYearMonths(startYear);
+  if (frequency === 'QRMP') {
+    return [1, 2, 3, 4].map(quarter => {
+      const quarterMonths = months.slice((quarter - 1) * 3, quarter * 3);
+      return { value: `Q${quarter}`, label: `Q${quarter} — ${monthName(quarterMonths[0])} to ${monthName(quarterMonths[2])} ${quarterMonths[2].slice(0, 4)}`, months: quarterMonths, quarter };
+    });
+  }
+  return months.map((key, i) => ({ value: key, label: `${monthName(key)} ${key.slice(0, 4)}`, months: [key], quarter: Math.floor(i / 3) + 1 }));
+}
+
+// Keep the period that contains `month` when it is still on offer; otherwise
+// fall back to the period containing today, then the first period (April / Q1).
+function periodContaining(periods: ReportingPeriod[], month: string | undefined, todayMonth: string): ReportingPeriod {
+  return periods.find(p => month && p.months.includes(month)) ?? periods.find(p => p.months.includes(todayMonth)) ?? periods[0];
+}
+
 export default function GstSummaryPage() {
   const active = useActiveBusiness();
   const navigate = useNavigate();
@@ -124,7 +159,7 @@ export default function GstSummaryPage() {
   const [businessId, setBusinessId] = useState('');
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [financialYear, setFinancialYear] = useState(financialYearForDate(today));
-  const [frequency, setFrequency] = useState<'MONTHLY' | 'QRMP'>('MONTHLY');
+  const [frequency, setFrequency] = useState<Frequency>('MONTHLY');
   const [months, setMonths] = useState<string[]>([today.slice(0, 7)]);
   const [quarter, setQuarter] = useState(1);
   const [results, setResults] = useState<MonthlyGstCalculation[]>([]);
@@ -165,7 +200,11 @@ export default function GstSummaryPage() {
   const immutable = savedResult !== null;
   const writeBlocked = busy || stale || immutable || current?.period.periodType === 'QUARTER';
   const startYear = Number(financialYear.slice(0, 4));
-  const monthOptions = Array.from({ length: 12 }, (_, i) => `${i < 9 ? startYear : startYear + 1}-${String((i + 3) % 12 + 1).padStart(2, '0')}`);
+  const periodOptions = reportingPeriods(frequency, startYear);
+  const selectedPeriod = periodOptions.find(p => p.months.join() === [...months].sort().join());
+  const currentFyStart = Number(financialYearForDate(today).slice(0, 4));
+  const yearOptions: number[] = [];
+  for (let y = Math.min(FIRST_GST_YEAR, startYear); y <= Math.max(currentFyStart + 1, startYear); y++) yearOptions.push(y);
   const previousYear = precedingFinancialYear(financialYear);
   const aato = workspace?.aato.find(a => a.financial_year === previousYear);
   const evidenceResults = !immutable && current?.period.periodType === 'QUARTER' ? [current] : visibleResults;
@@ -210,7 +249,11 @@ export default function GstSummaryPage() {
       setWorkspace(w);
       const b = w.businesses.find(row => row.id === businessId);
       const p = w.profiles.filter(row => row.active).sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0];
-      setFrequency(p?.filing_frequency ?? 'MONTHLY');
+      const loadedFrequency: Frequency = p?.filing_frequency ?? 'MONTHLY';
+      setFrequency(loadedFrequency);
+      const aligned = periodContaining(reportingPeriods(loadedFrequency, Number(financialYear.slice(0, 4))), months[0], today.slice(0, 7));
+      if (aligned.months.join() !== months.join()) { setMonths(aligned.months); setQuarter(aligned.quarter); }
+      log.info('gst-reports', 'reporting period aligned to profile', { businessId, frequency: loadedFrequency, period: aligned.value });
       setProfile(p ? editable(p) : {
         business_id: businessId, gstin: b?.gstin ?? '', legal_name: b?.name ?? '', state_code: b?.state_code ?? '',
         registration_type: 'REGULAR', registration_start_date: null, registration_end_date: null,
@@ -222,6 +265,28 @@ export default function GstSummaryPage() {
     return () => { alive = false; request.current++; };
     // FY selection does not reload or replace an unsaved profile editor.
   }, [businessId]);
+
+  // Every period change clears the previous figures (invalidate(true)) and
+  // the calculation effects rerun for the new months, so stale numbers are
+  // never shown under a new period.
+  function selectPeriod(period: ReportingPeriod, reason: string) {
+    invalidate(true);
+    setMonths(period.months); setQuarter(period.quarter);
+    log.info('gst-reports', 'reporting period selected', { businessId, reason, period: period.value, months: period.months });
+  }
+
+  function changeFinancialYear(year: number) {
+    if (!Number.isInteger(year) || year < 1900 || year > 9998) return;
+    invalidate(true);
+    setFinancialYear(`${year}-${String(year + 1).slice(-2)}`);
+    selectPeriod(periodContaining(reportingPeriods(frequency, year), months[0], today.slice(0, 7)), 'financial year changed');
+  }
+
+  function changeFrequency(next: Frequency) {
+    invalidate(true);
+    setFrequency(next);
+    selectPeriod(periodContaining(reportingPeriods(next, startYear), [...months].sort()[0], today.slice(0, 7)), 'filing frequency changed');
+  }
 
   function invalidate(clear = false) {
     request.current++;
@@ -389,18 +454,18 @@ export default function GstSummaryPage() {
     <div role="status" aria-live="polite" className="gst-live">{calculating ? 'Calculating GST reports…' : message}</div>
     {!active.loading && !active.businessId && <p>Select or create a business before preparing GST reports.</p>}
     {savedResult && <section role="status" className="border border-indigo-700 rounded p-3"><h2 className="font-semibold">Read-only saved snapshot: {savedResult.savedStatus ?? 'Saved working'} / {savedResult.period.periodKey}</h2><p>Run {savedResult.savedReportRunId}. Original source hash: {savedResult.sourceDataHash}. Viewing and exporting this snapshot does not replace the live working.</p><button type="button" className={button} onClick={() => { setSavedResult(null); setMetadata(null); setFilter(null); }}>Return to live working</button></section>}
-    <section className="gst-surface gst-selection"><div className="gst-section-heading"><div><FileSpreadsheet size={20} /><div><h2>Report selection</h2><p>Select business, financial year and GST tax months to generate reports.</p></div></div></div>
+    <section className="gst-surface gst-selection"><div className="gst-section-heading"><div><FileSpreadsheet size={20} /><div><h2>Report filters</h2><p>Select business, GSTIN, financial year and reporting period to generate GST reports.</p></div></div></div>
     <fieldset disabled={operationBusy || active.loading || immutable}>
       <div className="gst-selection-grid">
         <label>Business<select className={control} value={businessId} onChange={e => { invalidate(true); setBusinessId(e.target.value); }}>{workspace?.businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
         <label>GSTIN<span className="gst-readonly" aria-label="GSTIN read only">{business?.gstin || 'Not recorded'} <small>{business?.gstin ? isValidGstin(business.gstin) ? 'Valid GSTIN' : 'Invalid GSTIN' : 'GSTIN not recorded'}</small></span></label>
-        <div><label>Financial year<input className={control} aria-label="Financial year" type="number" min="1900" max="9998" value={startYear} onChange={e => { const y = Number(e.target.value); if (Number.isInteger(y) && y >= 1900 && y <= 9998) { invalidate(true); setFinancialYear(`${y}-${String(y + 1).slice(-2)}`); setMonths([]); } }} /></label><span className="gst-field-helper">{financialYear}</span></div>
-        <label>Filing frequency<select className={control} value={frequency} onChange={e => { invalidate(true); setFrequency(e.target.value as typeof frequency); }}><option>MONTHLY</option><option>QRMP</option></select></label>
+        <label>Financial year<select className={control} value={startYear} onChange={e => changeFinancialYear(Number(e.target.value))}>{yearOptions.map(y => <option key={y} value={y}>{y}–{String(y + 1).slice(-2)}</option>)}</select></label>
+        <label>Filing frequency<select className={control} value={frequency} onChange={e => changeFrequency(e.target.value as Frequency)}><option value="MONTHLY">Monthly</option><option value="QRMP">Quarterly (QRMP)</option></select></label>
       </div>
-      <fieldset className="gst-month-picker"><legend>Select GST tax months (April–March)</legend><div className="gst-month-actions"><span>{months.length} {months.length === 1 ? 'month' : 'months'} selected</span><button type="button" aria-label="Select all months" onClick={() => { invalidate(true); setMonths(monthOptions); }}>Select all</button><button type="button" onClick={() => { invalidate(true); setMonths([]); }}>Clear</button></div>
-        <div className="gst-quarter-grid">{[0, 1, 2, 3].map(quarterIndex => { const quarterMonths = monthOptions.slice(quarterIndex * 3, quarterIndex * 3 + 3); return <div className="gst-quarter" key={quarterIndex}><strong>Q{quarterIndex + 1} <span>({quarterMonths[0]} to {quarterMonths[2]})</span></strong><div>{quarterMonths.map(key => <label key={key} className={months.includes(key) ? 'selected' : ''}><input type="checkbox" checked={months.includes(key)} onChange={e => { invalidate(true); setMonths(e.target.checked ? [...months, key].sort() : months.filter(m => m !== key)); }} /> <span>{key}</span></label>)}</div></div>; })}</div>
-      </fieldset>
-      {frequency === 'QRMP' && <div className="flex flex-wrap gap-3 items-end"><label>Quarter<select className={control} value={quarter} onChange={e => setQuarter(Number(e.target.value))}>{[1, 2, 3, 4].map(q => <option key={q} value={q}>Q{q}</option>)}</select></label><button type="button" className={button} onClick={() => { invalidate(true); setMonths(monthOptions.slice((quarter - 1) * 3, quarter * 3)); }}>Select quarter months</button><p className="text-sm">Monthly internal workings and quarter analysis are distinct; no IFF or filing is performed.</p></div>}
+      <div className="gst-period-row">
+        <label>Reporting period<span className="gst-period-control"><Calendar size={16} aria-hidden="true" /><select className={control} value={selectedPeriod?.value ?? ''} onChange={e => { const next = periodOptions.find(p => p.value === e.target.value); if (next) selectPeriod(next, 'reporting period changed'); }}>{!selectedPeriod && <option value="" disabled>Select a period</option>}{periodOptions.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></span></label>
+        {selectedPeriod && <div className="gst-period-note"><Info size={16} aria-hidden="true" /><div><strong>{selectedPeriod.label} selected</strong><span>All reports and calculations will use this period.</span></div></div>}
+      </div>
     </fieldset></section>
 
     {profile && <section className="gst-profile-summary"><button type="button" aria-expanded={profileOpen} aria-controls="gst-profile-details" onClick={() => setProfileOpen(open => !open)}><span><ShieldCheck size={18} /> <strong>GST profile summary</strong><span className="gst-sr-only">GST profile and preceding FY AATO</span><em>{profile.registration_type} · {frequency} · {aato ? 'AATO confirmed' : 'AATO pending'}</em></span><ChevronDown size={18} /></button>

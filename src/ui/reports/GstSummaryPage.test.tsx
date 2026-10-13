@@ -52,6 +52,18 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+function periodSelect() { return screen.getByLabelText('Reporting period') as HTMLSelectElement; }
+function choosePeriod(value: string) { fireEvent.change(periodSelect(), { target: { value } }); }
+function periodValues() { return Array.from(periodSelect().options).map(o => o.value).filter(Boolean); }
+// The three April–March tax months of the quarter that contains `key`.
+function quarterMonthsOf(key: string): string[] {
+  const y = Number(key.slice(0, 4)); const m = Number(key.slice(5, 7));
+  const start = m >= 4 ? y : y - 1;
+  const months = Array.from({ length: 12 }, (_, i) => `${i < 9 ? start : start + 1}-${String((i + 3) % 12 + 1).padStart(2, '0')}`);
+  const q = Math.floor(((m + 8) % 12) / 3);
+  return months.slice(q * 3, q * 3 + 3);
+}
+
 describe('GST report workspace', () => {
   it('automatically calculates the selected current month only after the business workspace loads', async () => {
     const workspace = await mocks.loadWorkspace();
@@ -67,7 +79,9 @@ describe('GST report workspace', () => {
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-a', [key], 'MONTHLY'));
     expect(mocks.calculateMonths).toHaveBeenCalledTimes(1);
     await finished();
-    expect((screen.getByLabelText(key) as HTMLInputElement).checked).toBe(true);
+    expect(periodSelect().value).toBe(key);
+    expect(screen.queryAllByRole('checkbox', { name: /^\d{4}-\d{2}$/ })).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: /Select all|Clear/ })).toBeNull();
     expect((screen.getByLabelText('Current tax month') as HTMLSelectElement).value).toBe(key);
     expect(screen.queryByRole('button', { name: /Calculate selected months|Recalculate/ })).toBeNull();
   });
@@ -75,20 +89,20 @@ describe('GST report workspace', () => {
   it.each(['success', 'error'] as const)('keeps the latest month results when an older calculation settles with %s', async outcome => {
     await open();
     const initialKey = mocks.calculateMonths.mock.lastCall![1][0] as string;
-    const alternatives = screen.getAllByRole('checkbox').map(input => input.closest('label')!.textContent!.trim()).filter(label => /^\d{4}-\d{2}$/.test(label) && label !== initialKey);
+    const alternatives = periodValues().filter(value => value !== initialKey);
     const old = deferred<MonthlyGstCalculation[]>();
     const latest = deferred<MonthlyGstCalculation[]>();
     mocks.calculateMonths.mockImplementationOnce(() => old.promise).mockImplementationOnce(() => latest.promise);
-    fireEvent.click(screen.getByLabelText(alternatives[0]));
+    choosePeriod(alternatives[0]);
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(2));
     expect(reportPage().getAttribute('aria-busy')).toBe('true');
-    for (const label of ['Business', 'Financial year', 'Filing frequency', 'Select all months', alternatives[1]]) {
+    for (const label of ['Business', 'Financial year', 'Filing frequency', 'Reporting period']) {
       expect(screen.getByLabelText(label).matches(':disabled')).toBe(false);
     }
-    fireEvent.click(screen.getByLabelText(alternatives[1]));
+    choosePeriod(alternatives[1]);
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(3));
     const keys = mocks.calculateMonths.mock.lastCall![1] as string[];
-    expect(keys).toEqual([initialKey, ...alternatives.slice(0, 2)].sort());
+    expect(keys).toEqual([alternatives[1]]);
     const results = keys.map(key => {
       const r = calculation(key);
       r.totals.outwardNet = { ...summary, taxable_paise: 22200 };
@@ -96,7 +110,7 @@ describe('GST report workspace', () => {
     });
     await act(async () => latest.resolve(results));
     await finished();
-    expect(screen.getAllByRole('button', { name: 'Outward Taxable: 222.00. Show contributing sources' })).toHaveLength(3);
+    expect(screen.getAllByRole('button', { name: 'Outward Taxable: 222.00. Show contributing sources' })).toHaveLength(1);
     const status = within(reportPage() as HTMLElement).getByRole('status').textContent;
     await act(async () => {
       if (outcome === 'error') old.reject(new Error('Obsolete source error'));
@@ -106,7 +120,7 @@ describe('GST report workspace', () => {
         old.resolve([r]);
       }
     });
-    expect(screen.getAllByRole('button', { name: 'Outward Taxable: 222.00. Show contributing sources' })).toHaveLength(3);
+    expect(screen.getAllByRole('button', { name: 'Outward Taxable: 222.00. Show contributing sources' })).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Outward Taxable: 111.00. Show contributing sources' })).toBeNull();
     expect(screen.getByRole('alert').textContent).toBe('');
     expect(within(reportPage() as HTMLElement).getByRole('status').textContent).toBe(status);
@@ -153,42 +167,39 @@ describe('GST report workspace', () => {
     expect(reportPage().getAttribute('aria-busy')).toBe('false');
   });
 
-  it.each(['success', 'error'] as const)('keeps an empty selection clear when a pending calculation settles with %s', async outcome => {
+  it('never shows the previous period figures while a newly selected period calculates', async () => {
+    mocks.calculateMonths.mockImplementation(async (_b: string, keys: string[]) => keys.map(key => { const r = calculation(key); r.totals.outwardNet = { ...summary, taxable_paise: 11100 }; return r; }));
     await open();
-    const key = mocks.calculateMonths.mock.lastCall![1][0] as string;
+    expect(screen.getAllByRole('button', { name: 'Outward Taxable: 111.00. Show contributing sources' })).toHaveLength(1);
+    const next = periodValues().find(value => value !== periodSelect().value)!;
     const pending = deferred<MonthlyGstCalculation[]>();
     mocks.calculateMonths.mockImplementationOnce(() => pending.promise);
-    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
-    await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(2));
-    fireEvent.click(screen.getByLabelText(key));
-    await finished();
-    expect(mocks.calculateMonths).toHaveBeenCalledTimes(2);
-    await act(async () => {
-      if (outcome === 'error') pending.reject(new Error('Obsolete empty-selection error'));
-      else pending.resolve([calculation(key)]);
-    });
-    expect(mocks.calculateMonths).toHaveBeenCalledTimes(2);
+    choosePeriod(next);
+    await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-a', [next], 'MONTHLY'));
+    expect(screen.queryByRole('button', { name: 'Outward Taxable: 111.00. Show contributing sources' })).toBeNull();
     expect(screen.queryByLabelText('Current tax month')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Download Excel (current month)' })).toBeNull();
-    expect(screen.getByRole('alert').textContent).toBe('');
-    expect(reportPage().getAttribute('aria-busy')).toBe('false');
+    const fresh = calculation(next); fresh.totals.outwardNet = { ...summary, taxable_paise: 22200 };
+    await act(async () => pending.resolve([fresh]));
+    await finished();
+    expect(screen.getAllByRole('button', { name: 'Outward Taxable: 222.00. Show contributing sources' })).toHaveLength(1);
+    expect((screen.getByLabelText('Current tax month') as HTMLSelectElement).value).toBe(next);
   });
 
-  it('automatically recalculates frequency and new-FY month selections without reloading the profile', async () => {
+  it('keeps a still-valid period on frequency change and resets it on a new FY without reloading the profile', async () => {
     await open();
     const key = mocks.calculateMonths.mock.lastCall![1][0] as string;
     fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
-    await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-a', [key], 'QRMP'));
+    await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-a', quarterMonthsOf(key), 'QRMP'));
     await finished();
-    const year = Number((screen.getByLabelText('Financial year') as HTMLInputElement).value) - 1;
-    const calls = mocks.calculateMonths.mock.calls.length;
+    expect(periodValues()).toEqual(['Q1', 'Q2', 'Q3', 'Q4']);
+    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'MONTHLY' } });
+    await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-a', [quarterMonthsOf(key)[0]], 'MONTHLY'));
+    await finished();
+    const year = Number((screen.getByLabelText('Financial year') as HTMLSelectElement).value) - 1;
     fireEvent.change(screen.getByLabelText('Financial year'), { target: { value: String(year) } });
+    await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-a', [`${year}-04`], 'MONTHLY'));
     await finished();
-    expect(mocks.calculateMonths).toHaveBeenCalledTimes(calls);
-    expect(screen.queryByLabelText('Current tax month')).toBeNull();
-    fireEvent.click(screen.getByLabelText(`${year}-04`));
-    await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-a', [`${year}-04`], 'QRMP'));
-    await finished();
+    expect(periodSelect().value).toBe(`${year}-04`);
     expect(mocks.loadWorkspace).toHaveBeenCalledTimes(1);
     expect((screen.getByLabelText('Current tax month') as HTMLSelectElement).value).toBe(`${year}-04`);
   });
@@ -211,7 +222,7 @@ describe('GST report workspace', () => {
     expect(mocks.calculateMonths).toHaveBeenLastCalledWith(...initialCall);
     expect(mocks.loadWorkspace).toHaveBeenCalledTimes(2);
     expect(reportPage().getAttribute('aria-busy')).toBe('true');
-    for (const label of ['Business', 'Financial year', 'Filing frequency', 'Select all months']) {
+    for (const label of ['Business', 'Financial year', 'Filing frequency', 'Reporting period']) {
       expect(screen.getByLabelText(label).matches(':disabled')).toBe(false);
     }
     for (const name of ['Save profile', 'Save AATO', 'Download Excel (current month)', 'Download Excel (selected months)', 'Save reviewed snapshot', 'Finalize working snapshot']) {
@@ -255,7 +266,6 @@ describe('GST report workspace', () => {
       const r = calculation(key); r.totals.inwardNet = { ...summary, igst_paise: 100 }; r.totals.booksItc.NET_APPROVED = { ...empty, igst_paise: 40 }; return r;
     }));
     await open(); fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Select quarter months' }));
     await screen.findByText('All three months calculated independently.');
     expect(screen.getByRole('button', { name: 'Quarter PURCHASE_NET IGST: 3.00. Show contributing sources' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Quarter NET_APPROVED IGST: 1.20. Show contributing sources' })).toBeTruthy();
@@ -524,15 +534,18 @@ describe('GST report workspace', () => {
     resolve();
     await waitFor(() => expect(screen.getByLabelText('Current route').textContent).toBe('/returns/return'));
   });
-  it('selects all FY months chronologically without merging statutory periods', async () => {
+  it('generates readable April–March months and four quarters for the selected financial year', async () => {
     await open();
-    fireEvent.click(screen.getByLabelText('Select all months'));
-    await waitFor(() => expect(mocks.calculateMonths.mock.lastCall?.[1]).toHaveLength(12));
+    const year = Number((screen.getByLabelText('Financial year') as HTMLSelectElement).value);
+    const monthLabels = Array.from(periodSelect().options).map(o => o.textContent);
+    expect(monthLabels).toHaveLength(12);
+    expect(monthLabels[0]).toBe(`April ${year}`); expect(monthLabels[6]).toBe(`October ${year}`); expect(monthLabels[11]).toBe(`March ${year + 1}`);
+    expect(screen.getByText(`${Array.from(periodSelect().options).find(o => o.selected)!.textContent} selected`)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
     await finished();
-    const keys = mocks.calculateMonths.mock.lastCall![1] as string[];
-    expect(keys).toHaveLength(12); expect(new Set(keys).size).toBe(12); expect(keys).toEqual([...keys].sort());
-    expect(keys[0].slice(5)).toBe('04'); expect(keys[11].slice(5)).toBe('03');
-    await screen.findByText('Calculated independent monthly workings. No return has been filed.');
+    expect(Array.from(periodSelect().options).map(o => o.textContent)).toEqual([
+      `Q1 — April to June ${year}`, `Q2 — July to September ${year}`, `Q3 — October to December ${year}`, `Q4 — January to March ${year + 1}`,
+    ]);
     expect(screen.getByRole('table', { name: 'Independent monthly comparison (not a combined return period)' })).toBeTruthy();
   });
 
@@ -542,27 +555,12 @@ describe('GST report workspace', () => {
       totals: { ...calculation(key).totals, outwardNet: { ...summary, taxable_paise: (index + 1) * 10_000, document_count: index + 1, source_entity_ids: [`invoice-${key}`] } },
     })));
     await open();
-    const firstKey = mocks.calculateMonths.mock.lastCall![1][0] as string;
-    const otherKey = screen.getAllByRole('checkbox').map(input => input.closest('label')!.textContent!.trim()).find(label => /^\d{4}-\d{2}$/.test(label) && label !== firstKey)!;
-    fireEvent.click(screen.getByLabelText(otherKey));
+    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
+    await screen.findByRole('heading', { name: 'Selected-months analysis' });
     await finished();
-    expect(screen.getByRole('heading', { name: 'Selected-months analysis' })).toBeTruthy();
-    expect(screen.getByText('Total across 2 independently calculated months. This is for review only, not a combined GST return period.')).toBeTruthy();
-    expect(screen.getByText('300.00')).toBeTruthy();
+    expect(screen.getByText('Total across 3 independently calculated months. This is for review only, not a combined GST return period.')).toBeTruthy();
+    expect(within(screen.getByRole('heading', { name: 'Selected-months analysis' }).closest('section')!).getByText('600.00')).toBeTruthy();
     expect(screen.getByRole('table', { name: 'Independent monthly comparison (not a combined return period)' })).toBeTruthy();
-  });
-
-  it('clears results without calculating an empty selection', async () => {
-    await open();
-    const key = mocks.calculateMonths.mock.lastCall![1][0] as string;
-    const calls = mocks.calculateMonths.mock.calls.length;
-    fireEvent.click(screen.getByLabelText(key));
-    await finished();
-    expect(mocks.calculateMonths).toHaveBeenCalledTimes(calls);
-    expect(screen.queryByLabelText('Current tax month')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Download Excel (current month)' })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Calculate selected months|Recalculate/ })).toBeNull();
-    expect(within(screen.getByRole('table', { name: 'Independent monthly comparison (not a combined return period)' })).queryAllByRole('button')).toHaveLength(0);
   });
 
   it('announces calculation failures without leaving busy controls', async () => {
@@ -575,8 +573,7 @@ describe('GST report workspace', () => {
 
   it('keeps QRMP monthly calculations distinct from quarter analysis', async () => {
     await open(); fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
-    fireEvent.change(screen.getByLabelText('Quarter'), { target: { value: '4' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Select quarter months' }));
+    await finished(); choosePeriod('Q4');
     await screen.findByText('All three months calculated independently.');
     const call = mocks.calculateMonths.mock.lastCall!; expect(call[2]).toBe('QRMP');
     expect((call[1] as string[]).map(k => k.slice(5))).toEqual(['01', '02', '03']);
@@ -721,10 +718,10 @@ describe('GST report workspace', () => {
   });
 
   it('exports selected-month CSV independently from current-month CSV', async () => {
-    await open(); fireEvent.click(screen.getByLabelText('Select all months')); await finished();
+    await open(); fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } }); await finished();
     fireEvent.click(screen.getByRole('button', { name: 'Download CSV registers (selected months)' }));
     await waitFor(() => expect(mocks.csv).toHaveBeenCalledTimes(1)); await finished();
-    expect(mocks.csv.mock.lastCall![0]).toHaveLength(12);
+    expect(mocks.csv.mock.lastCall![0]).toHaveLength(3);
     fireEvent.click(screen.getByRole('button', { name: 'Download CSV registers (current month)' }));
     await waitFor(() => expect(mocks.csv).toHaveBeenCalledTimes(2)); expect(mocks.csv.mock.lastCall![0]).toHaveLength(1); await finished();
   });
@@ -791,7 +788,7 @@ describe('GST report workspace', () => {
     mocks.calculateQuarter.mockImplementationOnce(() => old.promise).mockImplementationOnce(() => latest.promise);
     fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
     await waitFor(() => expect(mocks.calculateQuarter).toHaveBeenCalledTimes(1));
-    fireEvent.change(screen.getByLabelText('Quarter'), { target: { value: '2' } });
+    choosePeriod(periodValues().find(v => v !== periodSelect().value && v !== 'Q1')!);
     await waitFor(() => expect(mocks.calculateQuarter).toHaveBeenCalledTimes(2));
     const year = mocks.calculateQuarter.mock.lastCall![1];
     const q = { ...calculation('2026-07'), period: quarterPeriod('business-a', '', year, 2) };
