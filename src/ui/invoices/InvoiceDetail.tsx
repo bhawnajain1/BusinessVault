@@ -16,6 +16,7 @@ import Qty from '../components/Qty';
 import StatusBadge from '../components/StatusBadge';
 import SalesReturnPicker from '../returns/SalesReturnPicker';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
+import { SavedTimes } from '../components/DateTime';
 
 interface Loaded {
   invoice: Invoice;
@@ -110,7 +111,7 @@ export default function InvoiceDetail() {
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link to="/invoices" className="text-sm text-blue-700 hover:underline">
+          <Link to="/invoices" className="text-sm text-indigo-700 hover:underline">
             ← Invoices
           </Link>
           <h1 className="text-xl font-semibold">
@@ -146,7 +147,7 @@ export default function InvoiceDetail() {
           )}
           <Link
             to={`/invoices/${invoice.id}/print`}
-            className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800"
+            className="text-sm bg-indigo-600 text-white rounded px-3 py-1.5 hover:bg-indigo-700"
           >
             Print / PDF
           </Link>
@@ -175,6 +176,7 @@ export default function InvoiceDetail() {
           <div>Invoice: {invoice.invoice_date}</div>
           <div>Due: {invoice.due_date ?? '—'}</div>
           <div>FY: {invoice.financial_year}</div>
+          <div className="mt-1"><SavedTimes createdAt={invoice.created_at} updatedAt={invoice.updated_at} /></div>
         </div>
         <div className="border border-slate-200 rounded p-3">
           <div className="text-slate-500">Place of Supply</div>

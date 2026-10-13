@@ -19,6 +19,7 @@ import Money from '../components/Money';
 import Qty from '../components/Qty';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import { log } from '../../lib/log';
+import { SavedTimes, formatDateTime } from '../components/DateTime';
 
 // Dedicated view for a single Sales Return. Shows header, per-line rows,
 // stock movements, the reversing JE (with lines), customer-credit advance
@@ -202,7 +203,7 @@ export default function SalesReturnDetail() {
     return (
       <div className="p-6 space-y-3">
         <div className="text-rose-600 text-sm">{error}</div>
-        <Link to="/returns" className="text-sm text-blue-700 hover:underline">
+        <Link to="/returns" className="text-sm text-indigo-700 hover:underline">
           ← Back to returns
         </Link>
       </div>
@@ -217,7 +218,7 @@ export default function SalesReturnDetail() {
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div className="flex flex-col gap-1">
-          <Link to="/returns" className="text-sm text-blue-700 hover:underline">
+          <Link to="/returns" className="text-sm text-indigo-700 hover:underline">
             ← All sales returns
           </Link>
           <h1 className="text-xl font-semibold text-fg">
@@ -237,7 +238,7 @@ export default function SalesReturnDetail() {
             {originalInvoice ? (
               <Link
                 to={`/invoices/${originalInvoice.id}`}
-                className="font-mono text-blue-700 hover:underline"
+                className="font-mono text-indigo-700 hover:underline"
               >
                 {originalInvoice.invoice_number}
               </Link>
@@ -249,13 +250,14 @@ export default function SalesReturnDetail() {
                 {' · '}
                 <Link
                   to={`/customers/${customer.id}`}
-                  className="text-blue-700 hover:underline"
+                  className="text-indigo-700 hover:underline"
                 >
                   {customer.name}
                 </Link>
               </>
             )}
           </div>
+          <SavedTimes createdAt={sr.created_at} updatedAt={sr.updated_at} />
         </div>
         <div className="flex gap-2">
           {sr.status === 'posted' && (
@@ -404,7 +406,7 @@ export default function SalesReturnDetail() {
               <tbody>
                 {data.stockMovements.map((mv) => (
                   <tr key={mv.id} className="border-t border-border">
-                    <td className="px-3 py-1.5 font-mono text-xs">{mv.occurred_at}</td>
+                    <td className="px-3 py-1.5 text-xs">{mv.occurred_at.length > 10 ? formatDateTime(mv.occurred_at) : mv.occurred_at}</td>
                     <td className="px-3 py-1.5">
                       {itemById.get(mv.item_id)?.name ?? mv.item_id}
                     </td>

@@ -19,6 +19,7 @@ import type {
   Advance,
   Customer,
   Invoice,
+  Payment,
   Purchase,
   Supplier,
 } from '../db/types';
@@ -380,8 +381,44 @@ describe('computeDashboardStats — individual filter cases', () => {
     expect(stats.analytics.monthly[1].sales_paise).toBe(12000);
     expect(stats.analytics.monthly[5].sales_paise).toBe(25000);
     expect(stats.analytics.topCustomers).toEqual([
-      { name: 'Ravi', outstanding_paise: 37000 },
+      { customer_id: stats.analytics.topCustomers[0].customer_id, name: 'Ravi', outstanding_paise: 37000 },
     ]);
+  });
+
+  it('honours the dashboard date range for the monthly series and payment mix', () => {
+    const payment = (id: string, date: string, method: 'cash' | 'upi', amount: number) =>
+      ({
+        id,
+        direction: 'in',
+        party_type: 'customer',
+        payment_date: date,
+        method,
+        amount_paise: amount,
+        deleted_at: null,
+      }) as unknown as Payment;
+    const stats = computeDashboardStats({
+      invoices: [mkInvoice('a', 'INV-A', 5000, { invoice_date: '2026-08-02' })],
+      purchases: [],
+      customers: [mkCustomer()],
+      suppliers: [],
+      advances: NO_ADVANCES,
+      payments: [
+        payment('p1', '2026-05-10', 'cash', 1000),
+        payment('p2', '2026-08-03', 'upi', 2000),
+        payment('p3', '2026-08-04', 'cash', 300),
+      ],
+      itemCount: 0,
+      asOfYmd: '2026-08-27',
+      range: { fromYmd: '2026-06-01', toYmd: '2026-08-27', months: 3 },
+    });
+
+    expect(stats.analytics.monthly.map((month) => month.key)).toEqual(['2026-06', '2026-07', '2026-08']);
+    expect(stats.analytics.monthly[2]).toMatchObject({ sales_paise: 5000, collections_paise: 2300 });
+    expect(stats.analytics.paymentMix).toEqual([
+      { method: 'upi', amount_paise: 2000 },
+      { method: 'cash', amount_paise: 300 },
+    ]);
+    expect(stats.recentInvoices[0]).toMatchObject({ number: 'INV-A', status: expect.any(String) });
   });
 
   it('excludes recycled invoices from the count and Recent list', () => {

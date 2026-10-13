@@ -8,6 +8,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import StatusBadge from '../components/StatusBadge';
 import { paginateCollection, matchesText } from '../components/pagination';
+import { DateTimeCell, formatDateTime } from '../components/DateTime';
 
 const STATUSES: InvoiceStatus[] = ['draft', 'issued', 'partial', 'paid', 'cancelled'];
 
@@ -125,12 +126,13 @@ export default function InvoicesPage() {
       filterable: true,
       sortValue: (r) => r.invoice_number,
       render: (r) => (
-        <Link to={`/invoices/${r.id}`} className="text-blue-700 hover:underline">
+        <Link to={`/invoices/${r.id}`} className="text-indigo-700 hover:underline">
           {r.invoice_number}
         </Link>
       ),
     },
-    { key: 'invoice_date', header: 'Date', sortValue: (r) => r.invoice_date, render: (r) => r.invoice_date },
+    { key: 'created_at', header: 'Created Date', sortValue: (r) => r.created_at, render: (r) => <DateTimeCell iso={r.created_at} /> },
+    { key: 'updated_at', header: 'Last Modified Date', sortValue: (r) => r.updated_at, render: (r) => <DateTimeCell iso={r.updated_at} /> },
     {
       key: 'customer',
       header: 'Customer',
@@ -222,6 +224,8 @@ export default function InvoicesPage() {
       columns: [
         { header: 'Invoice #', get: (r: Invoice) => r.invoice_number },
         { header: 'Date', get: (r: Invoice) => r.invoice_date },
+        { header: 'Created At', get: (r: Invoice) => formatDateTime(r.created_at) },
+        { header: 'Modified At', get: (r: Invoice) => formatDateTime(r.updated_at) },
         { header: 'Due Date', get: (r: Invoice) => r.due_date ?? '' },
         {
           header: 'Customer',
@@ -264,7 +268,7 @@ export default function InvoicesPage() {
           </Link>
           <Link
             to="/invoices/new"
-            className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
+            className="bg-indigo-600 text-white text-sm rounded px-3 py-1.5 hover:bg-indigo-700"
           >
             New Invoice
           </Link>

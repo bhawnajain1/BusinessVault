@@ -9,7 +9,7 @@ interface Props {
 const SYNC_STATES: ReadonlyArray<{ label: string; desc: string; color: string }> = [
   { label: 'LOCAL_ONLY', desc: 'Just saved on this device.', color: 'bg-slate-100 text-slate-700' },
   { label: 'QUEUED', desc: 'Waiting to upload.', color: 'bg-amber-100 text-amber-800' },
-  { label: 'SYNCING', desc: 'Uploading now.', color: 'bg-blue-100 text-blue-800' },
+  { label: 'SYNCING', desc: 'Uploading now.', color: 'bg-indigo-100 text-indigo-800' },
   { label: 'SYNCED', desc: 'Safely in your Drive.', color: 'bg-green-100 text-green-800' },
   { label: 'CONFLICT', desc: 'Same record edited on two devices — needs review.', color: 'bg-rose-100 text-rose-800' },
   { label: 'FAILED', desc: 'Upload failed after retries — action required.', color: 'bg-red-100 text-red-800' },

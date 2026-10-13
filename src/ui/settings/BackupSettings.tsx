@@ -79,7 +79,7 @@ function relativeTime(iso: string | null, now: Date = new Date()): string {
 
 const STATUS_TONE: Record<BackupHealthStatus, string> = {
   HEALTHY: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-  SYNCING: 'bg-blue-50 text-blue-700 ring-blue-200',
+  SYNCING: 'bg-indigo-50 text-indigo-700 ring-indigo-200',
   OFFLINE: 'bg-slate-100 text-slate-700 ring-slate-300',
   DISCONNECTED: 'bg-amber-50 text-amber-800 ring-amber-300',
   ERROR: 'bg-rose-50 text-rose-700 ring-rose-300',

@@ -584,7 +584,7 @@ export default function POSScreen(): JSX.Element {
         </label>
         <a
           href="/customers"
-          className="text-xs text-blue-700 hover:underline"
+          className="text-xs text-indigo-700 hover:underline"
           onClick={(e) => {
             // Let react-router handle it; using <a> keeps this from needing another import.
             e.preventDefault();

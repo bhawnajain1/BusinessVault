@@ -17,6 +17,7 @@ import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { AdvanceService } from '../../domain/AdvanceService';
 import { isActivePurchase } from '../../domain/partyLedger';
+import { DateTimeCell, formatDateTime } from '../components/DateTime';
 
 const METHODS: PaymentMethod[] = ['cash', 'card', 'upi', 'bank', 'cheque'];
 
@@ -267,7 +268,8 @@ export default function AdvancesPage() {
       filterable: true,
       render: (r) => r.advance_number,
     },
-    { key: 'advance_date', header: 'Date', render: (r) => r.advance_date },
+    { key: 'created_at', header: 'Created Date', sortValue: (r) => r.created_at, render: (r) => <DateTimeCell iso={r.created_at} /> },
+    { key: 'updated_at', header: 'Last Modified Date', sortValue: (r) => r.updated_at, render: (r) => <DateTimeCell iso={r.updated_at} /> },
     {
       key: 'direction',
       header: 'Type',
@@ -339,6 +341,8 @@ export default function AdvancesPage() {
       columns: [
         { header: 'Advance #', get: (r: Advance) => r.advance_number },
         { header: 'Date', get: (r: Advance) => r.advance_date },
+        { header: 'Created At', get: (r: Advance) => formatDateTime(r.created_at) },
+        { header: 'Modified At', get: (r: Advance) => formatDateTime(r.updated_at) },
         { header: 'Type', get: (r: Advance) => r.party_type },
         {
           header: 'Party',
@@ -414,7 +418,7 @@ export default function AdvancesPage() {
 
       {(recordOpen || isNewRoute) && (
         <div
-          className={isNewRoute ? 'fixed inset-0 z-40 overflow-y-auto bg-slate-50/95 p-5 sm:p-8' : 'fixed inset-0 z-40 flex items-start justify-end bg-black/40'}
+          className={isNewRoute ? 'fixed inset-0 z-40 overflow-y-auto bg-slate-50/95 p-5 sm:p-8' : 'fixed inset-0 z-40 flex items-start justify-end bg-slate-200/60 backdrop-blur-sm'}
           onClick={() => (isNewRoute ? navigate('/advances') : setRecordOpen(false))}
         >
           <div
@@ -423,7 +427,7 @@ export default function AdvancesPage() {
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-7">
               <div>
-                {isNewRoute && <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Accounting entry</p>}
+                {isNewRoute && <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-600">Accounting entry</p>}
                 <h2 className={isNewRoute ? 'mt-1 text-3xl font-semibold tracking-tight text-slate-950' : 'text-base font-semibold text-fg'}>Record advance</h2>
               </div>
               {!isNewRoute && (
@@ -575,7 +579,7 @@ export default function AdvancesPage() {
 
       {applyTarget && (
         <div
-          className="fixed inset-0 z-40 bg-black/40 flex items-start justify-end"
+          className="fixed inset-0 z-40 bg-slate-200/60 backdrop-blur-sm flex items-start justify-end"
           onClick={() => setApplyTarget(null)}
         >
           <div

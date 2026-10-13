@@ -490,7 +490,7 @@ export default function Settings() {
         <div className="flex gap-2">
           <Link
             to="/onboarding"
-            className="inline-block rounded bg-slate-900 px-4 py-2 text-sm text-white"
+            className="inline-block rounded bg-indigo-600 px-4 py-2 text-sm text-white"
           >
             Go to onboarding
           </Link>
@@ -546,7 +546,7 @@ export default function Settings() {
           </div>
           <div className="flex gap-2">
             <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleLogoUpload(f); }} />
-            <button type="button" onClick={() => logoInputRef.current?.click()} disabled={logoBusy} className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50">{business.logo_ref ? 'Replace logo' : 'Upload logo'}</button>
+            <button type="button" onClick={() => logoInputRef.current?.click()} disabled={logoBusy} className="text-sm bg-indigo-600 text-white rounded px-3 py-1.5 hover:bg-indigo-700 disabled:opacity-50">{business.logo_ref ? 'Replace logo' : 'Upload logo'}</button>
             {business.logo_ref && <button type="button" onClick={() => void handleLogoRemove()} disabled={logoBusy} className="text-sm border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-100 disabled:opacity-50">Remove</button>}
           </div>
         </div>
@@ -771,7 +771,7 @@ export default function Settings() {
             type="button"
             onClick={save}
             disabled={saving}
-            className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+            className="text-sm bg-indigo-600 text-white rounded px-3 py-1.5 hover:bg-indigo-700 disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save changes'}
           </button>
@@ -814,7 +814,7 @@ export default function Settings() {
                 type="button"
                 onClick={() => signatureInputRef.current?.click()}
                 disabled={signatureBusy}
-                className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800 disabled:opacity-50"
+                className="text-sm bg-indigo-600 text-white rounded px-3 py-1.5 hover:bg-indigo-700 disabled:opacity-50"
               >
                 {business.signature_ref ? 'Replace signature' : 'Upload signature'}
               </button>
@@ -938,12 +938,12 @@ export default function Settings() {
         <h2 className="text-sm font-semibold text-slate-700 mb-3">Data & backup</h2>
         <ul className="text-sm space-y-2">
           <li>
-            <Link to="/settings/backup" className="text-blue-700 hover:underline">
+            <Link to="/settings/backup" className="text-indigo-700 hover:underline">
               Backup status &amp; Google Drive settings →
             </Link>
           </li>
           <li>
-            <Link to="/restore" className="text-blue-700 hover:underline">
+            <Link to="/restore" className="text-indigo-700 hover:underline">
               Restore business from Drive →
             </Link>
           </li>

@@ -321,7 +321,7 @@ export default function InvoicePrint() {
         <div className="no-print screen-only flex items-center justify-between mb-4">
           <Link
             to={`/invoices/${invoice.id}`}
-            className="text-sm text-blue-700 hover:underline"
+            className="text-sm text-indigo-700 hover:underline"
           >
             ← Back to invoice
           </Link>
@@ -337,7 +337,7 @@ export default function InvoicePrint() {
             <button
               type="button"
               onClick={() => window.print()}
-              className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
+              className="bg-indigo-600 text-white text-sm rounded px-3 py-1.5 hover:bg-indigo-700"
             >
               Print / Save PDF
             </button>
@@ -390,19 +390,18 @@ export default function InvoicePrint() {
           </table>
 
           <table className="mt-3">
-            <thead><tr><th>#</th><th className="text-left">Item name</th><th className="text-left">HSN / SAC</th><th className="right">Quantity</th><th>Unit</th><th className="right">Price / Unit (₹)</th><th className="right">GST (₹)</th><th className="right">Amount (₹)</th></tr></thead>
+            <thead><tr><th>#</th><th className="text-left">Item name</th><th className="text-left">HSN / SAC</th><th className="right">Quantity</th><th className="right">Price / Unit (₹)</th><th className="right">GST (₹)</th><th className="right">Amount (₹)</th></tr></thead>
             <tbody>
               {lines.map((line) => <tr key={line.id}>
                 <td className="center">{line.line_no}</td>
                 <td><strong>{items.get(line.item_id)?.name ?? line.item_id}</strong>{line.description && <div className="muted">{line.description}</div>}</td>
                 <td>{line.hsn || '—'}</td>
                 <td className="right"><Qty micros={line.qty_micros} /></td>
-                <td className="center">{items.get(line.item_id)?.unit_id || '—'}</td>
                 <td className="right"><Money paise={line.unit_price_paise} /></td>
                 <td className="right"><Money paise={line.cgst_paise + line.sgst_paise + line.igst_paise + line.cess_paise} /></td>
                 <td className="right"><Money paise={line.line_total_paise} /></td>
               </tr>)}
-              <tr><td /><td><strong>Total</strong></td><td /><td className="right"><strong><Qty micros={totalQty} /></strong></td><td /><td /><td className="right"><strong><Money paise={totalTax + invoice.cess_paise} /></strong></td><td className="right"><strong><Money paise={invoice.pre_round_total_paise} /></strong></td></tr>
+              <tr><td /><td><strong>Total</strong></td><td /><td className="right"><strong><Qty micros={totalQty} /></strong></td><td /><td className="right"><strong><Money paise={totalTax + invoice.cess_paise} /></strong></td><td className="right"><strong><Money paise={invoice.pre_round_total_paise} /></strong></td></tr>
             </tbody>
           </table>
 

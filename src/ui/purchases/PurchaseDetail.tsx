@@ -12,6 +12,7 @@ import type {
 import Money from '../components/Money';
 import Qty from '../components/Qty';
 import StatusBadge from '../components/StatusBadge';
+import { SavedTimes } from '../components/DateTime';
 
 interface Loaded {
   purchase: Purchase;
@@ -63,7 +64,7 @@ export default function PurchaseDetail() {
   return (
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center gap-3">
-        <Link to="/purchases" className="text-sm text-blue-700 hover:underline">
+        <Link to="/purchases" className="text-sm text-indigo-700 hover:underline">
           ← Purchases
         </Link>
         <h1 className="text-xl font-semibold">Bill {purchase.bill_number}</h1>
@@ -84,6 +85,7 @@ export default function PurchaseDetail() {
           <div>Bill: {purchase.bill_date}</div>
           <div>Due: {purchase.due_date ?? '—'}</div>
           <div>FY: {purchase.financial_year}</div>
+          <div className="mt-1"><SavedTimes createdAt={purchase.created_at} updatedAt={purchase.updated_at} /></div>
         </div>
         <div className="border border-slate-200 rounded p-3">
           <div className="text-slate-500">Supplier Bill #</div>

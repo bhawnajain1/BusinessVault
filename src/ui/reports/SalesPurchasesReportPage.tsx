@@ -179,10 +179,10 @@ export default function SalesPurchasesReportPage() {
       {loading && <div className="text-slate-500 text-sm">Loading report...</div>}
 
       <section className="grid gap-3 sm:grid-cols-2" aria-label="Selected date totals">
-        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
-          <div className="text-sm font-medium text-blue-800">Total sales</div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums text-blue-950">{money(report.sales_total_paise)}</div>
-          <div className="mt-1 text-xs text-blue-700">{report.sales.length} invoices in range</div>
+        <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4">
+          <div className="text-sm font-medium text-indigo-800">Total sales</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums text-indigo-950">{money(report.sales_total_paise)}</div>
+          <div className="mt-1 text-xs text-indigo-700">{report.sales.length} invoices in range</div>
         </div>
         <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
           <div className="text-sm font-medium text-emerald-800">Total purchases</div>
@@ -209,7 +209,7 @@ export default function SalesPurchasesReportPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600"><tr><th className="text-left px-3 py-2">Date</th><th className="text-left px-3 py-2">Invoice #</th><th className="text-left px-3 py-2">Customer</th><th className="text-right px-3 py-2">Total</th></tr></thead>
             <tbody>
-              {salesControls.filteredRows.map((row) => <tr key={row.id} className="border-t border-slate-100"><td className="px-3 py-2">{row.date}</td><td className="px-3 py-2"><Link to={`/invoices/${row.id}`} className="text-blue-700 hover:underline">{row.number}</Link></td><td className="px-3 py-2">{row.party}</td><td className="px-3 py-2 text-right tabular-nums">{money(row.total_paise)}</td></tr>)}
+              {salesControls.filteredRows.map((row) => <tr key={row.id} className="border-t border-slate-100"><td className="px-3 py-2">{row.date}</td><td className="px-3 py-2"><Link to={`/invoices/${row.id}`} className="text-indigo-700 hover:underline">{row.number}</Link></td><td className="px-3 py-2">{row.party}</td><td className="px-3 py-2 text-right tabular-nums">{money(row.total_paise)}</td></tr>)}
               {salesControls.filteredRows.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-400">No sales match this date range and filter.</td></tr>}
             </tbody>
             <tfoot className="bg-slate-50 font-semibold"><tr><td colSpan={3} className="px-3 py-2 text-right">Total sales</td><td className="px-3 py-2 text-right tabular-nums">{money(report.sales_total_paise)}</td></tr></tfoot>
@@ -230,7 +230,7 @@ export default function SalesPurchasesReportPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600"><tr><th className="text-left px-3 py-2">Date</th><th className="text-left px-3 py-2">Bill #</th><th className="text-left px-3 py-2">Supplier</th><th className="text-right px-3 py-2">Total</th></tr></thead>
             <tbody>
-              {purchaseControls.filteredRows.map((row) => <tr key={row.id} className="border-t border-slate-100"><td className="px-3 py-2">{row.date}</td><td className="px-3 py-2"><Link to={`/purchases/${row.id}`} className="text-blue-700 hover:underline">{row.number}</Link></td><td className="px-3 py-2">{row.party}</td><td className="px-3 py-2 text-right tabular-nums">{money(row.total_paise)}</td></tr>)}
+              {purchaseControls.filteredRows.map((row) => <tr key={row.id} className="border-t border-slate-100"><td className="px-3 py-2">{row.date}</td><td className="px-3 py-2"><Link to={`/purchases/${row.id}`} className="text-indigo-700 hover:underline">{row.number}</Link></td><td className="px-3 py-2">{row.party}</td><td className="px-3 py-2 text-right tabular-nums">{money(row.total_paise)}</td></tr>)}
               {purchaseControls.filteredRows.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-400">No purchases match this date range and filter.</td></tr>}
             </tbody>
             <tfoot className="bg-slate-50 font-semibold"><tr><td colSpan={3} className="px-3 py-2 text-right">Total purchases</td><td className="px-3 py-2 text-right tabular-nums">{money(report.purchases_total_paise)}</td></tr></tfoot>

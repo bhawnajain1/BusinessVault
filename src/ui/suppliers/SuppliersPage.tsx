@@ -199,7 +199,7 @@ export default function SuppliersPage() {
         <Link
           to={`/parties/supplier/${r.id}/ledger`}
           onClick={(e) => e.stopPropagation()}
-          className="text-xs text-blue-700 hover:underline"
+          className="text-xs text-indigo-700 hover:underline"
         >
           Ledger
         </Link>

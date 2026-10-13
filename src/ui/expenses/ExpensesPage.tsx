@@ -7,6 +7,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { ExpenseService } from '../../domain/ExpenseService';
+import { DateTimeCell, formatDateTime } from '../components/DateTime';
 
 export default function ExpensesPage() {
   const navigate = useNavigate();
@@ -192,7 +193,8 @@ export default function ExpensesPage() {
       filterable: true,
       render: (r) => r.expense_number,
     },
-    { key: 'expense_date', header: 'Date', render: (r) => r.expense_date },
+    { key: 'created_at', header: 'Created Date', sortValue: (r) => r.created_at, render: (r) => <DateTimeCell iso={r.created_at} /> },
+    { key: 'updated_at', header: 'Last Modified Date', sortValue: (r) => r.updated_at, render: (r) => <DateTimeCell iso={r.updated_at} /> },
     {
       key: 'category',
       header: 'Category',
@@ -248,6 +250,8 @@ export default function ExpensesPage() {
       columns: [
         { header: 'Expense #', get: (r: Expense) => r.expense_number },
         { header: 'Date', get: (r: Expense) => r.expense_date },
+        { header: 'Created At', get: (r: Expense) => formatDateTime(r.created_at) },
+        { header: 'Modified At', get: (r: Expense) => formatDateTime(r.updated_at) },
         {
           header: 'Category',
           get: (r: Expense) =>
@@ -328,7 +332,7 @@ export default function ExpensesPage() {
 
       {(drawerOpen || isNewRoute) && (
         <div
-          className={isNewRoute ? 'fixed inset-0 z-40 overflow-y-auto bg-slate-50/95 p-5 sm:p-8' : 'fixed inset-0 z-40 flex items-start justify-end bg-black/40'}
+          className={isNewRoute ? 'fixed inset-0 z-40 overflow-y-auto bg-slate-50/95 p-5 sm:p-8' : 'fixed inset-0 z-40 flex items-start justify-end bg-slate-200/60 backdrop-blur-sm'}
           onClick={isNewRoute ? () => navigate('/expenses') : closeDrawer}
           data-full-page={isNewRoute ? 'true' : undefined}
         >
@@ -338,7 +342,7 @@ export default function ExpensesPage() {
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-7">
               <div>
-                {isNewRoute && <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Accounting entry</p>}
+                {isNewRoute && <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-600">Accounting entry</p>}
                 <h2 className={isNewRoute ? 'mt-1 text-3xl font-semibold tracking-tight text-slate-950' : 'text-base font-semibold text-fg'}>New Expense</h2>
               </div>
               {!isNewRoute && (

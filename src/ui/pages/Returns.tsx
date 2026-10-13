@@ -7,6 +7,7 @@ import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import SalesReturnPicker from '../returns/SalesReturnPicker';
 import Money from '../components/Money';
 import { log } from '../../lib/log';
+import { DateTimeCell } from '../components/DateTime';
 
 // Sales Returns are per-line, first-class documents (schema v5). Distinct
 // from Invoice Edits, which reissue the invoice. This page:
@@ -172,7 +173,8 @@ export default function Returns() {
             <table className="w-full text-sm">
               <thead className="bg-surface-hover text-xs uppercase text-fg-muted sticky top-0">
                 <tr>
-                  <th className="text-left px-3 py-2">Date</th>
+                  <th className="text-left px-3 py-2">Created Date</th>
+                  <th className="text-left px-3 py-2">Last Modified Date</th>
                   <th className="text-left px-3 py-2">Invoice #</th>
                   <th className="text-left px-3 py-2">Customer</th>
                   <th className="text-right px-3 py-2">Total</th>
@@ -182,7 +184,8 @@ export default function Returns() {
               <tbody>
                 {filteredReturnable.map((inv) => (
                   <tr key={inv.id} className="border-t border-border">
-                    <td className="px-3 py-1.5 text-fg-muted">{inv.invoice_date}</td>
+                    <td className="px-3 py-1.5 text-fg-muted"><DateTimeCell iso={inv.created_at} /></td>
+                    <td className="px-3 py-1.5 text-fg-muted"><DateTimeCell iso={inv.updated_at} /></td>
                     <td className="px-3 py-1.5 font-mono text-xs">
                       {inv.invoice_number}
                     </td>
@@ -205,7 +208,7 @@ export default function Returns() {
                 ))}
                 {filteredReturnable.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-3 py-6 text-center text-fg-subtle">
+                    <td colSpan={6} className="px-3 py-6 text-center text-fg-subtle">
                       {returnableInvoices.length === 0
                         ? 'No invoices eligible for return.'
                         : 'No matches.'}
@@ -236,7 +239,8 @@ export default function Returns() {
           <table className="w-full text-sm">
             <thead className="bg-surface-hover text-xs uppercase text-fg-muted">
               <tr>
-                <th className="text-left px-3 py-2">Date</th>
+                  <th className="text-left px-3 py-2">Created Date</th>
+                  <th className="text-left px-3 py-2">Last Modified Date</th>
                 <th className="text-left px-3 py-2">Return #</th>
                 <th className="text-left px-3 py-2">Against invoice</th>
                 <th className="text-left px-3 py-2">Customer</th>
@@ -250,11 +254,12 @@ export default function Returns() {
                 const original = invoicesById.get(sr.original_invoice_id);
                 return (
                   <tr key={sr.id} className="border-t border-border">
-                    <td className="px-3 py-1.5 text-fg-muted">{sr.return_date}</td>
+                    <td className="px-3 py-1.5 text-fg-muted"><DateTimeCell iso={sr.created_at} /></td>
+                    <td className="px-3 py-1.5 text-fg-muted"><DateTimeCell iso={sr.updated_at} /></td>
                     <td className="px-3 py-1.5 font-mono text-xs">
                       <Link
                         to={`/returns/${sr.id}`}
-                        className="text-blue-700 hover:underline"
+                        className="text-indigo-700 hover:underline"
                       >
                         {sr.return_number}
                       </Link>
@@ -263,7 +268,7 @@ export default function Returns() {
                       {original ? (
                         <Link
                           to={`/invoices/${original.id}`}
-                          className="text-blue-700 hover:underline"
+                          className="text-indigo-700 hover:underline"
                         >
                           {original.invoice_number}
                         </Link>
@@ -291,7 +296,7 @@ export default function Returns() {
                     <td className="px-3 py-1.5 text-right">
                       <Link
                         to={`/returns/${sr.id}`}
-                        className="text-xs text-blue-700 hover:underline"
+                        className="text-xs text-indigo-700 hover:underline"
                       >
                         View
                       </Link>
@@ -301,7 +306,7 @@ export default function Returns() {
               })}
               {(salesReturns ?? []).length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-3 py-6 text-center text-fg-subtle">
+                  <td colSpan={8} className="px-3 py-6 text-center text-fg-subtle">
                     No sales returns yet.
                   </td>
                 </tr>

@@ -505,7 +505,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
                 <button
                   type="button"
                   onClick={onChooseFolder}
-                  className="bg-slate-900 text-white rounded px-3 py-2 text-sm hover:bg-slate-800"
+                  className="bg-indigo-600 text-white rounded px-3 py-2 text-sm hover:bg-indigo-700"
                 >
                   Choose Folder…
                 </button>
@@ -623,7 +623,7 @@ export default function RestoreWizard(props: RestoreWizardProps) {
           <div className="text-slate-700">{statusMessage}</div>
           <div className="h-2 bg-slate-200 rounded overflow-hidden">
             <div
-              className="h-full bg-slate-900 transition-all"
+              className="h-full bg-indigo-600 transition-all"
               style={{ width: `${progressPct}%` }}
             />
           </div>

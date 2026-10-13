@@ -20,6 +20,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { INDIAN_BANKS } from './indianBanks';
+import { DateTimeCell, formatDateTime } from '../components/DateTime';
 
 const METHODS: PaymentMethod[] = ['cash', 'bank', 'upi', 'card', 'cheque'];
 
@@ -252,7 +253,8 @@ export default function PaymentsPage() {
       filterable: true,
       render: (r) => r.payment_number,
     },
-    { key: 'payment_date', header: 'Date', render: (r) => r.payment_date },
+    { key: 'created_at', header: 'Created Date', sortValue: (r) => r.created_at, render: (r) => <DateTimeCell iso={r.created_at} /> },
+    { key: 'updated_at', header: 'Last Modified Date', sortValue: (r) => r.updated_at, render: (r) => <DateTimeCell iso={r.updated_at} /> },
     {
       key: 'direction',
       header: 'Direction',
@@ -303,6 +305,8 @@ export default function PaymentsPage() {
       columns: [
         { header: 'Payment #', get: (r: Payment) => r.payment_number },
         { header: 'Date', get: (r: Payment) => r.payment_date },
+        { header: 'Created At', get: (r: Payment) => formatDateTime(r.created_at) },
+        { header: 'Modified At', get: (r: Payment) => formatDateTime(r.updated_at) },
         { header: 'Direction', get: (r: Payment) => r.direction },
         { header: 'Party Type', get: (r: Payment) => r.party_type },
         {
@@ -369,7 +373,7 @@ export default function PaymentsPage() {
       />
 
       {entryDirection && (
-        <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/40 p-6">
+        <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-slate-200/60 backdrop-blur-sm p-6">
           <div className="w-full max-w-xl rounded bg-white shadow-xl">
             <div className="flex items-center justify-between border-b px-4 py-3">
               <h2 className="font-semibold">{entryDirection === 'in' ? 'Payment In' : 'Payment Out'}</h2>
@@ -402,7 +406,7 @@ export default function PaymentsPage() {
             </div>
             <div className="flex justify-end gap-2 border-t px-4 py-3">
               <button type="button" onClick={() => setEntryDirection(null)} className="action-cancel text-sm">Cancel</button>
-              <button type="button" onClick={() => void saveEntry()} disabled={entrySaving} className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{entrySaving ? 'Saving...' : 'Save payment'}</button>
+              <button type="button" onClick={() => void saveEntry()} disabled={entrySaving} className="rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{entrySaving ? 'Saving...' : 'Save payment'}</button>
             </div>
           </div>
         </div>

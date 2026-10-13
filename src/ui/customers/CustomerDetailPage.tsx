@@ -16,6 +16,7 @@ import { PaymentService } from '../../domain/PaymentService';
 import { SYSTEM_ACCOUNT_CODES } from '../../domain/coa';
 import Money from '../components/Money';
 import { streamCsvExport } from '../../csv/streamCsvExport';
+import { DateTimeCell } from '../components/DateTime';
 
 type Tab = 'invoices' | 'payments' | 'statement';
 type InvoiceSortKey =
@@ -623,7 +624,7 @@ export default function CustomerDetailPage() {
     <div className="customer-detail-page">
       <div className="customer-detail-container">
         <div className="customer-detail-back">
-          <Link to="/customers" className="text-sm text-blue-700 hover:underline">
+          <Link to="/customers" className="text-sm text-indigo-700 hover:underline">
           ← Customers
           </Link>
         </div>
@@ -734,7 +735,8 @@ export default function CustomerDetailPage() {
             <thead>
               <tr>
                 <th scope="col" aria-sort={invoiceSort.key === 'invoice_number' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Invoice #', 'invoice_number')}</th>
-                <th scope="col" aria-sort={invoiceSort.key === 'invoice_date' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Date', 'invoice_date')}</th>
+                <th scope="col">Created Date</th>
+                <th scope="col">Last Modified Date</th>
                 <th scope="col" aria-sort={invoiceSort.key === 'due_date' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Due date', 'due_date')}</th>
                 <th scope="col" className="text-right" aria-sort={invoiceSort.key === 'total_paise' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Amount', 'total_paise', 'customer-table-sort-button-right')}</th>
                 <th scope="col" className="text-right" aria-sort={invoiceSort.key === 'paid_paise' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Paid', 'paid_paise', 'customer-table-sort-button-right')}</th>
@@ -746,7 +748,7 @@ export default function CustomerDetailPage() {
             <tbody>
               {invoiceRows.length === 0 && (
                 <tr>
-                  <td className="px-2 py-4 text-slate-500 text-center" colSpan={8}>
+                  <td className="px-2 py-4 text-slate-500 text-center" colSpan={9}>
                     No invoices for this customer yet.
                   </td>
                 </tr>
@@ -756,12 +758,13 @@ export default function CustomerDetailPage() {
                   <td>
                     <Link
                       to={`/invoices/${r.inv.id}`}
-                      className="text-blue-700 hover:underline font-mono text-xs"
+                      className="text-indigo-700 hover:underline font-mono text-xs"
                     >
                       {r.inv.invoice_number}
                     </Link>
                   </td>
-                  <td>{fmtDateShort(r.inv.invoice_date)}</td>
+                  <td><DateTimeCell iso={r.inv.created_at} /></td>
+                  <td><DateTimeCell iso={r.inv.updated_at} /></td>
                   <td>
                     {r.inv.due_date ? fmtDateShort(r.inv.due_date) : '—'}
                   </td>
@@ -811,7 +814,8 @@ export default function CustomerDetailPage() {
           <table className="customer-table data-table min-w-[760px]">
             <thead>
               <tr>
-                <th scope="col">Date</th>
+                <th scope="col">Created Date</th>
+                <th scope="col">Last Modified Date</th>
                 <th scope="col">Receipt #</th>
                 <th scope="col" className="text-right">Amount</th>
                 <th scope="col">Method</th>
@@ -823,7 +827,7 @@ export default function CustomerDetailPage() {
             <tbody>
               {payments.length === 0 && (
                 <tr>
-                <td className="py-10 text-center text-fg-subtle" colSpan={7}>
+                <td className="py-10 text-center text-fg-subtle" colSpan={8}>
                     No payments recorded for this customer yet.
                   </td>
                 </tr>
@@ -833,7 +837,8 @@ export default function CustomerDetailPage() {
                 const unalloc = Math.max(0, p.amount_paise - allocTotal);
                 return (
                   <tr key={p.id} className="align-top">
-                    <td>{fmtDateShort(p.payment_date)}</td>
+                    <td><DateTimeCell iso={p.created_at} /></td>
+                  <td><DateTimeCell iso={p.updated_at} /></td>
                     <td className="font-mono text-xs">{p.payment_number}</td>
                     <td className="text-right customer-money">
                       <Money paise={p.amount_paise} />
@@ -850,7 +855,7 @@ export default function CustomerDetailPage() {
                               {a.invoice_id ? (
                                 <Link
                                   to={`/invoices/${a.invoice_id}`}
-                                  className="text-blue-700 hover:underline font-mono"
+                                  className="text-indigo-700 hover:underline font-mono"
                                 >
                                   {invoiceById.get(a.invoice_id)?.invoice_number ??
                                     a.invoice_id.slice(-8)}
@@ -866,7 +871,7 @@ export default function CustomerDetailPage() {
                     </td>
                     <td className="text-right customer-money">
                       {unalloc > 0 ? (
-                        <span className="text-blue-700">
+                        <span className="text-indigo-700">
                           <Money paise={unalloc} />
                         </span>
                       ) : (
@@ -892,13 +897,13 @@ export default function CustomerDetailPage() {
               <button
                 type="button"
                 onClick={exportStatementCsv}
-                className="text-xs bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800"
+                className="text-xs bg-indigo-600 text-white rounded px-3 py-1.5 hover:bg-indigo-700"
               >
                 Download CSV
               </button>
               <Link
                 to={`/parties/customer/${customer.id}/ledger`}
-                className="text-xs text-blue-700 hover:underline self-center"
+                className="text-xs text-indigo-700 hover:underline self-center"
               >
                 Full ledger view →
               </Link>
@@ -1102,7 +1107,7 @@ function PaymentModal(props: PaymentModalProps) {
   } = props;
 
   return (
-    <div className="fixed inset-0 bg-black/40 z-40 flex items-start justify-center p-6 overflow-y-auto">
+    <div className="fixed inset-0 bg-slate-200/60 backdrop-blur-sm z-40 flex items-start justify-center p-6 overflow-y-auto">
       <div className="bg-white rounded shadow-lg w-full max-w-2xl">
         <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
           <h2 className="font-semibold">Receive Payment — {customerName}</h2>
@@ -1194,7 +1199,7 @@ function PaymentModal(props: PaymentModalProps) {
                   onClick={() => setAllocMode('auto')}
                   className={
                     allocMode === 'auto'
-                      ? 'bg-slate-900 text-white rounded px-2 py-1'
+                      ? 'bg-indigo-600 text-white rounded px-2 py-1'
                       : 'border border-slate-300 rounded px-2 py-1 hover:bg-slate-50'
                   }
                 >
@@ -1216,7 +1221,7 @@ function PaymentModal(props: PaymentModalProps) {
                   }}
                   className={
                     allocMode === 'manual'
-                      ? 'bg-slate-900 text-white rounded px-2 py-1'
+                      ? 'bg-indigo-600 text-white rounded px-2 py-1'
                       : 'border border-slate-300 rounded px-2 py-1 hover:bg-slate-50'
                   }
                 >
