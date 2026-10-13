@@ -103,7 +103,7 @@ export default class ErrorBoundary extends Component<Props, State> {
           <button
             type="button"
             onClick={this.handleReload}
-            className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800"
+            className="text-sm bg-indigo-600 text-white rounded px-3 py-1.5 hover:bg-indigo-700"
           >
             Reload
           </button>

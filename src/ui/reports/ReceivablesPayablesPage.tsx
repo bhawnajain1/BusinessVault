@@ -181,7 +181,7 @@ export default function ReceivablesPayablesPage() {
                       <td className="px-3 py-1.5">
                         <Link
                           to={`/customers`}
-                          className="text-blue-700 hover:underline"
+                          className="text-indigo-700 hover:underline"
                           title={`View customer ${data.customerById.get(r.customer_id)?.name ?? r.customer_id}`}
                         >
                           {data.customerById.get(r.customer_id)?.name ?? '(unknown)'}
@@ -304,7 +304,7 @@ export default function ReceivablesPayablesPage() {
                       <td className="px-3 py-1.5">
                         <Link
                           to={`/suppliers`}
-                          className="text-blue-700 hover:underline"
+                          className="text-indigo-700 hover:underline"
                           title={`View supplier ${data.supplierById.get(r.supplier_id)?.name ?? r.supplier_id}`}
                         >
                           {data.supplierById.get(r.supplier_id)?.name ?? '(unknown)'}

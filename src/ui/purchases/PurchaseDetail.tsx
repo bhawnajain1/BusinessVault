@@ -63,7 +63,7 @@ export default function PurchaseDetail() {
   return (
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center gap-3">
-        <Link to="/purchases" className="text-sm text-blue-700 hover:underline">
+        <Link to="/purchases" className="text-sm text-indigo-700 hover:underline">
           ← Purchases
         </Link>
         <h1 className="text-xl font-semibold">Bill {purchase.bill_number}</h1>

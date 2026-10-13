@@ -55,8 +55,11 @@ export interface RecentInvoiceRow {
   id: string;
   number: string;
   date: string;
+  due_date: string | null;
   total_paise: number;
   balance_paise: number;
+  status: Invoice['status'];
+  customer_id: string;
   customerName: string;
 }
 
@@ -92,7 +95,7 @@ export interface DashboardAnalytics {
     collections_paise: number;
   }>;
   paymentMix: Array<{ method: string; amount_paise: number }>;
-  topCustomers: Array<{ name: string; outstanding_paise: number }>;
+  topCustomers: Array<{ customer_id: string; name: string; outstanding_paise: number }>;
 }
 
 export interface DashboardInputs {
@@ -106,6 +109,12 @@ export interface DashboardInputs {
   itemCount: number;
   asOfYmd: string;
   recentLimit?: number;
+  // Dashboard date-range filter. When set, the sales/collections series
+  // covers `months` calendar months ending at toYmd's month, and the payment
+  // mix only counts payments dated fromYmd..toYmd. Without it: six months
+  // ending at asOfYmd and all payment history (the original behaviour).
+  // Receivables, payables and top customers stay point-in-time as of asOfYmd.
+  range?: { fromYmd: string; toYmd: string; months: number };
 }
 
 export function computeDashboardStats(inputs: DashboardInputs): DashboardStats {
@@ -136,10 +145,12 @@ export function computeDashboardStats(inputs: DashboardInputs): DashboardStats {
   );
   const ap = computePayables(purchases, asOfYmd, advances, suppliers);
 
-  const asOfMonth = asOfYmd.slice(0, 7);
+  const { range } = inputs;
+  const asOfMonth = (range?.toYmd ?? asOfYmd).slice(0, 7);
   const monthKeys: string[] = [];
   const monthCursor = new Date(`${asOfMonth}-01T00:00:00Z`);
-  for (let i = 5; i >= 0; i -= 1) {
+  const monthCount = Math.max(1, range?.months ?? 6);
+  for (let i = monthCount - 1; i >= 0; i -= 1) {
     const date = new Date(monthCursor);
     date.setUTCMonth(date.getUTCMonth() - i);
     monthKeys.push(date.toISOString().slice(0, 7));
@@ -170,7 +181,10 @@ export function computeDashboardStats(inputs: DashboardInputs): DashboardStats {
   const paymentMix = (inputs.payments ?? [])
     .filter(
       (payment) =>
-        payment.direction === 'in' && !payment.deleted_at && payment.payment_date <= asOfYmd,
+        payment.direction === 'in' &&
+        !payment.deleted_at &&
+        payment.payment_date <= (range?.toYmd ?? asOfYmd) &&
+        (!range || payment.payment_date >= range.fromYmd),
     )
     .reduce((byMethod, payment) => {
       byMethod.set(
@@ -188,8 +202,11 @@ export function computeDashboardStats(inputs: DashboardInputs): DashboardStats {
       id: i.id,
       number: i.invoice_number,
       date: i.invoice_date,
+      due_date: i.due_date,
       total_paise: i.total_paise,
       balance_paise: i.balance_paise,
+      status: i.status,
+      customer_id: i.customer_id,
       customerName: customerNameById.get(i.customer_id) ?? '—',
     }));
 
@@ -222,6 +239,7 @@ export function computeDashboardStats(inputs: DashboardInputs): DashboardStats {
         .filter((customer) => customer.outstanding_paise > 0)
         .slice(0, 5)
         .map((customer) => ({
+          customer_id: customer.customer_id,
           name: customerNameById.get(customer.customer_id) ?? 'Unknown customer',
           outstanding_paise: customer.outstanding_paise,
         })),

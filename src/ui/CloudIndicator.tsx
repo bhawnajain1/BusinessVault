@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { CloudAlert, CloudCheck, RefreshCw } from 'lucide-react';
 import { useBackupHealth } from './BackupHealthContext';
 import type { BackupHealthStatus } from '../sync/syncWorker';
 
@@ -37,28 +38,22 @@ function labelFor(status: BackupHealthStatus): string {
   }
 }
 
-function glyphFor(v: Visual): string {
-  if (v === 'ok') return '✓';
-  if (v === 'syncing') return '↻';
-  return '!';
-}
-
 export default function CloudIndicator() {
   const nav = useNavigate();
   const health = useBackupHealth();
   const visual = visualFor(health.status);
 
   const base =
-    'inline-flex items-center gap-1.5 rounded-md px-2 h-7 text-[12px] font-medium select-none transition-colors';
+    'inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-semibold select-none transition-colors';
   const tone =
     visual === 'ok'
-      ? 'bg-success-bg text-success hover:opacity-90'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
       : visual === 'syncing'
-        ? 'bg-info-bg text-info hover:opacity-90 animate-pulse'
-        : 'bg-warning-bg text-warning hover:opacity-90';
+        ? 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+        : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100';
 
   const label = labelFor(health.status);
-  const glyph = glyphFor(visual);
+  const Icon = visual === 'ok' ? CloudCheck : visual === 'syncing' ? RefreshCw : CloudAlert;
 
   return (
     <button
@@ -70,12 +65,7 @@ export default function CloudIndicator() {
       data-testid="cloud-indicator"
       data-status={health.status}
     >
-      <span aria-hidden="true" className="text-base leading-none">
-        {'☁'}
-      </span>
-      <span aria-hidden="true" className="leading-none">
-        {glyph}
-      </span>
+      <Icon className={`h-4 w-4 ${visual === 'syncing' ? 'animate-spin [animation-duration:2s]' : ''}`} aria-hidden="true" />
       <span className="hidden sm:inline">{label}</span>
     </button>
   );

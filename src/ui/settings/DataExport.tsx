@@ -81,7 +81,7 @@ export default function DataExport({ businessId }: Props) {
           type="button"
           onClick={onExport}
           disabled={busy}
-          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+          className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
         >
           {busy ? 'Preparing…' : 'Download ZIP'}
         </button>
@@ -89,7 +89,7 @@ export default function DataExport({ businessId }: Props) {
           <div className="flex-1">
             <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
               <div
-                className="h-full bg-slate-900 transition-[width]"
+                className="h-full bg-indigo-600 transition-[width]"
                 style={{ width: `${progress.pct}%` }}
               />
             </div>

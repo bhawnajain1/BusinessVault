@@ -623,7 +623,7 @@ export default function CustomerDetailPage() {
     <div className="customer-detail-page">
       <div className="customer-detail-container">
         <div className="customer-detail-back">
-          <Link to="/customers" className="text-sm text-blue-700 hover:underline">
+          <Link to="/customers" className="text-sm text-indigo-700 hover:underline">
           ← Customers
           </Link>
         </div>
@@ -756,7 +756,7 @@ export default function CustomerDetailPage() {
                   <td>
                     <Link
                       to={`/invoices/${r.inv.id}`}
-                      className="text-blue-700 hover:underline font-mono text-xs"
+                      className="text-indigo-700 hover:underline font-mono text-xs"
                     >
                       {r.inv.invoice_number}
                     </Link>
@@ -850,7 +850,7 @@ export default function CustomerDetailPage() {
                               {a.invoice_id ? (
                                 <Link
                                   to={`/invoices/${a.invoice_id}`}
-                                  className="text-blue-700 hover:underline font-mono"
+                                  className="text-indigo-700 hover:underline font-mono"
                                 >
                                   {invoiceById.get(a.invoice_id)?.invoice_number ??
                                     a.invoice_id.slice(-8)}
@@ -866,7 +866,7 @@ export default function CustomerDetailPage() {
                     </td>
                     <td className="text-right customer-money">
                       {unalloc > 0 ? (
-                        <span className="text-blue-700">
+                        <span className="text-indigo-700">
                           <Money paise={unalloc} />
                         </span>
                       ) : (
@@ -892,13 +892,13 @@ export default function CustomerDetailPage() {
               <button
                 type="button"
                 onClick={exportStatementCsv}
-                className="text-xs bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800"
+                className="text-xs bg-indigo-600 text-white rounded px-3 py-1.5 hover:bg-indigo-700"
               >
                 Download CSV
               </button>
               <Link
                 to={`/parties/customer/${customer.id}/ledger`}
-                className="text-xs text-blue-700 hover:underline self-center"
+                className="text-xs text-indigo-700 hover:underline self-center"
               >
                 Full ledger view →
               </Link>
@@ -1102,7 +1102,7 @@ function PaymentModal(props: PaymentModalProps) {
   } = props;
 
   return (
-    <div className="fixed inset-0 bg-black/40 z-40 flex items-start justify-center p-6 overflow-y-auto">
+    <div className="fixed inset-0 bg-slate-200/60 backdrop-blur-sm z-40 flex items-start justify-center p-6 overflow-y-auto">
       <div className="bg-white rounded shadow-lg w-full max-w-2xl">
         <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
           <h2 className="font-semibold">Receive Payment — {customerName}</h2>
@@ -1194,7 +1194,7 @@ function PaymentModal(props: PaymentModalProps) {
                   onClick={() => setAllocMode('auto')}
                   className={
                     allocMode === 'auto'
-                      ? 'bg-slate-900 text-white rounded px-2 py-1'
+                      ? 'bg-indigo-600 text-white rounded px-2 py-1'
                       : 'border border-slate-300 rounded px-2 py-1 hover:bg-slate-50'
                   }
                 >
@@ -1216,7 +1216,7 @@ function PaymentModal(props: PaymentModalProps) {
                   }}
                   className={
                     allocMode === 'manual'
-                      ? 'bg-slate-900 text-white rounded px-2 py-1'
+                      ? 'bg-indigo-600 text-white rounded px-2 py-1'
                       : 'border border-slate-300 rounded px-2 py-1 hover:bg-slate-50'
                   }
                 >

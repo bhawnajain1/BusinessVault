@@ -86,7 +86,7 @@ export default function DeletedInvoicesPage() {
       key: 'invoice_number',
       header: 'Invoice #',
       sortValue: (r) => r.invoice_number,
-      render: (r) => <Link to={`/invoices/${r.id}`} className="text-blue-700 hover:underline">{r.invoice_number}</Link>,
+      render: (r) => <Link to={`/invoices/${r.id}`} className="text-indigo-700 hover:underline">{r.invoice_number}</Link>,
     },
     { key: 'invoice_date', header: 'Date', sortValue: (r) => r.invoice_date, render: (r) => r.invoice_date },
     {
@@ -130,7 +130,7 @@ export default function DeletedInvoicesPage() {
     <div className="p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link to="/invoices" className="text-sm text-blue-700 hover:underline">
+          <Link to="/invoices" className="text-sm text-indigo-700 hover:underline">
             ← Invoices
           </Link>
           <h1 className="text-xl font-semibold">Recycle Bin</h1>

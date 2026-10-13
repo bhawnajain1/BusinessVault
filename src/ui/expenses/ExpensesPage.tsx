@@ -328,7 +328,7 @@ export default function ExpensesPage() {
 
       {(drawerOpen || isNewRoute) && (
         <div
-          className={isNewRoute ? 'fixed inset-0 z-40 overflow-y-auto bg-slate-50/95 p-5 sm:p-8' : 'fixed inset-0 z-40 flex items-start justify-end bg-black/40'}
+          className={isNewRoute ? 'fixed inset-0 z-40 overflow-y-auto bg-slate-50/95 p-5 sm:p-8' : 'fixed inset-0 z-40 flex items-start justify-end bg-slate-200/60 backdrop-blur-sm'}
           onClick={isNewRoute ? () => navigate('/expenses') : closeDrawer}
           data-full-page={isNewRoute ? 'true' : undefined}
         >
@@ -338,7 +338,7 @@ export default function ExpensesPage() {
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-7">
               <div>
-                {isNewRoute && <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Accounting entry</p>}
+                {isNewRoute && <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-600">Accounting entry</p>}
                 <h2 className={isNewRoute ? 'mt-1 text-3xl font-semibold tracking-tight text-slate-950' : 'text-base font-semibold text-fg'}>New Expense</h2>
               </div>
               {!isNewRoute && (

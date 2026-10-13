@@ -39,7 +39,7 @@ export default function Drawer({
         <div className="flex items-center justify-between">
           <h1 className="text-3xl font-semibold tracking-tight text-slate-950">{title}</h1>
           {showFullPageBack && (
-            <button type="button" onClick={onClose} className="text-sm font-semibold text-blue-700 hover:text-blue-800">Back</button>
+            <button type="button" onClick={onClose} className="text-sm font-semibold text-indigo-700 hover:text-indigo-800">Back</button>
           )}
         </div>
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
@@ -54,7 +54,7 @@ export default function Drawer({
   return (
     <div className="fixed inset-0 z-40" role="dialog" aria-modal="true">
       <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
+        className="absolute inset-0 bg-slate-200/60 backdrop-blur-sm"
         onClick={onClose}
         aria-hidden="true"
       />

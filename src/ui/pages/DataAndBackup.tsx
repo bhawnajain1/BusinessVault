@@ -117,7 +117,7 @@ export default function DataAndBackup() {
         <button
           type="button"
           onClick={() => navigate('/onboarding')}
-          className="mt-3 rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white"
+          className="mt-3 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white"
         >
           Go to onboarding
         </button>

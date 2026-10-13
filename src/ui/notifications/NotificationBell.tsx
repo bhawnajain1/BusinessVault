@@ -60,7 +60,7 @@ export default function NotificationBell() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="relative rounded p-1.5 text-fg-muted hover:bg-surface-hover hover:text-fg"
+        className="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
         aria-label={`Notifications (${unreadCount} unread)`}
         aria-expanded={open}
       >
@@ -90,7 +90,7 @@ export default function NotificationBell() {
       </button>
       {open && (
         <div
-          className="absolute right-0 top-full z-40 mt-1 w-80 rounded border border-border bg-surface shadow-lg"
+          className="absolute right-0 top-full z-50 mt-2 w-80 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg"
           role="dialog"
           aria-label="Notifications"
         >

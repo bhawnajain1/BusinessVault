@@ -35,7 +35,7 @@ const amounts: Array<[GstAmountKey, string]> = [['taxable_paise', 'Taxable'], ['
 const itcStatuses: BooksItcStatus[] = ['UNREVIEWED', 'ELIGIBLE_IN_BOOKS', 'INELIGIBLE', 'TEMPORARILY_REVERSED', 'PERMANENTLY_REVERSED', 'RECLAIMABLE', 'RECLAIMED'];
 const control = 'block w-full border border-slate-300 rounded px-2 py-1.5 bg-white text-slate-900';
 const button = 'border border-slate-300 rounded px-3 py-2 text-sm hover:bg-slate-100 disabled:opacity-50';
-const linkButton = 'text-blue-700 underline rounded px-1 py-1 focus-visible:outline focus-visible:outline-2';
+const linkButton = 'text-indigo-700 underline rounded px-1 py-1 focus-visible:outline focus-visible:outline-2';
 
 const Table = GstDataTable;
 
@@ -388,7 +388,7 @@ export default function GstSummaryPage() {
     <div role="alert" className="gst-alert">{error || active.error?.message}</div>
     <div role="status" aria-live="polite" className="gst-live">{calculating ? 'Calculating GST reports…' : message}</div>
     {!active.loading && !active.businessId && <p>Select or create a business before preparing GST reports.</p>}
-    {savedResult && <section role="status" className="border border-blue-700 rounded p-3"><h2 className="font-semibold">Read-only saved snapshot: {savedResult.savedStatus ?? 'Saved working'} / {savedResult.period.periodKey}</h2><p>Run {savedResult.savedReportRunId}. Original source hash: {savedResult.sourceDataHash}. Viewing and exporting this snapshot does not replace the live working.</p><button type="button" className={button} onClick={() => { setSavedResult(null); setMetadata(null); setFilter(null); }}>Return to live working</button></section>}
+    {savedResult && <section role="status" className="border border-indigo-700 rounded p-3"><h2 className="font-semibold">Read-only saved snapshot: {savedResult.savedStatus ?? 'Saved working'} / {savedResult.period.periodKey}</h2><p>Run {savedResult.savedReportRunId}. Original source hash: {savedResult.sourceDataHash}. Viewing and exporting this snapshot does not replace the live working.</p><button type="button" className={button} onClick={() => { setSavedResult(null); setMetadata(null); setFilter(null); }}>Return to live working</button></section>}
     <section className="gst-surface gst-selection"><div className="gst-section-heading"><div><FileSpreadsheet size={20} /><div><h2>Report selection</h2><p>Select business, financial year and GST tax months to generate reports.</p></div></div></div>
     <fieldset disabled={operationBusy || active.loading || immutable}>
       <div className="gst-selection-grid">

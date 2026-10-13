@@ -125,7 +125,7 @@ export default function InvoicesPage() {
       filterable: true,
       sortValue: (r) => r.invoice_number,
       render: (r) => (
-        <Link to={`/invoices/${r.id}`} className="text-blue-700 hover:underline">
+        <Link to={`/invoices/${r.id}`} className="text-indigo-700 hover:underline">
           {r.invoice_number}
         </Link>
       ),
@@ -264,7 +264,7 @@ export default function InvoicesPage() {
           </Link>
           <Link
             to="/invoices/new"
-            className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
+            className="bg-indigo-600 text-white text-sm rounded px-3 py-1.5 hover:bg-indigo-700"
           >
             New Invoice
           </Link>

@@ -254,7 +254,7 @@ export default function Returns() {
                     <td className="px-3 py-1.5 font-mono text-xs">
                       <Link
                         to={`/returns/${sr.id}`}
-                        className="text-blue-700 hover:underline"
+                        className="text-indigo-700 hover:underline"
                       >
                         {sr.return_number}
                       </Link>
@@ -263,7 +263,7 @@ export default function Returns() {
                       {original ? (
                         <Link
                           to={`/invoices/${original.id}`}
-                          className="text-blue-700 hover:underline"
+                          className="text-indigo-700 hover:underline"
                         >
                           {original.invoice_number}
                         </Link>
@@ -291,7 +291,7 @@ export default function Returns() {
                     <td className="px-3 py-1.5 text-right">
                       <Link
                         to={`/returns/${sr.id}`}
-                        className="text-xs text-blue-700 hover:underline"
+                        className="text-xs text-indigo-700 hover:underline"
                       >
                         View
                       </Link>

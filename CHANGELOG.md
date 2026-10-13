@@ -4,6 +4,15 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.0.98 — 2026-10-13
+
+### Changed
+
+- New light-theme app shell: white collapsible sidebar with grouped navigation (every existing route kept), mobile drawer, and a header with global search (invoices, customers, suppliers, items; `/` or Ctrl/Cmd+K), date-range picker on Overview, notifications, backup-status pill and profile menu.
+- Overview redesigned: four KPI cards (receivables, payables, revenue, net income — % change shown only when the previous period has a non-zero figure), Sales & collections chart with axes, tooltips and its own range filter, Cash snapshot by payment mode, Top 5 customer balances, P&L donut, and a sortable Recent invoices table with status pills and row actions.
+- Dashboard date range (`?range=`) drives the monthly series, payment mix and P&L; receivables, payables and top balances stay as of today.
+- Light theme only across all pages: removed the unused dark-theme CSS and the old dashboard styles, swapped blue/slate-900 accents for indigo, replaced dark modal scrims with a light blurred scrim, and restyled status badges as pastel pills.
+
 ## 1.0.84 — 2026-09-30
 
 ### Release

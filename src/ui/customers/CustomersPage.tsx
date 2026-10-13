@@ -290,7 +290,7 @@ export default function CustomersPage() {
         render: (r) => {
           const p = rollups.get(r.id)?.advance_paise ?? 0;
           return p > 0 ? (
-            <span className="text-blue-700 font-medium">
+            <span className="text-indigo-700 font-medium">
               <Money paise={p} />
             </span>
           ) : (
@@ -485,15 +485,15 @@ export default function CustomersPage() {
             <button
               type="button"
               onClick={() => navigate('/customers')}
-              className="mb-3 text-sm font-semibold text-blue-700 hover:text-blue-800"
+              className="mb-3 text-sm font-semibold text-indigo-700 hover:text-indigo-800"
             >
               ← Customers
             </button>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Customer setup</p>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-600">Customer setup</p>
             <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-950">New customer</h1>
             <p className="mt-2 text-sm text-slate-500">Add identity, tax, contact, and opening balance details.</p>
           </div>
-          <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800">
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-800">
             Customer profile
           </div>
         </div>
@@ -501,7 +501,7 @@ export default function CustomersPage() {
           <CustomerFormFields form={form} setForm={setForm} />
           {saveError && <div className="mt-5 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800 whitespace-pre-wrap">{saveError}</div>}
           <div className="mt-7 flex flex-wrap justify-end gap-3 border-t border-slate-100 pt-5">
-            <button type="button" onClick={() => navigate('/customers')} className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-blue-700 hover:bg-blue-50">
+            <button type="button" onClick={() => navigate('/customers')} className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">
               Cancel
             </button>
             <button type="button" disabled={saving || form.name.trim().length === 0} onClick={save} className="h-10 rounded-xl bg-green-600 px-5 text-sm font-semibold text-white shadow-sm hover:bg-green-700 disabled:opacity-50">

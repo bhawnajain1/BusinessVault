@@ -174,7 +174,7 @@ export default function PurchasesPage() {
       header: 'Bill #',
       filterable: true,
       render: (r) => (
-        <Link to={`/purchases/${r.id}`} className="text-blue-700 hover:underline">
+        <Link to={`/purchases/${r.id}`} className="text-indigo-700 hover:underline">
           {r.bill_number}
         </Link>
       ),

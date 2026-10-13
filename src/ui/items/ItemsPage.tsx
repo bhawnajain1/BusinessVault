@@ -88,7 +88,7 @@ function ItemFormFields({
   categories: Category[];
   editing: Item | null;
 }) {
-  const input = 'w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-[13px] text-slate-800 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-4 focus:ring-blue-500/10';
+  const input = 'w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-[13px] text-slate-800 shadow-sm focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-500/10';
   const label = 'mb-1 block text-xs font-semibold text-slate-600';
   const set = <K extends keyof ItemForm>(key: K, value: ItemForm[K]) => setForm({ ...form, [key]: value });
   return (
@@ -364,20 +364,20 @@ export default function ItemsPage() {
       <div className="mx-auto flex max-w-5xl flex-col gap-6 p-5 sm:p-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <button type="button" onClick={() => navigate('/items')} className="mb-3 text-sm font-semibold text-blue-700 hover:text-blue-800">
+            <button type="button" onClick={() => navigate('/items')} className="mb-3 text-sm font-semibold text-indigo-700 hover:text-indigo-800">
               ← Items
             </button>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">Catalog setup</p>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-600">Catalog setup</p>
             <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-950">New item</h1>
             <p className="mt-2 text-sm text-slate-500">Define pricing, GST, inventory, and item identification details.</p>
           </div>
-          <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800">Catalog item</div>
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-800">Catalog item</div>
         </div>
         <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-7">
           <ItemFormFields form={form} setForm={setForm} units={units} categories={categories} editing={null} />
           {saveError && <div className="mt-5 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800 whitespace-pre-wrap">{saveError}</div>}
           <div className="mt-7 flex flex-wrap justify-end gap-3 border-t border-slate-100 pt-5">
-            <button type="button" onClick={() => navigate('/items')} className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-blue-700 hover:bg-blue-50">Cancel</button>
+            <button type="button" onClick={() => navigate('/items')} className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-indigo-700 hover:bg-indigo-50">Cancel</button>
             <button type="button" disabled={saving || form.name.trim().length === 0 || form.sku.trim().length === 0} onClick={save} className="h-10 rounded-xl bg-green-600 px-5 text-sm font-semibold text-white shadow-sm hover:bg-green-700 disabled:opacity-50">{saving ? 'Saving...' : 'Save Item'}</button>
           </div>
         </div>

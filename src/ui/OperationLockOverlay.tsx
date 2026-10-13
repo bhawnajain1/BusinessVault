@@ -27,7 +27,7 @@ export default function OperationLockOverlay() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="operation-lock-title"
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-6"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-200/70 backdrop-blur-sm p-6"
     >
       <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
         <h2 id="operation-lock-title" className="text-lg font-semibold text-slate-900">

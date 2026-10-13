@@ -35,10 +35,10 @@ export interface DataTableProps<T> {
 }
 
 const inputCls =
-  'h-10 rounded-xl border border-slate-200 bg-white px-3 text-[13px] text-slate-800 placeholder:text-slate-400 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-4 focus:ring-blue-500/10';
+  'h-10 rounded-xl border border-slate-200 bg-white px-3 text-[13px] text-slate-800 placeholder:text-slate-400 shadow-sm focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-500/10';
 
 const btnGhost =
-  'inline-flex h-10 items-center rounded-xl border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-40 disabled:hover:bg-white';
+  'inline-flex h-10 items-center rounded-xl border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 shadow-sm transition-colors hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-40 disabled:hover:bg-white';
 
 export default function DataTable<T>(props: DataTableProps<T>) {
   const {

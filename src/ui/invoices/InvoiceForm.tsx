@@ -597,7 +597,7 @@ export default function InvoiceForm() {
     <div className="p-6 flex flex-col gap-4 max-w-6xl">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link to="/invoices" className="text-sm text-blue-700 hover:underline">
+          <Link to="/invoices" className="text-sm text-indigo-700 hover:underline">
             ← Invoices
           </Link>
           <h1 className="text-xl font-semibold text-fg">
@@ -606,7 +606,7 @@ export default function InvoiceForm() {
         </div>
         <div className="text-xs text-fg-muted">
           Prefer a fast till? Use{' '}
-          <Link to="/invoices/quick" className="text-blue-700 hover:underline">
+          <Link to="/invoices/quick" className="text-indigo-700 hover:underline">
             POS mode
           </Link>
         </div>
@@ -776,7 +776,7 @@ export default function InvoiceForm() {
                           [adv.id]: remaining.toFixed(2),
                         }))
                       }
-                      className="text-blue-700 hover:underline"
+                      className="text-indigo-700 hover:underline"
                     >
                       max
                     </button>
@@ -1111,7 +1111,7 @@ export default function InvoiceForm() {
             computedLines.filter((c) => c.qtyMicros > 0 && c.unitPaise > 0 && c.l.item_id).length === 0 ||
             (defaultWarehouseId === '' && warehouseOptions.length === 0)
           }
-          className="h-9 rounded-md bg-blue-600 px-4 text-[13px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          className="h-9 rounded-md bg-indigo-600 px-4 text-[13px] font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
         >
           {saving
             ? 'Saving…'
@@ -1165,7 +1165,7 @@ function PaymentInput({
           <button
             type="button"
             onClick={onFull}
-            className="inline-flex min-h-10 items-center rounded-md px-2 text-xs font-semibold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:bg-blue-50 hover:text-blue-800 focus-visible:outline-2 focus-visible:outline-blue-600"
+            className="inline-flex min-h-10 items-center rounded-md px-2 text-xs font-semibold text-indigo-700 underline decoration-indigo-300 underline-offset-2 hover:bg-indigo-50 hover:text-indigo-800 focus-visible:outline-2 focus-visible:outline-indigo-600"
             title={`Set ${label} to full total`}
             aria-label={`Use full invoice total for ${label}`}
           >

@@ -202,7 +202,7 @@ export default function SalesReturnDetail() {
     return (
       <div className="p-6 space-y-3">
         <div className="text-rose-600 text-sm">{error}</div>
-        <Link to="/returns" className="text-sm text-blue-700 hover:underline">
+        <Link to="/returns" className="text-sm text-indigo-700 hover:underline">
           ← Back to returns
         </Link>
       </div>
@@ -217,7 +217,7 @@ export default function SalesReturnDetail() {
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div className="flex flex-col gap-1">
-          <Link to="/returns" className="text-sm text-blue-700 hover:underline">
+          <Link to="/returns" className="text-sm text-indigo-700 hover:underline">
             ← All sales returns
           </Link>
           <h1 className="text-xl font-semibold text-fg">
@@ -237,7 +237,7 @@ export default function SalesReturnDetail() {
             {originalInvoice ? (
               <Link
                 to={`/invoices/${originalInvoice.id}`}
-                className="font-mono text-blue-700 hover:underline"
+                className="font-mono text-indigo-700 hover:underline"
               >
                 {originalInvoice.invoice_number}
               </Link>
@@ -249,7 +249,7 @@ export default function SalesReturnDetail() {
                 {' · '}
                 <Link
                   to={`/customers/${customer.id}`}
-                  className="text-blue-700 hover:underline"
+                  className="text-indigo-700 hover:underline"
                 >
                   {customer.name}
                 </Link>

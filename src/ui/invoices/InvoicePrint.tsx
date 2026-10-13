@@ -321,7 +321,7 @@ export default function InvoicePrint() {
         <div className="no-print screen-only flex items-center justify-between mb-4">
           <Link
             to={`/invoices/${invoice.id}`}
-            className="text-sm text-blue-700 hover:underline"
+            className="text-sm text-indigo-700 hover:underline"
           >
             ← Back to invoice
           </Link>
@@ -337,7 +337,7 @@ export default function InvoicePrint() {
             <button
               type="button"
               onClick={() => window.print()}
-              className="bg-slate-900 text-white text-sm rounded px-3 py-1.5 hover:bg-slate-800"
+              className="bg-indigo-600 text-white text-sm rounded px-3 py-1.5 hover:bg-indigo-700"
             >
               Print / Save PDF
             </button>

@@ -311,7 +311,7 @@ export default function SalesReturnsReportPage() {
                   <td className="px-3 py-1.5 font-mono text-xs">
                     <Link
                       to={`/returns/${r.id}`}
-                      className="text-blue-700 hover:underline"
+                      className="text-indigo-700 hover:underline"
                     >
                       {r.return_number}
                     </Link>
@@ -398,7 +398,7 @@ export default function SalesReturnsReportPage() {
                   <td className="px-3 py-1.5">
                     <Link
                       to={`/customers/${r.key}`}
-                      className="text-blue-700 hover:underline"
+                      className="text-indigo-700 hover:underline"
                     >
                       {r.label}
                     </Link>

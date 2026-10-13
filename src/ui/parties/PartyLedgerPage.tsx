@@ -253,17 +253,17 @@ export default function PartyLedgerPage() {
     <div className="p-6 flex flex-col gap-4 max-w-6xl">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link to={backLink} className="text-sm text-blue-700 hover:underline">
+          <Link to={backLink} className="text-sm text-indigo-700 hover:underline">
             ← {partyType === 'customer' ? 'Customers' : 'Suppliers'}
           </Link>
           <h1 className="text-xl font-semibold">
-            Ledger — <Link to={detailLink} className="text-blue-700 hover:underline">{party.name}</Link>
+            Ledger — <Link to={detailLink} className="text-indigo-700 hover:underline">{party.name}</Link>
           </h1>
         </div>
         <button
           type="button"
           onClick={exportCsv}
-          className="text-sm bg-slate-900 text-white rounded px-3 py-1.5 hover:bg-slate-800"
+          className="text-sm bg-indigo-600 text-white rounded px-3 py-1.5 hover:bg-indigo-700"
         >
           Download statement (CSV)
         </button>
