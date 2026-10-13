@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { db } from '../../db';
 import type {
   Account,
@@ -11,7 +11,7 @@ import type {
   Warehouse,
   GstLineSnapshot,
 } from '../../db/types';
-import { createPurchaseService } from '../../domain/PurchaseService';
+import { createPurchaseService, editBlockedReason } from '../../domain/PurchaseService';
 import { bankersRound } from '../../domain/gst';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
@@ -32,6 +32,9 @@ interface EditorLine extends GstLineSnapshot {
   qty: string;
   unitCostRupees: string;
   taxRatePct: string;
+  // Kept from the original line on edit so stock is reversed and re-added in
+  // the same warehouse; new lines use the default warehouse.
+  warehouseId?: string;
 }
 
 const EMPTY_LINE: EditorLine = {
@@ -68,7 +71,9 @@ function today(): string {
 export default function PurchasesPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const isNewRoute = location.pathname === '/purchases/new';
+  const { id: editRouteId } = useParams<{ id: string }>();
+  // /purchases/new and /purchases/:id/edit both render the full-page form.
+  const isNewRoute = location.pathname === '/purchases/new' || Boolean(editRouteId);
   const { businessId, deviceId, loading } = useActiveBusiness();
   const [statusFilter, setStatusFilter] = useState<PurchaseStatus | ''>('');
   const [supplierFilter, setSupplierFilter] = useState<string>('');
@@ -93,6 +98,35 @@ export default function PurchasesPage() {
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<EditorLine[]>([{ ...EMPTY_LINE }]);
   const [showVoided, setShowVoided] = useState(false);
+
+  // The edit route is its own page, so load the bill here rather than relying
+  // on state from the list page (which is unmounted by the navigation).
+  useEffect(() => {
+    if (!editRouteId) return;
+    let alive = true;
+    (async () => {
+      const purchase = await db.purchases.get(editRouteId);
+      if (!alive) return;
+      if (!purchase) {
+        log.info('purchases', 'edit route: purchase not found', { purchaseId: editRouteId });
+        setSaveError(`Purchase not found: ${editRouteId}`);
+        return;
+      }
+      await loadForEdit(purchase);
+      if (!alive) return;
+      const blocked = editBlockedReason(purchase);
+      log.info('purchases', 'edit route loaded purchase', {
+        purchaseId: purchase.id,
+        billNumber: purchase.bill_number,
+        status: purchase.status,
+        blocked,
+      });
+      if (blocked) setSaveError(blocked);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [editRouteId]);
 
   useEffect(() => {
     if (!businessId) return;
@@ -214,7 +248,8 @@ export default function PurchasesPage() {
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                void openEdit(r);
+                log.info('purchases', 'edit clicked from list', { purchaseId: r.id });
+                navigate(`/purchases/${r.id}/edit`);
               }}
               className="action-edit text-xs"
             >
@@ -275,7 +310,7 @@ export default function PurchasesPage() {
     });
   }
 
-  async function openEdit(purchase: Purchase) {
+  async function loadForEdit(purchase: Purchase) {
     setSaveError(null);
     setEditingId(purchase.id);
     setSupplierId(purchase.supplier_id);
@@ -301,9 +336,9 @@ export default function PurchasesPage() {
         qty: String(l.qty_micros / 1_000_000),
         unitCostRupees: (l.unit_cost_paise / 100).toFixed(2),
         taxRatePct: (l.tax_rate_bps / 100).toString(),
+        warehouseId: l.warehouse_id,
       })),
     );
-    navigate('/purchases/new');
   }
 
   async function cancelPurchase(purchase: Purchase) {
@@ -433,7 +468,7 @@ export default function PurchasesPage() {
             goodsOrService: l.goods_or_service,
             taxability: l.taxability,
             cessRateBps: l.cess_rate_bps ?? undefined,
-            warehouseId: wh.id,
+            warehouseId: l.warehouseId || wh.id,
             qtyMicros: unitsToMicros(l.qty),
             unitCostPaise: rupeesToPaise(l.unitCostRupees),
             taxRateBps: pctToBps(l.taxRatePct),
@@ -455,10 +490,14 @@ export default function PurchasesPage() {
         defaulted: !editingId && dueDate === addDaysYmd(billDate, 15),
       });
       if (editingId) {
-        await svc.update(editingId, payload);
-      } else {
-        await svc.create(payload);
+        // Edit re-issues the bill under a new id (old one is kept, cancelled,
+        // for audit), so open the corrected bill rather than the old URL.
+        const saved = await svc.update(editingId, payload);
+        log.info('purchases', 'purchase edit saved from form', { oldId: editingId, newId: saved.id });
+        navigate(`/purchases/${saved.id}`);
+        return;
       }
+      await svc.create(payload);
       if (isNewRoute) navigate('/purchases');
       else setDrawerOpen(false);
       setReloadKey((k) => k + 1);

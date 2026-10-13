@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { db } from '../../db';
 import type {
   Item,
@@ -13,6 +13,8 @@ import Money from '../components/Money';
 import Qty from '../components/Qty';
 import StatusBadge from '../components/StatusBadge';
 import { SavedTimes } from '../components/DateTime';
+import { editBlockedReason } from '../../domain/PurchaseService';
+import { log } from '../../lib/log';
 
 interface Loaded {
   purchase: Purchase;
@@ -25,6 +27,7 @@ interface Loaded {
 
 export default function PurchaseDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,6 +63,7 @@ export default function PurchaseDetail() {
   if (error) return <div className="p-6 text-rose-600">{error}</div>;
   if (!data) return <div className="p-6 text-slate-500">Loading...</div>;
   const { purchase, lines, supplier, items, journal, journalLines } = data;
+  const editBlocked = editBlockedReason(purchase);
 
   return (
     <div className="p-6 flex flex-col gap-4">
@@ -69,7 +73,28 @@ export default function PurchaseDetail() {
         </Link>
         <h1 className="text-xl font-semibold">Bill {purchase.bill_number}</h1>
         <StatusBadge status={purchase.status} />
+        <button
+          type="button"
+          disabled={Boolean(editBlocked)}
+          title={editBlocked ?? 'Correct a data-entry mistake on this bill'}
+          onClick={() => {
+            log.info('purchases', 'edit clicked from detail', { purchaseId: purchase.id });
+            navigate(`/purchases/${purchase.id}/edit`);
+          }}
+          className="action-edit ml-auto h-8 text-[13px] disabled:opacity-50"
+        >
+          Edit bill
+        </button>
       </div>
+      {editBlocked && <div className="text-xs text-slate-500 text-right -mt-2">{editBlocked}</div>}
+      {purchase.replaced_by_purchase_id && (
+        <div className="text-sm text-slate-600">
+          This bill was edited.{' '}
+          <Link to={`/purchases/${purchase.replaced_by_purchase_id}`} className="text-indigo-700 hover:underline">
+            Open the corrected bill
+          </Link>
+        </div>
+      )}
 
       <div className="grid grid-cols-3 gap-4 text-sm">
         <div className="border border-slate-200 rounded p-3">
