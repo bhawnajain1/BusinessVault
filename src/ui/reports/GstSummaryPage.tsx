@@ -1,10 +1,11 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode, type FormEvent, type KeyboardEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { AlertTriangle, BarChart3, Calculator, Calendar, ChevronDown, ChevronRight, CircleDollarSign, ClipboardCheck, Download, FileSpreadsheet, Info, Landmark, PackageCheck, ReceiptIndianRupee, Save, ShieldCheck, ShoppingBag, TableProperties } from 'lucide-react';
+import { AlertTriangle, BarChart3, Calculator, Calendar, CheckCircle2, ChevronDown, ChevronRight, CircleDollarSign, MinusCircle, XCircle, ClipboardCheck, Download, FileSpreadsheet, Info, Landmark, PackageCheck, ReceiptIndianRupee, Save, ShieldCheck, ShoppingBag, TableProperties } from 'lucide-react';
 import { gstMonthlyReportService } from '../../domain/gstReporting';
 import type { GstMonthlyReportService, SaveGstDocumentMetadataInput, ReviewGstItcInput, SaveGstProfileInput, SaveGstNoteInput } from '../../domain/gstReporting/GstMonthlyReportService';
 import { downloadGstr1CaWorkbook, downloadMonthlyGstExcel, downloadMonthlyGstCsv, downloadMonthlyGstPdf, downloadMonthlyGstJson, downloadPurchaseCaWorkbook } from '../../domain/gstReporting/exports';
-import { financialYearForDate, precedingFinancialYear, quarterPeriod } from '../../domain/gstReporting/periods';
+import { financialYearForDate, monthPeriod, precedingFinancialYear, quarterPeriod } from '../../domain/gstReporting/periods';
+import { gstProfileReadiness, type GstProfileIssueCode } from '../../domain/gstReporting/profileReadiness';
 import { taxTotalPaise, type GstAmounts, type GstAmountKey, type GstMonthlySources, type GstSummary, type MonthlyGstCalculation, type NormalizedGstDocument, type BooksItcStatus, type BooksItcRow } from '../../domain/gstReporting/types';
 import { isValidGstin } from '../../lib/gst';
 import { setCurrentBusinessId } from '../../lib/business';
@@ -67,6 +68,19 @@ function editable<T extends { id: string; created_at: string; updated_at: string
   const { created_at: _created, updated_at: _updated, entity_version, ...values } = row;
   return { ...values, expectedVersion: entity_version };
 }
+
+// Prefilled editor values when no persisted profile exists. These are only
+// suggestions until saved; the page never calculates against them.
+function suggestedProfile(businessId: string, business: { gstin?: string | null; name?: string; state_code?: string } | undefined, financialYear: string, frequency: 'MONTHLY' | 'QRMP'): SaveGstProfileInput {
+  return {
+    business_id: businessId, gstin: business?.gstin ?? '', legal_name: business?.name ?? '', state_code: business?.state_code ?? '',
+    registration_type: 'REGULAR', registration_start_date: null, registration_end_date: null,
+    filing_frequency: frequency, gst_reporting_enabled: 1, effective_from: `${financialYear.slice(0, 4)}-04-01`, effective_to: null, active: 1,
+  };
+}
+
+// Problems that mean no saved profile covers the selected periods at all.
+const COVERAGE_CODES: GstProfileIssueCode[] = ['GST_PROFILE_MISSING', 'GST_PROFILE_INACTIVE', 'GST_PROFILE_MULTIPLE', 'GST_PROFILE_EFFECTIVE_DATE_GAP', 'GST_REGISTRATION_DATE_GAP'];
 
 function outputGstSourceIds(result: MonthlyGstCalculation): string[] {
   return result.outwardDocuments.filter(d => d.included && !d.reverse_charge && !['UNCLASSIFIED', 'UNCLASSIFIED_INVALID_GSTIN', 'ECO_9_5_SUPPLIER', 'NIL_RATED', 'EXEMPT', 'NON_GST'].includes(d.classification)
@@ -191,6 +205,7 @@ export default function GstSummaryPage() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [openPeriods, setOpenPeriods] = useState<string[]>([]);
   const nextNoteLine = useRef(2);
+  const profileSavedNotice = useRef(false);
   const request = useRef(0);
   const quarterRequest = useRef(0);
   const operationLock = useRef(false);
@@ -211,6 +226,75 @@ export default function GstSummaryPage() {
   for (let y = Math.min(FIRST_GST_YEAR, startYear); y <= Math.max(currentFyStart + 1, startYear); y++) yearOptions.push(y);
   const previousYear = precedingFinancialYear(financialYear);
   const aato = workspace?.aato.find(a => a.financial_year === previousYear);
+  const savedProfiles = (workspace?.profiles ?? []).filter(p => p.business_id === businessId);
+  const profileIsSaved = Boolean(profile?.id);
+  const persistedProfile = profile?.id ? savedProfiles.find(p => p.id === profile.id) : undefined;
+  const persistedEditor = persistedProfile ? editable(persistedProfile) as Record<string, unknown> : null;
+  const profileDirty = !!profile && (!persistedEditor || Object.entries(profile).some(([key, value]) => persistedEditor[key] !== value));
+  const readinessProblems = workspace && readyBusiness === businessId
+    ? [...months].sort().flatMap(m => gstProfileReadiness(savedProfiles, monthPeriod(businessId, business?.gstin ?? '', m, frequency)).problems) : [];
+  const problemCodes = new Set(readinessProblems.map(p => p.code));
+  const coveringProfile = workspace && months.length ? gstProfileReadiness(savedProfiles, monthPeriod(businessId, business?.gstin ?? '', [...months].sort()[0], frequency)).covering[0] : undefined;
+  const frequencyMismatch = problemCodes.has('GST_PROFILE_FREQUENCY_MISMATCH');
+  const calculationBlocked = !profileIsSaved || profileDirty || frequencyMismatch || readinessProblems.some(p => COVERAGE_CODES.includes(p.code));
+  const noActiveProfile = problemCodes.has('GST_PROFILE_MISSING') || problemCodes.has('GST_PROFILE_INACTIVE');
+  const readinessChecks: Array<{ label: string; codes: GstProfileIssueCode[]; needsProfile?: boolean; passed?: boolean }> = [
+    { label: 'Saved profile exists', codes: ['GST_PROFILE_MISSING'], passed: savedProfiles.length > 0 && !problemCodes.has('GST_PROFILE_MISSING') },
+    { label: 'Registration type is Regular', codes: ['GST_PROFILE_NOT_REGULAR'], needsProfile: true },
+    { label: 'GST reporting is enabled', codes: ['GST_PROFILE_DISABLED'], needsProfile: true },
+    { label: 'Profile is active', codes: ['GST_PROFILE_INACTIVE'], needsProfile: !problemCodes.has('GST_PROFILE_INACTIVE') },
+    { label: 'GSTIN matches the selected business', codes: ['GST_PROFILE_GSTIN_MISMATCH'], needsProfile: true },
+    { label: 'Filing frequency matches', codes: ['GST_PROFILE_FREQUENCY_MISMATCH'], needsProfile: true },
+    { label: 'Effective dates cover all selected periods', codes: ['GST_PROFILE_EFFECTIVE_DATE_GAP'], needsProfile: true },
+    { label: 'Registration dates cover all selected periods', codes: ['GST_REGISTRATION_DATE_GAP'], needsProfile: true },
+    { label: 'No overlapping active profile exists', codes: ['GST_PROFILE_MULTIPLE'], needsProfile: true },
+    { label: 'Preceding-FY AATO is confirmed', codes: [], passed: Boolean(aato?.confirmed_at) },
+  ];
+  const aatoHelp = {
+    message: `Aggregate Annual Turnover (AATO) for FY ${previousYear} is not entered. Reports assume it was ₹5 crore or less, so HSN codes need at least 4 digits. This does not block reports.`,
+    correction: `If AATO for FY ${previousYear} (all GSTINs on the same PAN, not only BusinessVault sales) was above ₹5 crore, enter it and click Save AATO so 6-digit HSN codes are checked.`,
+  };
+  const uniqueProblems = [...new Map(readinessProblems.map(p => [`${p.code}:${p.field}`, p])).values()];
+
+  // Open the profile panel and move focus to the field that needs fixing.
+  function focusProfileField(id: string) {
+    setProfileOpen(true);
+    setTimeout(() => { const element = document.getElementById(id); element?.scrollIntoView?.({ block: 'center' }); element?.focus(); }, 0);
+  }
+  // Load the profile that covers the period into the editor (keeping edits to it) before fixing a field.
+  function editCovering(values: Partial<SaveGstProfileInput> = {}) {
+    const row = coveringProfile ?? savedProfiles.find(p => p.active) ?? savedProfiles[0];
+    if (row) setProfile({ ...(profile?.id === row.id ? profile : editable(row)), ...values });
+  }
+  // One concrete action per problem, so every "Not met" item says what to click.
+  function readinessFix(code: GstProfileIssueCode | 'AATO', field: string | null): { label: string; action: () => void } | null {
+    const go = (label: string, id: string, values?: Partial<SaveGstProfileInput>) => ({ label, action: () => { editCovering(values); focusProfileField(id); log.info('gst-reports', 'readiness fix opened', { businessId, code, field }); } });
+    switch (code) {
+      case 'GST_PROFILE_MISSING': return !profileIsSaved && profile
+        ? { label: 'Save GST profile', action: () => saveProfileAndRecalculate(profile, 'checklist save') }
+        : { label: 'Create GST profile', action: () => { setProfile(suggestedProfile(businessId, business, financialYear, frequency)); focusProfileField('gst-profile-registration_type'); } };
+      case 'GST_PROFILE_INACTIVE': {
+        const row = savedProfiles.filter(p => !p.active).sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0];
+        return row ? { label: 'Reactivate profile', action: () => { setProfile({ ...editable(row), active: 1 }); focusProfileField('gst-profile-save'); } } : null;
+      }
+      case 'GST_PROFILE_NOT_REGULAR': return go('Change registration type', 'gst-profile-registration_type');
+      case 'GST_PROFILE_DISABLED': return go('Turn on GST reporting', 'gst-profile-save', { gst_reporting_enabled: 1 });
+      case 'GST_PROFILE_GSTIN_MISMATCH': return { label: 'Open business settings', action: () => void run(async () => { await setCurrentBusinessId(businessId); navigate('/settings'); }) };
+      case 'GST_PROFILE_FREQUENCY_MISMATCH': return coveringProfile ? { label: `Restore ${coveringProfile.filing_frequency}`, action: () => changeFrequency(coveringProfile.filing_frequency) } : null;
+      case 'GST_PROFILE_EFFECTIVE_DATE_GAP':
+      case 'GST_REGISTRATION_DATE_GAP': {
+        const labels: Record<string, string> = { effective_from: 'Effective from', effective_to: 'Effective to', registration_start_date: 'Registration start', registration_end_date: 'Registration end' };
+        return field && labels[field] ? go(`Edit ${labels[field]}`, `gst-profile-${field}`) : null;
+      }
+      case 'GST_PROFILE_MULTIPLE': return { label: 'Review saved profiles', action: () => focusProfileField('gst-profile-list') };
+      case 'AATO': return { label: 'Enter AATO', action: () => focusProfileField('gst-aato-input') };
+    }
+    return null;
+  }
+  function fixButton(code: GstProfileIssueCode | 'AATO', field: string | null) {
+    const fix = readinessFix(code, field);
+    return fix && <button type="button" className="gst-fix-button" disabled={busy || immutable} onClick={fix.action}>{fix.label}</button>;
+  }
   const evidenceResults = !immutable && current?.period.periodType === 'QUARTER' ? [current] : visibleResults;
   const allDocuments = evidenceResults.flatMap(r => [...r.outwardDocuments, ...r.inwardDocuments]);
   const documents = current ? [...current.outwardDocuments, ...current.inwardDocuments] : [];
@@ -252,17 +336,16 @@ export default function GstSummaryPage() {
       if (!alive) return;
       setWorkspace(w);
       const b = w.businesses.find(row => row.id === businessId);
-      const p = w.profiles.filter(row => row.active).sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0];
+      const p = w.profiles.filter(row => row.active && row.business_id === businessId).sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0];
       const loadedFrequency: Frequency = p?.filing_frequency ?? 'MONTHLY';
       setFrequency(loadedFrequency);
       const aligned = periodContaining(reportingPeriods(loadedFrequency, Number(financialYear.slice(0, 4))), months[0], today.slice(0, 7));
       if (aligned.months.join() !== months.join()) { setMonths(aligned.months); setQuarter(aligned.quarter); }
       log.info('gst-reports', 'reporting period aligned to profile', { businessId, frequency: loadedFrequency, period: aligned.value });
-      setProfile(p ? editable(p) : {
-        business_id: businessId, gstin: b?.gstin ?? '', legal_name: b?.name ?? '', state_code: b?.state_code ?? '',
-        registration_type: 'REGULAR', registration_start_date: null, registration_end_date: null,
-        filing_frequency: 'MONTHLY', gst_reporting_enabled: 1, effective_from: `${financialYear.slice(0, 4)}-04-01`, effective_to: null, active: 1,
-      });
+      setProfile(p ? editable(p) : suggestedProfile(businessId, b, financialYear, loadedFrequency));
+      // An unconfigured business opens the editor so the suggested values are visible before saving.
+      setProfileOpen(!p);
+      log.info('gst-reports', 'GST profile loaded', { businessId, saved: Boolean(p), profileId: p?.id ?? null, profileCount: w.profiles.length });
       setReadyBusiness(businessId);
     }).catch((e: unknown) => { if (alive) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (alive) setBusy(false); });
@@ -289,6 +372,9 @@ export default function GstSummaryPage() {
   function changeFrequency(next: Frequency) {
     invalidate(true);
     setFrequency(next);
+    // An unsaved draft follows the selector; a saved profile only changes on an explicit save.
+    setProfile(current => current && !current.id ? { ...current, filing_frequency: next } : current);
+    log.info('gst-reports', 'filing frequency changed', { businessId, next, savedFrequency: coveringProfile?.filing_frequency ?? null });
     selectPeriod(periodContaining(reportingPeriods(next, startYear), [...months].sort()[0], today.slice(0, 7)), 'filing frequency changed');
   }
 
@@ -316,25 +402,48 @@ export default function GstSummaryPage() {
     finally { operationLock.current = false; setBusy(false); }
   }
 
+  // Save, reload the persisted workspace, swap the editor to the stored row
+  // (with its ID and version), then recalculate from the saved values.
+  function saveProfileAndRecalculate(next: SaveGstProfileInput, reason: string) {
+    if (operationBusy || immutable) return;
+    void run(async () => {
+      log.info('gst-reports', 'saving GST profile', { businessId, reason, profileId: next.id ?? null, frequency: next.filing_frequency, active: next.active });
+      const saved: Awaited<ReturnType<GstMonthlyReportService['saveProfile']>> = await gstMonthlyReportService.saveProfile(next);
+      const loaded: Workspace = await gstMonthlyReportService.loadWorkspace(businessId);
+      const persisted = loaded.profiles.find(row => row.id === saved.id) ?? saved;
+      invalidate(); setWorkspace(loaded); setProfile(editable(persisted));
+      profileSavedNotice.current = true;
+      setRevision(value => value + 1);
+      log.info('gst-reports', 'GST profile saved; recalculating', { businessId, profileId: persisted.id, version: persisted.entity_version });
+    });
+  }
+
   useEffect(() => {
     const token = ++request.current;
     if (!businessId || readyBusiness !== businessId || !months.length) { setCalculating(false); return; }
+    if (calculationBlocked) {
+      setCalculating(false);
+      if (profileSavedNotice.current) { profileSavedNotice.current = false; setMessage('GST profile saved. Reports were not recalculated because the profile is not ready.'); }
+      log.info('gst-reports', 'calculation skipped: GST profile not ready', { businessId, saved: profileIsSaved, dirty: profileDirty, frequencyMismatch, codes: [...problemCodes] });
+      return;
+    }
     setCalculating(true); setError(''); setMessage('');
     gstMonthlyReportService.calculateMonths(businessId, [...months].sort(), frequency).then(calculated => {
       if (token !== request.current) return;
       setResults(calculated); setCurrentKey(key => calculated.some(r => r.period.periodKey === key) ? key : calculated[0]?.period.periodKey ?? '');
       setFilter(null); setMetadata(null); setStale(false);
-      setMessage('Calculated independent monthly workings. No return has been filed.');
+      setMessage(profileSavedNotice.current ? 'GST profile saved. Reports recalculated.' : 'Calculated independent monthly workings. No return has been filed.');
+      profileSavedNotice.current = false;
     }).catch((e: unknown) => {
       if (token === request.current) setError(e instanceof Error ? e.message : String(e));
     }).finally(() => { if (token === request.current) setCalculating(false); });
     return () => { if (token === request.current) request.current++; };
-  }, [businessId, readyBusiness, months, frequency, revision]);
+  }, [businessId, readyBusiness, months, frequency, revision, calculationBlocked]);
 
   useEffect(() => {
     const token = ++quarterRequest.current;
     setQuarterResult(null);
-    if (!businessId || readyBusiness !== businessId || frequency !== 'QRMP') { setQuarterBusy(false); return; }
+    if (!businessId || readyBusiness !== businessId || frequency !== 'QRMP' || calculationBlocked) { setQuarterBusy(false); return; }
     setQuarterBusy(true);
     gstMonthlyReportService.calculateQuarter(businessId, financialYear, quarter).then(result => {
       if (token === quarterRequest.current) setQuarterResult(result);
@@ -342,7 +451,7 @@ export default function GstSummaryPage() {
       if (token === quarterRequest.current) setError(e instanceof Error ? e.message : String(e));
     }).finally(() => { if (token === quarterRequest.current) setQuarterBusy(false); });
     return () => { if (token === quarterRequest.current) quarterRequest.current++; };
-  }, [businessId, readyBusiness, financialYear, frequency, quarter, revision, months]);
+  }, [businessId, readyBusiness, financialYear, frequency, quarter, revision, months, calculationBlocked]);
 
   function drill(ids: string[], label: string, result = current) {
     if (result) setCurrentKey(result.period.periodKey);
@@ -440,7 +549,7 @@ export default function GstSummaryPage() {
     <header className="gst-page-header">
       <div><div className="gst-title-line"><h1>GST Reports</h1><span className={`gst-status ${blockingIssueCount ? 'gst-status-warning' : ''}`}>{reportStatus}</span></div><p>Books-based GST workpapers for taxpayer and CA review. Not proof of filing.</p></div>
       <div className="gst-header-actions">
-        <button type="button" className="gst-button gst-button-primary" disabled={busy || !months.length || readyBusiness !== businessId} onClick={() => { invalidate(); setRevision(value => value + 1); }}><Calculator size={16} />{calculating ? 'Calculating…' : 'Calculate reports'}<span className="gst-sr-only"> Refresh live working</span></button>
+        <button type="button" className="gst-button gst-button-primary" disabled={busy || !months.length || readyBusiness !== businessId || calculationBlocked} onClick={() => { invalidate(); setRevision(value => value + 1); }}><Calculator size={16} />{calculating ? 'Calculating…' : 'Calculate reports'}<span className="gst-sr-only"> Refresh live working</span></button>
         <button type="button" className="gst-button gst-button-secondary" disabled={busy || stale || immutable || current?.status !== 'READY_FOR_CA_REVIEW'} onClick={() => { if (current && window.confirm(`Save ${current.period.periodKey} as REVIEWED? This snapshot is immutable and cannot be edited or undone. Later recalculation creates a new run. This is not filing.`)) void run(async () => { await gstMonthlyReportService.saveReport(current, 'REVIEWED'); setWorkspace(await gstMonthlyReportService.loadWorkspace(businessId)); setMessage('Saved REVIEWED snapshot. No return has been filed.'); }); }}><Save size={16} />Save snapshot</button>
         <button type="button" className="gst-button gst-button-secondary" disabled={!visibleResults.length || busy || stale || caExporting !== null} onClick={() => exportCaWorkbook('gstr1')}><FileSpreadsheet size={16} />{caExporting === 'gstr1' ? 'Generating GSTR-1…' : 'Download GSTR-1 Excel'}</button>
         <button type="button" className="gst-button gst-button-secondary" disabled={!visibleResults.length || busy || stale || caExporting !== null} onClick={() => exportCaWorkbook('purchase')}><FileSpreadsheet size={16} />{caExporting === 'purchase' ? 'Generating GSTR-2…' : 'Download GSTR-2 Excel'}</button>
@@ -472,20 +581,62 @@ export default function GstSummaryPage() {
       </div>
     </fieldset></section>
 
-    {profile && <section className="gst-profile-summary"><button type="button" aria-expanded={profileOpen} aria-controls="gst-profile-details" onClick={() => setProfileOpen(open => !open)}><span><ShieldCheck size={18} /> <strong>GST profile summary</strong><span className="gst-sr-only">GST profile and preceding FY AATO</span><em>{profile.registration_type} · {frequency} · {aato ? 'AATO confirmed' : 'AATO pending'}</em></span><ChevronDown size={18} /></button>
+    {readyBusiness === businessId && calculationBlocked && !immutable && <section className="gst-profile-gate" aria-label="GST profile not ready">
+      <AlertTriangle size={18} aria-hidden="true" />
+      <div>
+        {frequencyMismatch && <strong>Profile frequency mismatch</strong>}
+        <p>Save a valid GST profile before calculating GST reports.</p>
+        {profileIsSaved && !profileDirty && uniqueProblems.length > 0 && <ul className="gst-fix-list">{uniqueProblems.map(p => <li key={`${p.code}:${p.field}`}><span>{p.message}</span> <span>{p.correction}</span> {fixButton(p.code, p.field)}</li>)}</ul>}
+        {!profileIsSaved && <p>{savedProfiles.length ? 'The editor holds a new profile that has not been saved.' : 'GST profile not configured. The editor shows unsaved suggested values.'}</p>}
+        {profileIsSaved && profileDirty && <p>The GST profile editor has unsaved changes.</p>}
+      </div>
+      <div className="gst-profile-gate-actions">
+        {!profileIsSaved && profile && <button type="button" className="gst-button gst-button-primary" disabled={busy} onClick={() => saveProfileAndRecalculate(profile, 'save suggested profile')}><Save size={16} />Save GST profile</button>}
+        {frequencyMismatch && coveringProfile && <>
+          <button type="button" className="gst-button gst-button-primary" disabled={busy} onClick={() => saveProfileAndRecalculate({ ...(profile?.id === coveringProfile.id ? profile : editable(coveringProfile)), filing_frequency: frequency }, 'update profile frequency')}>Update and save profile</button>
+          <button type="button" className="gst-button gst-button-secondary" disabled={busy} onClick={() => changeFrequency(coveringProfile.filing_frequency)}>Restore saved frequency</button>
+        </>}
+        {profileIsSaved && !frequencyMismatch && !profileOpen && <button type="button" className="gst-button gst-button-secondary" onClick={() => setProfileOpen(true)}>Review GST profile</button>}
+      </div>
+    </section>}
+
+    {profile && <section className="gst-profile-summary"><button type="button" aria-expanded={profileOpen} aria-controls="gst-profile-details" onClick={() => setProfileOpen(open => !open)}><span><ShieldCheck size={18} /> <strong>GST profile summary</strong><span className="gst-sr-only">GST profile and preceding FY AATO</span><em>{coveringProfile ? `${coveringProfile.registration_type} · ${coveringProfile.filing_frequency}` : savedProfiles.length ? 'No active profile for this period' : 'GST profile not configured'} · {aato ? 'AATO confirmed' : 'AATO pending'}</em></span><ChevronDown size={18} /></button>
       {profileOpen && <div id="gst-profile-details" className="gst-profile-details">
-      <form className="mt-3" onSubmit={e => submit(e, async () => {
-        const saved: Awaited<ReturnType<GstMonthlyReportService['saveProfile']>> = await gstMonthlyReportService.saveProfile({ ...profile, filing_frequency: frequency });
-        setProfile(editable(saved));
-      })}><fieldset disabled={busy || immutable} className="grid sm:grid-cols-3 gap-3"><legend>Registration profile</legend>
-        <label>Registration type<select className={control} value={profile.registration_type} onChange={e => setProfile({ ...profile, registration_type: e.target.value as typeof profile.registration_type })}>{['REGULAR', 'COMPOSITION', 'UNREGISTERED', 'OTHER'].map(s => <option key={s}>{s}</option>)}</select></label>
-        <label>Effective from<input className={control} type="date" required value={profile.effective_from} onChange={e => setProfile({ ...profile, effective_from: e.target.value })} /></label>
-        <label>Effective to (exclusive)<input className={control} type="date" value={profile.effective_to ?? ''} onChange={e => setProfile({ ...profile, effective_to: e.target.value || null })} /></label>
-        <label>Registration start<input className={control} type="date" value={profile.registration_start_date ?? ''} onChange={e => setProfile({ ...profile, registration_start_date: e.target.value || null })} /></label>
-        <label>Registration end<input className={control} type="date" value={profile.registration_end_date ?? ''} onChange={e => setProfile({ ...profile, registration_end_date: e.target.value || null })} /></label>
-        <label><input type="checkbox" checked={profile.gst_reporting_enabled === 1} onChange={e => setProfile({ ...profile, gst_reporting_enabled: e.target.checked ? 1 : 0 })} /> Enable GST reporting</label>
-        <label><input type="checkbox" checked={profile.active === 1} onChange={e => setProfile({ ...profile, active: e.target.checked ? 1 : 0 })} /> Active profile</label>
-        <button className={button}>Save profile</button>
+      <ul className="gst-readiness" aria-label="GST profile readiness">{readinessChecks.map(check => {
+        const problem = readinessProblems.find(p => check.codes.includes(p.code));
+        const isAato = check.label.startsWith('Preceding-FY AATO');
+        // Missing AATO is a warning (4-digit HSN assumed), not a blocking failure.
+        const state = check.passed !== undefined ? check.passed ? 'pass' : isAato ? 'warn' : 'fail' : check.needsProfile && noActiveProfile ? 'unknown' : problem ? 'fail' : 'pass';
+        const Icon = state === 'pass' ? CheckCircle2 : state === 'fail' ? XCircle : state === 'warn' ? AlertTriangle : MinusCircle;
+        const help = isAato ? aatoHelp : problem ?? (check.codes[0] === 'GST_PROFILE_MISSING' ? readinessProblems.find(p => p.code === 'GST_PROFILE_MISSING') : undefined);
+        return <li key={check.label} className={`gst-readiness-${state}`}><Icon size={16} aria-hidden="true" /><span>{check.label}</span><strong>{state === 'pass' ? 'Passed' : state === 'fail' ? 'Not met' : state === 'warn' ? 'Warning' : 'Not checked'}</strong>
+          {(state === 'fail' || state === 'warn') && help && <small><span>{help.message}</span> <span>{state === 'warn' ? 'What to do' : 'How to fix'}: {help.correction}</span> {fixButton(isAato ? 'AATO' : problem?.code ?? 'GST_PROFILE_MISSING', problem?.field ?? null)}</small>}
+          {state === 'unknown' && <small>Checked after a saved, active profile covers the selected period.</small>}</li>;
+      })}</ul>
+      <div className="gst-profile-list">
+        <h3 id="gst-profile-list" tabIndex={-1}>Saved GST profiles</h3>
+        {savedProfiles.length ? <table><thead><tr><th>Effective</th><th>Registration</th><th>Frequency</th><th>State</th><th>GST reporting</th><th>GSTIN</th><th><span className="gst-sr-only">Actions</span></th></tr></thead>
+          <tbody>{[...savedProfiles].sort((a, b) => a.effective_from.localeCompare(b.effective_from)).map(row => <tr key={row.id}>
+            <td>{row.effective_from} to {row.effective_to ? `${row.effective_to} (exclusive)` : 'ongoing'}</td><td>{row.registration_type}</td><td>{row.filing_frequency}</td>
+            <td>{row.active ? 'Active' : 'Inactive'}</td><td>{row.gst_reporting_enabled ? 'Enabled' : 'Disabled'}</td><td>{row.gstin || 'Not recorded'}</td>
+            <td><button type="button" className={button} disabled={busy || immutable} aria-label={`Edit GST profile from ${row.effective_from}`} onClick={() => { setProfile(editable(row)); log.info('gst-reports', 'editing GST profile', { businessId, profileId: row.id }); }}>Edit</button>
+              {/* Deactivation keeps the row: saved report runs reference historical profiles, so profiles are never deleted. */}
+              {row.active === 1 && <button type="button" className={button} disabled={busy || immutable} aria-label={`Deactivate GST profile from ${row.effective_from}`} onClick={() => {
+                if (window.confirm('Deactivate this GST profile? It stays in history for saved reports, but its periods are blocked until another active profile covers them.')) saveProfileAndRecalculate({ ...editable(row), active: 0 }, 'deactivate profile');
+              }}>Deactivate</button>}</td>
+          </tr>)}</tbody></table> : <p>No saved GST profiles yet.</p>}
+        {savedProfiles.length > 0 && <button type="button" className={button} disabled={busy || immutable} onClick={() => setProfile(suggestedProfile(businessId, business, financialYear, frequency))}>New profile</button>}
+      </div>
+      <form className="mt-3" onSubmit={e => { e.preventDefault(); saveProfileAndRecalculate(profile, 'save profile form'); }}><fieldset disabled={busy || immutable} className="grid sm:grid-cols-3 gap-3"><legend>Registration profile {profileIsSaved ? profileDirty ? '— unsaved changes' : '— saved' : <span className="gst-unsaved-badge">Unsaved suggested values</span>}</legend>
+        <label>Registration type<select id="gst-profile-registration_type" className={control} value={profile.registration_type} onChange={e => setProfile({ ...profile, registration_type: e.target.value as typeof profile.registration_type })}>{['REGULAR', 'COMPOSITION', 'UNREGISTERED', 'OTHER'].map(s => <option key={s}>{s}</option>)}</select></label>
+        <label>Profile filing frequency<select id="gst-profile-filing_frequency" className={control} value={profile.filing_frequency} onChange={e => setProfile({ ...profile, filing_frequency: e.target.value as Frequency })}><option value="MONTHLY">Monthly</option><option value="QRMP">Quarterly (QRMP)</option></select></label>
+        <label>Effective from<input id="gst-profile-effective_from" className={control} type="date" required value={profile.effective_from} onChange={e => setProfile({ ...profile, effective_from: e.target.value })} /></label>
+        <label>Effective to (exclusive)<input id="gst-profile-effective_to" className={control} type="date" value={profile.effective_to ?? ''} onChange={e => setProfile({ ...profile, effective_to: e.target.value || null })} /></label>
+        <label>Registration start<input id="gst-profile-registration_start_date" className={control} type="date" value={profile.registration_start_date ?? ''} onChange={e => setProfile({ ...profile, registration_start_date: e.target.value || null })} /></label>
+        <label>Registration end (inclusive)<input id="gst-profile-registration_end_date" className={control} type="date" value={profile.registration_end_date ?? ''} onChange={e => setProfile({ ...profile, registration_end_date: e.target.value || null })} /></label>
+        <label><input id="gst-profile-gst_reporting_enabled" type="checkbox" checked={profile.gst_reporting_enabled === 1} onChange={e => setProfile({ ...profile, gst_reporting_enabled: e.target.checked ? 1 : 0 })} /> Enable GST reporting</label>
+        <label><input id="gst-profile-active" type="checkbox" checked={profile.active === 1} onChange={e => setProfile({ ...profile, active: e.target.checked ? 1 : 0 })} /> Active profile</label>
+        <button id="gst-profile-save" className={button}>Save profile</button>
       </fieldset></form>
       <p className="text-sm my-3">Composition and unregistered registrations do not support normal GSTR-1 / Draft GSTR-3B workings. Enter complete taxpayer AATO, not merely turnover recorded in BusinessVault.</p>
       <form key={`${businessId}-${previousYear}-${aato?.entity_version}`} onSubmit={e => submit(e, data => gstMonthlyReportService.setAato({
@@ -493,7 +644,7 @@ export default function GstSummaryPage() {
         aato_paise: rupeesToPaise(data.get('aato'), 'AATO'), source: 'USER_CONFIRMED', confirmed_at: new Date().toISOString(),
         notes: String(data.get('notes') ?? ''), ...(aato ? { id: aato.id, expectedVersion: aato.entity_version } : {}),
       }))}><fieldset disabled={busy || immutable} className="grid sm:grid-cols-3 gap-3"><legend>AATO for preceding financial year {previousYear}</legend>
-        {field(`Aggregate Annual Turnover for FY ${previousYear} (₹)`, 'aato', paiseToRupees(aato?.aato_paise ?? undefined), 'text', true)}
+        <label className="text-sm">Aggregate Annual Turnover for FY {previousYear} (₹)<input id="gst-aato-input" className={control} name="aato" defaultValue={paiseToRupees(aato?.aato_paise ?? undefined)} required /></label>
         {field('AATO notes', 'notes', aato?.notes ?? '')}<button className={button}>Save AATO</button>
       </fieldset></form>
     </div>}</section>}
@@ -598,7 +749,7 @@ export default function GstSummaryPage() {
           <p className="gst-card-note">Net liability = output liability + reverse charge − eligible ITC, before payment and adjustments. A negative figure is credit available.</p>
         </section>;
       })()}
-      {!immutable && <GstMonthlyChart businessId={businessId} financialYear={financialYear} frequency={frequency} revision={revision} ready={readyBusiness === businessId} />}
+      {!immutable && <GstMonthlyChart businessId={businessId} financialYear={financialYear} frequency={frequency} revision={revision} ready={readyBusiness === businessId && !calculationBlocked} />}
       </div>
       <section className="gst-section-card" aria-label="ITC status breakdown">
         <details className="gst-disclosure" onToggle={e => log.info('gst-reports', 'ITC status breakdown toggled', { open: e.currentTarget.open })}><summary>ITC status breakdown by month</summary>

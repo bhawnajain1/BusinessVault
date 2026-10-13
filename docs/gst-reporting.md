@@ -112,7 +112,8 @@ Thresholds must not be duplicated in presentation code.
   (10,000,000 paise).
 - From May 2025, outward HSN summaries are split by B2B/B2C, with document-series
   readiness checks.
-- Unknown preceding-FY AATO blocks readiness; valid complete 8-digit HSN codes
+- Unknown preceding-FY AATO is a WARNING (`AATO_UNKNOWN`), not a block: the
+  report assumes AATO up to INR 5 crore and enforces the 4-digit HSN minimum. Valid complete 8-digit HSN codes
   are retained. Persisted description, rate and UQC snapshots take priority over
   current masters; missing historical detail requires review.
 - Non-empty invalid GSTIN is unclassified and blocking, never treated as B2C or
@@ -243,15 +244,28 @@ rejections are thrown errors before writes, not additional engine issue codes.
 
 | Severity / concern | Exact codes |
 | --- | --- |
-| BLOCKING_ERROR: scope/rules/profile | INVALID_PERIOD_SCOPE, INVALID_BUSINESS_GSTIN, GST_PROFILE_NOT_READY, AATO_UNKNOWN, RULE_NOT_AVAILABLE |
+| BLOCKING_ERROR: scope/rules/profile | INVALID_PERIOD_SCOPE, INVALID_BUSINESS_GSTIN, RULE_NOT_AVAILABLE |
+| BLOCKING_ERROR: GST profile | GST_PROFILE_MISSING, GST_PROFILE_MULTIPLE, GST_PROFILE_NOT_REGULAR, GST_PROFILE_DISABLED, GST_PROFILE_INACTIVE, GST_PROFILE_GSTIN_MISMATCH, GST_PROFILE_FREQUENCY_MISMATCH, GST_PROFILE_EFFECTIVE_DATE_GAP, GST_REGISTRATION_DATE_GAP |
 | BLOCKING_ERROR: duplicate identity | DUPLICATE_SOURCE_ID, DUPLICATE_LINE_ID, DUPLICATE_METADATA, DUPLICATE_DOCUMENT |
 | BLOCKING_ERROR: source completeness | INVALID_DOCUMENT_DATE, INVALID_REPORTING_PERIOD, MISSING_PARTY, MISSING_DOCUMENT_NUMBER, MISSING_LINE_DATA |
 | BLOCKING_ERROR: fixed-point/invariants | UNSAFE_MONEY, UNEXPECTED_NEGATIVE_AMOUNT, HEADER_TOTAL_MISMATCH, UNSAFE_LINE_VALUE, INVALID_LINE_SIGN, LINE_TOTAL_MISMATCH, LINE_HEADER_MISMATCH, UNSAFE_AGGREGATE, UNSAFE_QUANTITY_AGGREGATE |
 | BLOCKING_ERROR: classification | INVALID_PARTY_GSTIN, UNSUPPORTED_DOCUMENT_TYPE, SEZ_CLASSIFICATION_REQUIRED, RETURN_CLASSIFICATION_CONFLICT, MISSING_PLACE_OF_SUPPLY, SUPPLIER_STATE_REQUIRED, SUPPLY_TYPE_CONFLICT, TAX_HEAD_CONFLICT, UNSUPPORTED_RECIPIENT, SPECIAL_SUPPLY_METADATA_REQUIRED, WITHOUT_PAYMENT_HAS_TAX, OUTWARD_RCM_REVIEW_REQUIRED, UNKNOWN_TAXABILITY, TAXABILITY_CONFLICT, INVALID_HSN, MISSING_UQC, MIXED_TAXABILITY_REVIEW, AMENDMENT_PREVIOUS_VALUES_REQUIRED, UNSUPPORTED_CLASSIFICATION, ADVANCE_GST_DETAIL_REQUIRED |
 | BLOCKING_ERROR: ITC | RECLAIM_EXCEEDS_BALANCE, ITC_REVIEW_INVALID, DUPLICATE_ITC_REVIEW, ITC_SOURCE_NOT_INCLUDED, PURCHASE_RETURN_ITC_REVIEW_REQUIRED, ITC_CUMULATIVE_ENTITLEMENT_EXCEEDED, ITC_CUMULATIVE_BALANCE_INVALID |
 | BLOCKING_ERROR: working controls | DOCUMENT_SERIES_DUPLICATE, DOCUMENT_SERIES_REQUIRED, INVALID_CA_ADJUSTMENT, UNSAFE_CA_ADJUSTMENT, TABLE4_FINAL_NET_CONFLICT, RECONCILIATION_VARIANCE |
-| WARNING | AATO_USER_CONFIRMED, LEGACY_NEGATIVE_NOTE, MISSING_ORIGINAL_NOTE_LINK, INFERRED_LINE_SNAPSHOT, ITC_UNREVIEWED, BOOKS_ITC_PORTAL_RECONCILIATION_REQUIRED, INSUFFICIENT_GST_DETAIL, DOCUMENT_SERIES_REVIEW, MANUAL_CA_ADJUSTMENT, NIL_PERIOD_NOT_CONFIRMED |
+| WARNING | AATO_UNKNOWN, AATO_USER_CONFIRMED, LEGACY_NEGATIVE_NOTE, MISSING_ORIGINAL_NOTE_LINK, INFERRED_LINE_SNAPSHOT, ITC_UNREVIEWED, BOOKS_ITC_PORTAL_RECONCILIATION_REQUIRED, INSUFFICIENT_GST_DETAIL, DOCUMENT_SERIES_REVIEW, MANUAL_CA_ADJUSTMENT, NIL_PERIOD_NOT_CONFIRMED |
 | INFORMATION | RULE_SET, FULL_NATIVE_RETURN_ORIGINAL_RETAINED |
+
+GST profile readiness lives in `profileReadiness.ts` and is shared by the engine
+and the GST Reports checklist. Each profile issue carries a specific correction.
+Date boundaries: `effective_from` and `registration_start_date` are inclusive
+starts; `effective_to` is exclusive (a follow-on profile starts on the same
+date); `registration_end_date` is inclusive (the last valid day), so a
+registration ending 31 October 2026 covers the October 2026 period. AATO stays a
+separate `AATO_UNKNOWN` check. All profile rows of the business are loaded as
+`profileHistory` only to report `GST_PROFILE_INACTIVE` or a date gap instead of
+`GST_PROFILE_MISSING`; that key is excluded from the source hash. Every unmet
+checklist item shows how to fix it plus a button that opens the exact field. The UI does not auto-calculate until a saved, unedited profile
+matches the selected frequency and covers every selected period.
 
 Reconciliation codes are `OUTWARD_RATE_HEADERS`, `INWARD_RATE_HEADERS`,
 `OUTWARD_HSN_LINES`, `INWARD_HSN_LINES`, `GSTR1_SECTION_TOTALS`, `GSTR1_TO_3B`,

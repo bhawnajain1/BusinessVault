@@ -2,6 +2,7 @@ import type { GstDocumentMetadata, GstNote, GstNoteLine, Invoice, InvoiceLine, P
 import { isValidGstin, isValidStateCode } from '../../lib/gst';
 import { inwardNoteEvidence } from '../../db/repos/gstReporting';
 import { buildDocumentSeries } from './documentSeries';
+import { gstProfileReadiness } from './profileReadiness';
 import { dateInPeriod, financialYearForDate, isDateOnly, monthPeriod, precedingFinancialYear, validateTaxPeriod } from './periods';
 import { GST_RULE_SET_VERSION, minimumHsnDigits, rulesForDate } from './rules';
 import type {
@@ -35,10 +36,10 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
     const end = new Date(`${period.nextPeriodStart}T00:00:00Z`); end.setUTCDate(0); return end.toISOString().slice(0, 7);
   })();
   function issue(code: string, severity: GstValidationIssue['severity'], type: string, id: string,
-    message: string, field: string | null = null, number: string | null = null, impact: Partial<GstAmounts> | null = null) {
+    message: string, field: string | null = null, number: string | null = null, impact: Partial<GstAmounts> | null = null, correction: string | null = null) {
     issues.push({ code, severity, tax_period_key: period.periodKey, source_entity_type: type,
       source_entity_id: id, document_number: number, field, message,
-      recommended_correction: severity === 'INFORMATION' ? 'No correction required.' : 'Review the source snapshot or capture explicit GST metadata; recalculate before CA review.', amount_impact: impact });
+      recommended_correction: correction ?? (severity === 'INFORMATION' ? 'No correction required.' : 'Review the source snapshot or capture explicit GST metadata; recalculate before CA review.'), amount_impact: impact });
   }
   function remember(type: string, id: string, content: unknown, version = 0, date: string | null = null,
     effect: GstSourceManifestEntry['report_effect'] = 'CONTEXT', metadataVersion: number | null = null) {
@@ -90,24 +91,24 @@ export function calculateMonthlyGst(sources: GstMonthlySources, period: GstTaxPe
   if (!isValidGstin(period.gstinSnapshot) || period.gstinSnapshot.toUpperCase() !== sources.business.gstin?.toUpperCase()) {
     issue('INVALID_BUSINESS_GSTIN', 'BLOCKING_ERROR', 'BUSINESS', businessId, 'GSTIN is invalid or does not match the selected registration.');
   }
-  const profiles = sources.profiles.filter(p => p.business_id === businessId && p.active && p.effective_from < period.nextPeriodStart && (!p.effective_to || p.effective_to > period.periodStart));
-  for (const profile of profiles) remember('GST_PROFILE', profile.id, profile, profile.entity_version);
-  if (profiles.length !== 1 || profiles[0].registration_type !== 'REGULAR' || !profiles[0].gst_reporting_enabled
-    || profiles[0].gstin.toUpperCase() !== period.gstinSnapshot.toUpperCase()
-    || profiles[0].filing_frequency !== period.filingFrequency
-    || profiles[0].effective_from > period.periodStart || (profiles[0].effective_to && profiles[0].effective_to < period.nextPeriodStart)
-    || (profiles[0].registration_start_date && profiles[0].registration_start_date > period.periodStart)
-    || (profiles[0].registration_end_date && profiles[0].registration_end_date < period.nextPeriodStart)) {
-    issue('GST_PROFILE_NOT_READY', 'BLOCKING_ERROR', 'BUSINESS', businessId, 'One enabled regular GST profile must cover the complete period and match the GSTIN/frequency.');
+  // Profile history only explains why nothing covers the period (inactive, outside dates); it is not evidence.
+  const readinessRows = new Map([...(sources.profileHistory ?? []), ...sources.profiles].map(p => [p.id, p]));
+  const readiness = gstProfileReadiness([...readinessRows.values()], period);
+  for (const profile of readiness.covering) remember('GST_PROFILE', profile.id, profile, profile.entity_version);
+  for (const problem of readiness.problems) {
+    issue(problem.code, 'BLOCKING_ERROR', 'BUSINESS', businessId, problem.message, problem.field, null, null, problem.correction);
   }
   let previousYear = '';
   try { previousYear = precedingFinancialYear(period.financialYear); } catch { /* Invalid period is already blocking. */ }
   const aatoRows = sources.aato.filter(a => a.business_id === businessId && a.financial_year === previousYear);
   for (const row of aatoRows) remember('GST_AATO', row.id, row, row.entity_version);
-  const hsnMinimum = aatoRows.length === 1 && aatoRows[0].confirmed_at ? minimumHsnDigits(aatoRows[0].aato_paise, period.periodStart) : null;
-  if (hsnMinimum === null) issue('AATO_UNKNOWN', 'BLOCKING_ERROR', 'BUSINESS', businessId, 'Confirmed preceding-financial-year AATO is required; no HSN minimum has been guessed.');
+  const confirmedHsnMinimum = aatoRows.length === 1 && aatoRows[0].confirmed_at ? minimumHsnDigits(aatoRows[0].aato_paise, period.periodStart) : null;
+  // Missing AATO does not block: assume AATO up to INR 5 crore (4-digit HSN minimum) and warn.
+  const hsnMinimum = confirmedHsnMinimum ?? minimumHsnDigits(0, period.periodStart);
+  if (confirmedHsnMinimum === null) issue('AATO_UNKNOWN', 'WARNING', 'BUSINESS', businessId, `AATO for the preceding financial year ${previousYear || ''} is not entered; assumed up to ₹5 crore, so at least 4-digit HSN codes are required.`, 'aato_paise', null, null,
+    `If the Aggregate Annual Turnover for FY ${previousYear || 'the preceding year'} (all GSTINs on the same PAN, not only BusinessVault sales) was above ₹5 crore, open GST profile summary, enter it and click Save AATO so 6-digit HSN codes are enforced.`);
   if (period.periodStart < '2021-04-01') issue('HISTORICAL_HSN_RULE_UNSUPPORTED', 'BLOCKING_ERROR', 'REPORT', period.periodKey, 'Pre-April-2021 HSN requirements are not modeled; the later minimum is not applied retroactively.');
-  if (hsnMinimum !== null && aatoRows[0]?.source === 'USER_CONFIRMED') issue('AATO_USER_CONFIRMED', 'WARNING', 'GST_AATO', aatoRows[0].id, 'AATO is user-confirmed, not independently verified.');
+  if (confirmedHsnMinimum !== null && aatoRows[0]?.source === 'USER_CONFIRMED') issue('AATO_USER_CONFIRMED', 'WARNING', 'GST_AATO', aatoRows[0].id, 'AATO is user-confirmed, not independently verified.');
   const rules = rulesForDate(period.periodStart);
   if (!rules) issue('RULE_NOT_AVAILABLE', 'BLOCKING_ERROR', 'REPORT', period.periodKey, 'No rule set covers this period.');
   issue('RULE_SET', 'INFORMATION', 'REPORT', period.periodKey, GST_RULE_SET_VERSION);

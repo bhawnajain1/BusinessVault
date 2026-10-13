@@ -90,6 +90,19 @@ async function workbookRows(calculation: MonthlyGstCalculation) {
 }
 
 describe('GST monthly persistence', () => {
+  it('clears GST_PROFILE_MISSING once the first profile is saved and reloads it with an ID', async () => {
+    const profileCodes = async () => (await service.calculateMonths(business.id, ['2026-08']))[0].issues.map(i => i.code).filter(c => c.startsWith('GST_PROFILE'));
+    expect(await profileCodes()).toEqual(['GST_PROFILE_MISSING']);
+    await setupProfile();
+    expect(await profileCodes()).toEqual([]);
+    const [saved] = (await service.loadWorkspace(business.id)).profiles;
+    expect(saved.id).toEqual(expect.any(String));
+    // Deactivating keeps the historical row and reports INACTIVE, not MISSING.
+    await service.saveProfile({ ...saved, active: 0, expectedVersion: saved.entity_version });
+    expect(await profileCodes()).toEqual(['GST_PROFILE_INACTIVE']);
+    expect((await service.loadWorkspace(business.id)).profiles.map(p => p.id)).toEqual([saved.id]);
+  });
+
   it('binds nil confirmation to current source hash, emits one event and replays idempotently', async () => {
     await setupProfile();
     const [nil] = await service.calculateMonths(business.id, ['2026-08']);

@@ -26,6 +26,19 @@ function calculation(key: string): MonthlyGstCalculation {
       booksItc: { UNREVIEWED: empty, ELIGIBLE_IN_BOOKS: empty, INELIGIBLE: empty, TEMPORARILY_REVERSED: empty, PERMANENTLY_REVERSED: empty, RECLAIMABLE: empty, RECLAIMED: empty, TOTAL_BOOKS_TAX: empty, NET_APPROVED: empty }, outputLiability: empty, rcmLiability: empty, indicativeWorkingBalance: empty },
   };
 }
+// A valid saved profile so the page calculates; profile-readiness tests override it.
+const savedProfile = { id: 'saved-profile', business_id: 'business-a', gstin: '', legal_name: 'Synthetic business', state_code: '27', registration_type: 'REGULAR', registration_start_date: null, registration_end_date: null, filing_frequency: 'MONTHLY', gst_reporting_enabled: 1, effective_from: '2017-07-01', effective_to: null, active: 1, entity_version: 1, created_at: 'created', updated_at: 'updated' };
+function baseWorkspace(profiles: unknown[] = [savedProfile, { ...savedProfile, id: 'saved-profile-b', business_id: 'business-b' }]) {
+  return { businesses: [{ id: 'business-a', name: 'Synthetic business', gstin: '', state_code: '27' }, { id: 'business-b', name: 'Second business', gstin: '', state_code: '29' }], profiles, aato: [], savedRuns: [] };
+}
+// The real flow: change the selector, then explicitly save the profile frequency.
+async function switchToQrmp() {
+  const qrmp = { ...savedProfile, filing_frequency: 'QRMP', entity_version: 2 };
+  mocks.loadWorkspace.mockResolvedValue(baseWorkspace([qrmp]));
+  mocks.saveProfile.mockResolvedValue(qrmp);
+  fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Update and save profile' }));
+}
 function RouteLocation() { return <output aria-label="Current route">{useLocation().pathname}</output>; }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -47,7 +60,7 @@ beforeEach(() => {
   mocks.csv.mockResolvedValue(undefined);
   mocks.pdf.mockResolvedValue(undefined);
   mocks.json.mockResolvedValue(undefined);
-  mocks.loadWorkspace.mockResolvedValue({ businesses: [{ id: 'business-a', name: 'Synthetic business', gstin: '', state_code: '27' }, { id: 'business-b', name: 'Second business', gstin: '', state_code: '29' }], profiles: [], aato: [], savedRuns: [] });
+  mocks.loadWorkspace.mockResolvedValue(baseWorkspace());
   mocks.calculateMonths.mockImplementation(async (_business: string, keys: string[]) => keys.map(calculation));
   mocks.calculateQuarter.mockImplementation(async (business: string, year: string, quarter: number) => ({ ...calculation(`${year.slice(0, 4)}-04`), businessId: business, period: quarterPeriod(business, '', year, quarter) }));
   mocks.setBusiness.mockResolvedValue(undefined);
@@ -134,21 +147,22 @@ describe('GST report workspace', () => {
     const key = mocks.calculateMonths.mock.lastCall![1][0] as string;
     const old = deferred<MonthlyGstCalculation[]>();
     const latest = deferred<MonthlyGstCalculation[]>();
+    const [first, second] = periodValues().filter(value => value !== key);
     mocks.calculateMonths.mockImplementationOnce(() => old.promise).mockImplementationOnce(() => latest.promise);
-    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
+    choosePeriod(first);
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(2));
-    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'MONTHLY' } });
+    choosePeriod(second);
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(3));
     await act(async () => {
       if (outcome === 'error') old.reject(new Error('Obsolete source error'));
-      else old.resolve([calculation(key)]);
+      else old.resolve([calculation(first)]);
     });
     expect(reportPage().getAttribute('aria-busy')).toBe('true');
     expect(screen.getByRole('alert').textContent).toBe('');
     expect(screen.queryByLabelText('Current tax month')).toBeNull();
-    await act(async () => latest.resolve([calculation(key)]));
+    await act(async () => latest.resolve([calculation(second)]));
     await finished();
-    expect((screen.getByLabelText('Current tax month') as HTMLSelectElement).value).toBe(key);
+    expect((screen.getByLabelText('Current tax month') as HTMLSelectElement).value).toBe(second);
   });
 
   it('preserves the latest error when an older calculation succeeds', async () => {
@@ -156,14 +170,15 @@ describe('GST report workspace', () => {
     const key = mocks.calculateMonths.mock.lastCall![1][0] as string;
     const old = deferred<MonthlyGstCalculation[]>();
     const latest = deferred<MonthlyGstCalculation[]>();
+    const [first, second] = periodValues().filter(value => value !== key);
     mocks.calculateMonths.mockImplementationOnce(() => old.promise).mockImplementationOnce(() => latest.promise);
-    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
+    choosePeriod(first);
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(2));
-    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'MONTHLY' } });
+    choosePeriod(second);
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenCalledTimes(3));
     await act(async () => latest.reject(new Error('Latest source unavailable')));
     await finished();
-    await act(async () => old.resolve([calculation(key)]));
+    await act(async () => old.resolve([calculation(first)]));
     expect(screen.getByRole('alert').textContent).toBe('Latest source unavailable');
     expect(screen.queryByLabelText('Current tax month')).toBeNull();
     expect(reportPage().getAttribute('aria-busy')).toBe('false');
@@ -191,12 +206,17 @@ describe('GST report workspace', () => {
     await open();
     const key = mocks.calculateMonths.mock.lastCall![1][0] as string;
     fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
-    await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-a', quarterMonthsOf(key), 'QRMP'));
-    await finished();
+    // A selector that disagrees with the saved profile never calculates silently.
+    expect(await screen.findByText('Profile frequency mismatch')).toBeTruthy();
+    expect(screen.getByText('The selected filing frequency is QRMP, but the saved profile is MONTHLY.')).toBeTruthy();
     expect(periodValues()).toEqual(['Q1', 'Q2', 'Q3', 'Q4']);
-    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'MONTHLY' } });
+    expect(mocks.calculateMonths).toHaveBeenCalledTimes(1);
+    expect(mocks.saveProfile).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Current tax month')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Restore saved frequency' }));
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-a', [quarterMonthsOf(key)[0]], 'MONTHLY'));
     await finished();
+    expect(screen.queryByText('Profile frequency mismatch')).toBeNull();
     const year = Number((screen.getByLabelText('Financial year') as HTMLSelectElement).value) - 1;
     fireEvent.change(screen.getByLabelText('Financial year'), { target: { value: String(year) } });
     await waitFor(() => expect(mocks.calculateMonths).toHaveBeenLastCalledWith('business-a', [`${year}-04`], 'MONTHLY'));
@@ -267,7 +287,7 @@ describe('GST report workspace', () => {
     mocks.calculateMonths.mockImplementation(async (_b: string, keys: string[]) => keys.map(key => {
       const r = calculation(key); r.totals.inwardNet = { ...summary, igst_paise: 100 }; r.totals.booksItc.NET_APPROVED = { ...empty, igst_paise: 40 }; return r;
     }));
-    await open(); fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
+    await open(); await switchToQrmp();
     await screen.findByText('All three months calculated independently.');
     expect(screen.getByRole('button', { name: 'Quarter PURCHASE_NET IGST: 3.00. Show contributing sources' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Quarter NET_APPROVED IGST: 1.20. Show contributing sources' })).toBeTruthy();
@@ -381,7 +401,7 @@ describe('GST report workspace', () => {
     saved.totals = { ...saved.totals, outwardNet: { ...summary, taxable_paise: 10000 } };
     saved.outwardDocuments = [{ ...purchase('2026-08'), source_entity_type: 'INVOICE', source_entity_id: 'original', document_number: 'ORIGINAL' }];
     mocks.loadSavedReport.mockResolvedValue(saved);
-    mocks.loadWorkspace.mockResolvedValue({ businesses: [{ id: 'business-a', name: 'Synthetic business' }], profiles: [], aato: [], savedRuns: [{ id: 'saved-run', tax_period_key: '2026-08', status: 'FINALIZED_WORKING', source_data_hash: 'original-hash' }], auditLog: [{ id: 'audit', action: 'gst_report_run.saved', entity_type: 'gst_report_run', entity_id: 'saved-run', actor: 'device:test', at: '2026-08-31', before: null, after: {} }] });
+    mocks.loadWorkspace.mockResolvedValue({ businesses: [{ id: 'business-a', name: 'Synthetic business' }], profiles: [savedProfile], aato: [], savedRuns: [{ id: 'saved-run', tax_period_key: '2026-08', status: 'FINALIZED_WORKING', source_data_hash: 'original-hash' }], auditLog: [{ id: 'audit', action: 'gst_report_run.saved', entity_type: 'gst_report_run', entity_id: 'saved-run', actor: 'device:test', at: '2026-08-31', before: null, after: {} }] });
     mocks.calculateMonths.mockImplementationOnce(async () => { const live = calculation('2026-08'); live.totals = { ...live.totals, outwardNet: { ...summary, taxable_paise: 25000 } }; return [live]; });
     await open();
     await screen.findByText('Calculated independent monthly workings. No return has been filed.');
@@ -457,7 +477,7 @@ describe('GST report workspace', () => {
 
   it('offers historical workspace and manifest purchases once without adding current-book totals', async () => {
     const old = { ...empty, id: 'purchase', business_id: 'business-a', bill_number: 'JULY-BILL', bill_date: '2026-07-01', igst_paise: 900 };
-    mocks.loadWorkspace.mockResolvedValue({ businesses: [{ id: 'business-a', name: 'Synthetic business' }], profiles: [], aato: [], savedRuns: [], itcSourcePurchases: [old], itcEntries: [{ id: 'reversal', business_id: 'business-a', source_entity_type: 'PURCHASE', source_entity_id: 'purchase', tax_head: 'IGST', tax_period_key: '2026-07', status: 'TEMPORARILY_REVERSED' }] });
+    mocks.loadWorkspace.mockResolvedValue({ businesses: [{ id: 'business-a', name: 'Synthetic business' }], profiles: [savedProfile], aato: [], savedRuns: [], itcSourcePurchases: [old], itcEntries: [{ id: 'reversal', business_id: 'business-a', source_entity_type: 'PURCHASE', source_entity_id: 'purchase', tax_head: 'IGST', tax_period_key: '2026-07', status: 'TEMPORARILY_REVERSED' }] });
     mocks.calculateMonths.mockImplementation(async () => {
       const r = calculation('2026-08');
       r.sourceManifest = [{ entity_type: 'ITC_SOURCE_PURCHASE', entity_id: 'purchase', entity_version: 1, document_date: old.bill_date, report_effect: 'CONTEXT', metadata_version: null, content: { header: old, lines: [], metadata: null } }];
@@ -590,7 +610,8 @@ describe('GST report workspace', () => {
     expect(monthLabels).toHaveLength(12);
     expect(monthLabels[0]).toBe(`April ${year}`); expect(monthLabels[6]).toBe(`October ${year}`); expect(monthLabels[11]).toBe(`March ${year + 1}`);
     expect(screen.getByText(`${Array.from(periodSelect().options).find(o => o.selected)!.textContent} selected`)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
+    await switchToQrmp();
+    await screen.findByText('GST profile saved. Reports recalculated.');
     await finished();
     expect(Array.from(periodSelect().options).map(o => o.textContent)).toEqual([
       `Q1 — April to June ${year}`, `Q2 — July to September ${year}`, `Q3 — October to December ${year}`, `Q4 — January to March ${year + 1}`,
@@ -604,7 +625,7 @@ describe('GST report workspace', () => {
       totals: { ...calculation(key).totals, outwardNet: { ...summary, taxable_paise: (index + 1) * 10_000, document_count: index + 1, source_entity_ids: [`invoice-${key}`] } },
     })));
     await open();
-    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
+    await switchToQrmp();
     await screen.findByRole('heading', { name: 'Selected-months analysis' });
     await finished();
     expect(screen.getByText('Total across 3 independently calculated months. This is for review only, not a combined GST return period.')).toBeTruthy();
@@ -621,8 +642,8 @@ describe('GST report workspace', () => {
   });
 
   it('keeps QRMP monthly calculations distinct from quarter analysis', async () => {
-    await open(); fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
-    await finished(); choosePeriod('Q4');
+    await open(); await switchToQrmp();
+    await screen.findByText('GST profile saved. Reports recalculated.'); await finished(); choosePeriod('Q4');
     await screen.findByText('All three months calculated independently.');
     const call = mocks.calculateMonths.mock.lastCall!; expect(call[2]).toBe('QRMP');
     expect((call[1] as string[]).map(k => k.slice(5))).toEqual(['01', '02', '03']);
@@ -767,7 +788,7 @@ describe('GST report workspace', () => {
   });
 
   it('exports selected-month CSV independently from current-month CSV', async () => {
-    await open(); fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } }); await finished();
+    await open(); await switchToQrmp(); await screen.findByText('GST profile saved. Reports recalculated.'); await finished();
     fireEvent.click(screen.getByRole('button', { name: 'Download CSV registers (selected months)' }));
     await waitFor(() => expect(mocks.csv).toHaveBeenCalledTimes(1)); await finished();
     expect(mocks.csv.mock.lastCall![0]).toHaveLength(3);
@@ -835,7 +856,7 @@ describe('GST report workspace', () => {
   it.each(['success', 'error'] as const)('ignores obsolete QRMP quarter %s while the latest quarter remains busy', async outcome => {
     await open(); const old = deferred<MonthlyGstCalculation>(); const latest = deferred<MonthlyGstCalculation>();
     mocks.calculateQuarter.mockImplementationOnce(() => old.promise).mockImplementationOnce(() => latest.promise);
-    fireEvent.change(screen.getByLabelText('Filing frequency'), { target: { value: 'QRMP' } });
+    await switchToQrmp();
     await waitFor(() => expect(mocks.calculateQuarter).toHaveBeenCalledTimes(1));
     choosePeriod(periodValues().find(v => v !== periodSelect().value && v !== 'Q1')!);
     await waitFor(() => expect(mocks.calculateQuarter).toHaveBeenCalledTimes(2));
@@ -848,5 +869,90 @@ describe('GST report workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open separate QRMP quarter working' }));
     const table = screen.getByRole('table', { name: 'Quarter GSTR-1 pending documents (already-IFF-reported sources excluded)' }); expect(table.textContent).toContain('PENDING-Q2');
     fireEvent.click(screen.getByRole('button', { name: 'Download Excel (current quarter)' })); await waitFor(() => expect(mocks.excel).toHaveBeenCalledWith([q])); await finished();
+  });
+});
+
+describe('GST profile readiness on the report page', () => {
+  async function openUnconfigured() {
+    mocks.loadWorkspace.mockResolvedValue(baseWorkspace([]));
+    render(<MemoryRouter><GstSummaryPage /></MemoryRouter>);
+    await screen.findByText('Save a valid GST profile before calculating GST reports.');
+    await finished();
+  }
+
+  it('shows "GST profile not configured" and labels prefilled defaults as unsaved, without calculating', async () => {
+    await openUnconfigured();
+    expect(screen.getAllByText(/GST profile not configured/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/REGULAR · MONTHLY/)).toBeNull();
+    expect(screen.getByText('Unsaved suggested values')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Save GST profile' }).length).toBeGreaterThan(0);
+    expect(within(screen.getByRole('list', { name: 'GST profile readiness' })).getByText('Saved profile exists').closest('li')!.textContent).toContain('Not met');
+    expect(screen.getByRole('button', { name: /Calculate reports/ }).matches(':disabled')).toBe(true);
+    expect(mocks.calculateMonths).not.toHaveBeenCalled();
+    expect(mocks.calculateQuarter).not.toHaveBeenCalled();
+  });
+
+  it('saves the first profile, reloads the persisted row with its ID and then recalculates', async () => {
+    await openUnconfigured();
+    const persisted = { ...savedProfile, id: 'new-profile', effective_from: '2026-04-01' };
+    mocks.saveProfile.mockResolvedValue(persisted);
+    mocks.loadWorkspace.mockResolvedValue(baseWorkspace([persisted]));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Save GST profile' })[0]);
+    expect(await screen.findByText('GST profile saved. Reports recalculated.')).toBeTruthy();
+    expect(mocks.saveProfile.mock.calls[0][0]).not.toHaveProperty('id');
+    expect(mocks.loadWorkspace).toHaveBeenCalledTimes(2);
+    expect(mocks.calculateMonths).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Save a valid GST profile before calculating GST reports.')).toBeNull();
+    expect(screen.queryByText('Unsaved suggested values')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Edit GST profile from 2026-04-01' })).toBeTruthy();
+    // The editor now holds the persisted row: a further save is a versioned update.
+    fireEvent.click(screen.getByRole('button', { name: 'Save profile' }));
+    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledTimes(2));
+    expect(mocks.saveProfile.mock.calls[1][0]).toMatchObject({ id: 'new-profile', expectedVersion: 1 });
+  });
+
+  it('does not calculate while the saved profile has unsaved edits', async () => {
+    await open();
+    fireEvent.click(screen.getByText('GST profile and preceding FY AATO'));
+    fireEvent.change(screen.getByLabelText('Effective from'), { target: { value: '2026-10-15' } });
+    expect(await screen.findByText('The GST profile editor has unsaved changes.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Calculate reports/ }));
+    expect(mocks.calculateMonths).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists profiles with state and deactivates without deleting', async () => {
+    const old = { ...savedProfile, id: 'old', effective_to: '2026-04-01', active: 0 };
+    const current = { ...savedProfile, id: 'current', effective_from: '2026-04-01' };
+    mocks.loadWorkspace.mockResolvedValue(baseWorkspace([old, current]));
+    await open();
+    fireEvent.click(screen.getByText('GST profile and preceding FY AATO'));
+    const rows = screen.getAllByRole('row').map(r => r.textContent);
+    expect(rows.some(r => r?.includes('2017-07-01 to 2026-04-01 (exclusive)') && r.includes('Inactive'))).toBe(true);
+    expect(rows.some(r => r?.includes('2026-04-01 to ongoing') && r.includes('Active') && r.includes('Enabled'))).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Deactivate GST profile from 2017-07-01' })).toBeNull();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mocks.saveProfile.mockResolvedValue({ ...current, active: 0 });
+    mocks.loadWorkspace.mockResolvedValue(baseWorkspace([old, { ...current, active: 0 }]));
+    fireEvent.click(screen.getByRole('button', { name: 'Deactivate GST profile from 2026-04-01' }));
+    await waitFor(() => expect(mocks.saveProfile).toHaveBeenCalledWith(expect.objectContaining({ id: 'current', active: 0 })));
+    expect((await screen.findAllByText(/The saved GST profile for the .* tax period is inactive\./)).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: 'Reactivate profile' }).length).toBeGreaterThan(0);
+  });
+
+  it('explains every unmet check and offers a button that leads to the fix', async () => {
+    mocks.loadWorkspace.mockResolvedValue(baseWorkspace([{ ...savedProfile, effective_from: '2099-04-01' }]));
+    render(<MemoryRouter><GstSummaryPage /></MemoryRouter>);
+    await screen.findByText('Save a valid GST profile before calculating GST reports.');
+    await finished();
+    expect(mocks.calculateMonths).not.toHaveBeenCalled();
+    // The banner names the problem and the button opens the exact field.
+    expect(screen.getAllByText(/Set Effective from on or before 01 /).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit Effective from' })[0]);
+    await waitFor(() => expect(document.activeElement?.id).toBe('gst-profile-effective_from'));
+    const aatoItem = within(screen.getByRole('list', { name: 'GST profile readiness' })).getByText('Preceding-FY AATO is confirmed').closest('li')!;
+    expect(aatoItem.textContent).toContain('Warning');
+    expect(aatoItem.textContent).toMatch(/What to do: If AATO for FY \d{4}-\d{2}.*was above ₹5 crore/);
+    fireEvent.click(within(aatoItem as HTMLElement).getByRole('button', { name: 'Enter AATO' }));
+    await waitFor(() => expect(document.activeElement?.id).toBe('gst-aato-input'));
   });
 });

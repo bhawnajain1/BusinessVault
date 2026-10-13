@@ -4,6 +4,23 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.1.2 — 2026-10-13
+
+### Fixed
+
+- GST Reports no longer presents an unsaved default profile as configured. With no saved profile the summary reads **GST profile not configured**, the editor is marked **Unsaved suggested values**, and a **Save GST profile** action is shown. Reports are not calculated automatically until a saved, unedited profile matches the selected filing frequency and covers every selected period ("Save a valid GST profile before calculating GST reports."). The engine still blocks independently.
+- The generic `GST_PROFILE_NOT_READY` issue is replaced by precise codes, each with a specific correction: `GST_PROFILE_MISSING`, `GST_PROFILE_MULTIPLE`, `GST_PROFILE_NOT_REGULAR`, `GST_PROFILE_DISABLED`, `GST_PROFILE_INACTIVE`, `GST_PROFILE_GSTIN_MISMATCH`, `GST_PROFILE_FREQUENCY_MISMATCH`, `GST_PROFILE_EFFECTIVE_DATE_GAP` and `GST_REGISTRATION_DATE_GAP`. AATO remains a separate check.
+- Registration end is now inclusive (a registration ending 31 October 2026 covers October 2026); Effective to stays exclusive. Both are documented in `docs/gst-reporting.md` and labelled in the editor.
+
+### Changed
+
+- Missing preceding-FY AATO no longer blocks GST reports. `AATO_UNKNOWN` is now a warning: reports assume AATO up to ₹5 crore and require at least 4-digit HSN codes. The readiness checklist shows **Warning** with an **Enter AATO** button. Enter AATO only if it was above ₹5 crore, so 6-digit HSN codes are enforced.
+
+### Added
+
+- Profile readiness checklist (icon + text) in the GST profile panel, a list of all saved profiles (dates, registration type, frequency, active and reporting state, GSTIN) with Edit, Deactivate (never delete) and New profile, and a **Profile frequency mismatch** banner with **Update and save profile** / **Restore saved frequency**. Saving a profile reloads the stored row, marks results stale and recalculates ("GST profile saved. Reports recalculated.").
+- Every unmet readiness check now explains what is wrong, shows a **How to fix:** step and offers a button that goes straight to the fix: **Enter AATO** (focuses the AATO field), **Reactivate profile**, **Turn on GST reporting**, **Change registration type**, **Edit Effective from / Effective to / Registration start / Registration end**, **Restore <frequency>**, **Review saved profiles**, **Open business settings** (GSTIN mismatch) and **Save / Create GST profile**. The AATO item now reads "Confirmed AATO for the preceding financial year … is required" with the instruction to enter the complete turnover for all GSTINs on the same PAN and click **Save AATO**. A profile saved for other dates is reported as an effective-date gap instead of "No saved GST profile exists".
+
 ## 1.1.1 — 2026-10-13
 
 ### Fixed
