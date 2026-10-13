@@ -267,7 +267,7 @@ body {
   outline: none;
 }
 
-.app-shell-main button:not([aria-label='Close']) {
+.app-shell-main button:not([aria-label='Close']):not(.bv-ui *) {
   border-radius: 0.5rem;
   transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }

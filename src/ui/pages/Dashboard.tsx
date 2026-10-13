@@ -330,7 +330,7 @@ function NewInvoiceButton() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex h-10 items-center rounded-r-lg border-l border-indigo-500 bg-indigo-600 px-2.5 text-white hover:bg-indigo-700"
+        className="inline-flex h-10 items-center rounded-r-lg border-l border-indigo-400/70 bg-indigo-600 px-2.5 text-white hover:bg-indigo-700"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="More ways to create"
