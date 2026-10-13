@@ -21,7 +21,7 @@ import StatusBadge from '../components/StatusBadge';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { addDaysYmd } from '../../lib/date';
 import { log } from '../../lib/log';
-import { DateTimeCell, formatDateTimeCsv } from '../components/DateTime';
+import { DateTimeCell, formatDateTime } from '../components/DateTime';
 
 const STATUSES: PurchaseStatus[] = ['draft', 'received', 'partial', 'paid', 'cancelled'];
 
@@ -180,7 +180,6 @@ export default function PurchasesPage() {
         </Link>
       ),
     },
-    { key: 'bill_date', header: 'Date', render: (r) => r.bill_date },
     { key: 'created_at', header: 'Created', sortValue: (r) => r.created_at, render: (r) => <DateTimeCell iso={r.created_at} /> },
     { key: 'updated_at', header: 'Last modified', sortValue: (r) => r.updated_at, render: (r) => <DateTimeCell iso={r.updated_at} /> },
     {
@@ -261,8 +260,8 @@ export default function PurchasesPage() {
         { header: 'Bill #', get: (r: Purchase) => r.bill_number },
         { header: 'Supplier Bill #', get: (r: Purchase) => r.supplier_bill_number },
         { header: 'Date', get: (r: Purchase) => r.bill_date },
-        { header: 'Created At', get: (r: Purchase) => formatDateTimeCsv(r.created_at) },
-        { header: 'Modified At', get: (r: Purchase) => formatDateTimeCsv(r.updated_at) },
+        { header: 'Created At', get: (r: Purchase) => formatDateTime(r.created_at) },
+        { header: 'Modified At', get: (r: Purchase) => formatDateTime(r.updated_at) },
         {
           header: 'Supplier',
           get: (r: Purchase) => supplierById.get(r.supplier_id)?.name ?? r.supplier_id,

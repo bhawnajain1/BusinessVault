@@ -173,7 +173,6 @@ export default function Returns() {
             <table className="w-full text-sm">
               <thead className="bg-surface-hover text-xs uppercase text-fg-muted sticky top-0">
                 <tr>
-                  <th className="text-left px-3 py-2">Date</th>
                   <th className="text-left px-3 py-2">Created</th>
                   <th className="text-left px-3 py-2">Last modified</th>
                   <th className="text-left px-3 py-2">Invoice #</th>
@@ -185,7 +184,6 @@ export default function Returns() {
               <tbody>
                 {filteredReturnable.map((inv) => (
                   <tr key={inv.id} className="border-t border-border">
-                    <td className="px-3 py-1.5 text-fg-muted">{inv.invoice_date}</td>
                     <td className="px-3 py-1.5 text-fg-muted"><DateTimeCell iso={inv.created_at} /></td>
                     <td className="px-3 py-1.5 text-fg-muted"><DateTimeCell iso={inv.updated_at} /></td>
                     <td className="px-3 py-1.5 font-mono text-xs">
@@ -210,7 +208,7 @@ export default function Returns() {
                 ))}
                 {filteredReturnable.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-3 py-6 text-center text-fg-subtle">
+                    <td colSpan={6} className="px-3 py-6 text-center text-fg-subtle">
                       {returnableInvoices.length === 0
                         ? 'No invoices eligible for return.'
                         : 'No matches.'}
@@ -241,7 +239,6 @@ export default function Returns() {
           <table className="w-full text-sm">
             <thead className="bg-surface-hover text-xs uppercase text-fg-muted">
               <tr>
-                <th className="text-left px-3 py-2">Date</th>
                   <th className="text-left px-3 py-2">Created</th>
                   <th className="text-left px-3 py-2">Last modified</th>
                 <th className="text-left px-3 py-2">Return #</th>
@@ -257,7 +254,6 @@ export default function Returns() {
                 const original = invoicesById.get(sr.original_invoice_id);
                 return (
                   <tr key={sr.id} className="border-t border-border">
-                    <td className="px-3 py-1.5 text-fg-muted">{sr.return_date}</td>
                     <td className="px-3 py-1.5 text-fg-muted"><DateTimeCell iso={sr.created_at} /></td>
                     <td className="px-3 py-1.5 text-fg-muted"><DateTimeCell iso={sr.updated_at} /></td>
                     <td className="px-3 py-1.5 font-mono text-xs">
@@ -310,7 +306,7 @@ export default function Returns() {
               })}
               {(salesReturns ?? []).length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-6 text-center text-fg-subtle">
+                  <td colSpan={8} className="px-3 py-6 text-center text-fg-subtle">
                     No sales returns yet.
                   </td>
                 </tr>

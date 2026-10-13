@@ -4,41 +4,29 @@
 // timestamps). These helpers show that time next to the date, in the
 // device's local timezone, without touching the stored data.
 
-const timeFmt = new Intl.DateTimeFormat('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
-const dateTimeFmt = new Intl.DateTimeFormat('en-IN', {
-  day: 'numeric',
-  month: 'short',
-  year: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit',
-  hour12: true,
-});
-
 function parse(iso: string | null | undefined): Date | null {
   if (!iso) return null;
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function pad(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
 // "4:35 pm" — empty string when the timestamp is missing or invalid.
 export function formatTime(iso: string | null | undefined): string {
   const d = parse(iso);
-  return d ? timeFmt.format(d) : '';
+  if (!d) return '';
+  const h = d.getHours() % 12 || 12;
+  return `${h}:${pad(d.getMinutes())} ${d.getHours() < 12 ? 'am' : 'pm'}`;
 }
 
-// "12 Oct 2026, 4:35 pm"
+// "2026-10-05 11:14 am" in local time. Used on screen and in CSV exports.
 export function formatDateTime(iso: string | null | undefined): string {
   const d = parse(iso);
-  return d ? dateTimeFmt.format(d) : '';
-}
-
-// For CSV exports: "2026-10-12 16:35" in local time, sortable and
-// spreadsheet-friendly.
-export function formatDateTimeCsv(iso: string | null | undefined): string {
-  const d = parse(iso);
   if (!d) return '';
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${formatTime(iso)}`;
 }
 
 // Table cell for the "Created" / "Last modified" columns: full local date
@@ -48,7 +36,7 @@ export function DateTimeCell({ iso }: { iso?: string | null }) {
   return <span className="whitespace-nowrap">{text || '—'}</span>;
 }
 
-// Detail pages: "Created 12 Oct 2026, 4:35 pm" / "Last modified 13 Oct 2026, 9:10 am"
+// Detail pages: "Created 2026-10-12 4:35 pm" / "Last modified 2026-10-13 9:10 am"
 export function SavedTimes({ createdAt, updatedAt }: { createdAt?: string | null; updatedAt?: string | null }) {
   const created = formatDateTime(createdAt);
   const modified = formatDateTime(updatedAt);

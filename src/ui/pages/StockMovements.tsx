@@ -85,9 +85,8 @@ export default function StockMovements() {
   );
 
   const columns: ColumnDef<StockMovement>[] = [
-    { key: 'occurred_at', header: 'Date', render: (r) => r.occurred_at.slice(0, 10) },
-    // Only movements with a full timestamp have a time; invoice-driven ones store a date.
-    { key: 'created_at', header: 'Created', render: (r) => <DateTimeCell iso={r.occurred_at.length > 10 ? r.occurred_at : null} /> },
+    // Invoice-driven movements store only a date, so show it as-is.
+    { key: 'occurred_at', header: 'Created', sortValue: (r) => r.occurred_at, render: (r) => (r.occurred_at.length > 10 ? <DateTimeCell iso={r.occurred_at} /> : r.occurred_at) },
     {
       key: 'item',
       header: 'Item',

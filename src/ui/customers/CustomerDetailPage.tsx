@@ -735,7 +735,6 @@ export default function CustomerDetailPage() {
             <thead>
               <tr>
                 <th scope="col" aria-sort={invoiceSort.key === 'invoice_number' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Invoice #', 'invoice_number')}</th>
-                <th scope="col" aria-sort={invoiceSort.key === 'invoice_date' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Date', 'invoice_date')}</th>
                 <th scope="col">Created</th>
                 <th scope="col">Last modified</th>
                 <th scope="col" aria-sort={invoiceSort.key === 'due_date' ? (invoiceSort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>{invoiceSortHeader('Due date', 'due_date')}</th>
@@ -749,7 +748,7 @@ export default function CustomerDetailPage() {
             <tbody>
               {invoiceRows.length === 0 && (
                 <tr>
-                  <td className="px-2 py-4 text-slate-500 text-center" colSpan={10}>
+                  <td className="px-2 py-4 text-slate-500 text-center" colSpan={9}>
                     No invoices for this customer yet.
                   </td>
                 </tr>
@@ -764,7 +763,6 @@ export default function CustomerDetailPage() {
                       {r.inv.invoice_number}
                     </Link>
                   </td>
-                  <td>{fmtDateShort(r.inv.invoice_date)}</td>
                   <td><DateTimeCell iso={r.inv.created_at} /></td>
                   <td><DateTimeCell iso={r.inv.updated_at} /></td>
                   <td>
@@ -816,7 +814,6 @@ export default function CustomerDetailPage() {
           <table className="customer-table data-table min-w-[760px]">
             <thead>
               <tr>
-                <th scope="col">Date</th>
                 <th scope="col">Created</th>
                 <th scope="col">Last modified</th>
                 <th scope="col">Receipt #</th>
@@ -830,7 +827,7 @@ export default function CustomerDetailPage() {
             <tbody>
               {payments.length === 0 && (
                 <tr>
-                <td className="py-10 text-center text-fg-subtle" colSpan={9}>
+                <td className="py-10 text-center text-fg-subtle" colSpan={8}>
                     No payments recorded for this customer yet.
                   </td>
                 </tr>
@@ -840,8 +837,7 @@ export default function CustomerDetailPage() {
                 const unalloc = Math.max(0, p.amount_paise - allocTotal);
                 return (
                   <tr key={p.id} className="align-top">
-                    <td>{fmtDateShort(p.payment_date)}</td>
-                  <td><DateTimeCell iso={p.created_at} /></td>
+                    <td><DateTimeCell iso={p.created_at} /></td>
                   <td><DateTimeCell iso={p.updated_at} /></td>
                     <td className="font-mono text-xs">{p.payment_number}</td>
                     <td className="text-right customer-money">

@@ -7,7 +7,7 @@ import DataTable, { type ColumnDef } from '../components/DataTable';
 import Money from '../components/Money';
 import { paginateCollection, matchesText } from '../components/pagination';
 import { ExpenseService } from '../../domain/ExpenseService';
-import { DateTimeCell, formatDateTimeCsv } from '../components/DateTime';
+import { DateTimeCell, formatDateTime } from '../components/DateTime';
 
 export default function ExpensesPage() {
   const navigate = useNavigate();
@@ -193,7 +193,6 @@ export default function ExpensesPage() {
       filterable: true,
       render: (r) => r.expense_number,
     },
-    { key: 'expense_date', header: 'Date', render: (r) => r.expense_date },
     { key: 'created_at', header: 'Created', sortValue: (r) => r.created_at, render: (r) => <DateTimeCell iso={r.created_at} /> },
     { key: 'updated_at', header: 'Last modified', sortValue: (r) => r.updated_at, render: (r) => <DateTimeCell iso={r.updated_at} /> },
     {
@@ -251,8 +250,8 @@ export default function ExpensesPage() {
       columns: [
         { header: 'Expense #', get: (r: Expense) => r.expense_number },
         { header: 'Date', get: (r: Expense) => r.expense_date },
-        { header: 'Created At', get: (r: Expense) => formatDateTimeCsv(r.created_at) },
-        { header: 'Modified At', get: (r: Expense) => formatDateTimeCsv(r.updated_at) },
+        { header: 'Created At', get: (r: Expense) => formatDateTime(r.created_at) },
+        { header: 'Modified At', get: (r: Expense) => formatDateTime(r.updated_at) },
         {
           header: 'Category',
           get: (r: Expense) =>
