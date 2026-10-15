@@ -269,6 +269,26 @@ export default function CustomersPage() {
         render: (r) => <Money paise={rollups.get(r.id)?.receivable_paise ?? 0} />,
       },
       {
+        key: 'total_due',
+        header: 'Total Due',
+        className: 'text-right',
+        sortValue: (r) => {
+          const rollup = rollups.get(r.id) ?? EMPTY_ROLLUP;
+          return rollup.receivable_paise - rollup.advance_paise;
+        },
+        render: (r) => {
+          const rollup = rollups.get(r.id) ?? EMPTY_ROLLUP;
+          const totalDuePaise = rollup.receivable_paise - rollup.advance_paise;
+          return totalDuePaise < 0 ? (
+            <span className="text-indigo-700 font-medium">
+              <Money paise={totalDuePaise} />
+            </span>
+          ) : (
+            <Money paise={totalDuePaise} />
+          );
+        },
+      },
+      {
         key: 'overdue',
         header: 'Overdue',
         className: 'text-right',

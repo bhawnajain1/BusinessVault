@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ulid } from 'ulid';
 import { db } from '../../db';
 import type {
+  Advance,
   Account,
   Customer,
   PartyType,
@@ -9,11 +10,12 @@ import type {
   PaymentDirection,
   PaymentMethod,
   Purchase,
+  SalesReturn,
   Supplier,
   Invoice,
 } from '../../db/types';
 import { PaymentService } from '../../domain/PaymentService';
-import { isActivePurchase } from '../../domain/partyLedger';
+import { computeReceivables, isActivePurchase } from '../../domain/partyLedger';
 import { SYSTEM_ACCOUNT_CODES } from '../../domain/coa';
 import { useActiveBusiness } from '../hooks/useActiveBusiness';
 import DataTable, { type ColumnDef } from '../components/DataTable';
@@ -45,9 +47,16 @@ export default function PaymentsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [purchases, setPurchases] = useState<Purchase[]>([]);
+  const [advances, setAdvances] = useState<Advance[]>([]);
+  const [salesReturns, setSalesReturns] = useState<SalesReturn[]>([]);
   const [entryDirection, setEntryDirection] = useState<PaymentDirection | null>(null);
   const [entryPartyId, setEntryPartyId] = useState('');
   const [entryDocumentId, setEntryDocumentId] = useState('');
+  const [entrySelectedDocumentIds, setEntrySelectedDocumentIds] = useState<string[]>([]);
+  const [entryDraftDocumentIds, setEntryDraftDocumentIds] = useState<string[]>([]);
+  const [entryInvoicePickerOpen, setEntryInvoicePickerOpen] = useState(false);
+  const invoicePickerRef = useRef<HTMLDialogElement>(null);
+  const invoicePickerTriggerRef = useRef<HTMLButtonElement>(null);
   const [entryAmount, setEntryAmount] = useState('');
   const [entryDate, setEntryDate] = useState(today);
   const [entryMethod, setEntryMethod] = useState<PaymentMethod>('cash');
@@ -70,10 +79,12 @@ export default function PaymentsPage() {
       const map = new Map<string, { name: string; type: PartyType }>();
       cs.forEach((c: Customer) => map.set(c.id, { name: c.name, type: 'customer' }));
       ss.forEach((s: Supplier) => map.set(s.id, { name: s.name, type: 'supplier' }));
-      const [as, invs, bills] = await Promise.all([
+      const [as, invs, bills, advs, returns] = await Promise.all([
         db.accounts.where('business_id').equals(businessId).toArray(),
         db.invoices.where('business_id').equals(businessId).toArray(),
         db.purchases.where('business_id').equals(businessId).toArray(),
+        db.advances.where('business_id').equals(businessId).toArray(),
+        db.sales_returns.where('business_id').equals(businessId).toArray(),
       ]);
       setPartyById(map);
       setCustomers(cs);
@@ -81,21 +92,54 @@ export default function PaymentsPage() {
       setAccounts(as);
       setInvoices(invs);
       setPurchases(bills);
+      setAdvances(advs);
+      setSalesReturns(returns);
     })();
   }, [businessId]);
 
   const entryParties = entryDirection === 'in' ? customers : suppliers;
+  useEffect(() => {
+    if (entryInvoicePickerOpen && invoicePickerRef.current && !invoicePickerRef.current.open) {
+      invoicePickerRef.current.showModal();
+    }
+  }, [entryInvoicePickerOpen]);
+
+  const asOfDate = today();
+  const receivables = useMemo(
+    () => computeReceivables(invoices, asOfDate, advances, customers, salesReturns),
+    [invoices, asOfDate, advances, customers, salesReturns],
+  );
   const openDocuments = useMemo<OpenDocument[]>(() => {
     if (!entryDirection) return [];
     if (entryDirection === 'in') {
-      return invoices
-        .filter((i) => i.customer_id === entryPartyId && i.balance_paise > 0 && i.status !== 'cancelled')
-        .map((i) => ({ id: i.id, number: i.invoice_number, balancePaise: i.balance_paise }));
+      return receivables.perInvoice
+        .filter((invoice) => invoice.customer_id === entryPartyId && invoice.outstanding_paise > 0)
+        .map((invoice) => ({
+          id: invoice.invoice_id,
+          number: invoice.invoice_number,
+          balancePaise: invoice.outstanding_paise,
+        }));
     }
     return purchases
       .filter((p) => p.supplier_id === entryPartyId && p.balance_paise > 0 && isActivePurchase(p))
       .map((p) => ({ id: p.id, number: p.bill_number, balancePaise: p.balance_paise }));
-  }, [entryDirection, entryPartyId, invoices, purchases]);
+  }, [entryDirection, entryPartyId, receivables, purchases]);
+
+  const selectedDocuments = useMemo(
+    () => openDocuments.filter((document) => entrySelectedDocumentIds.includes(document.id)),
+    [openDocuments, entrySelectedDocumentIds],
+  );
+  const selectedDocumentsDuePaise = selectedDocuments.reduce(
+    (sum, document) => sum + document.balancePaise,
+    0,
+  );
+  const customerReceivable = entryDirection === 'in'
+    ? receivables.perCustomer.find((customer) => customer.customer_id === entryPartyId)
+    : undefined;
+  const customerTotalDuePaise = Math.max(
+    0,
+    (customerReceivable?.outstanding_paise ?? 0) - (customerReceivable?.advance_paise ?? 0),
+  );
 
   const entryAccountOptions = accounts.filter(
     (a) => a.active === 1 && (a.code === SYSTEM_ACCOUNT_CODES.CASH || a.code === SYSTEM_ACCOUNT_CODES.BANK),
@@ -105,6 +149,9 @@ export default function PaymentsPage() {
     setEntryDirection(direction);
     setEntryPartyId('');
     setEntryDocumentId('');
+    setEntrySelectedDocumentIds([]);
+    setEntryDraftDocumentIds([]);
+    setEntryInvoicePickerOpen(false);
     setEntryAmount('');
     setEntryDate(today());
     setEntryMethod('cash');
@@ -116,8 +163,21 @@ export default function PaymentsPage() {
     setEntryError(null);
   }
 
+  function closeInvoicePicker(commitSelection: boolean): void {
+    if (commitSelection) {
+      const selectedDuePaise = openDocuments
+        .filter((document) => entryDraftDocumentIds.includes(document.id))
+        .reduce((sum, document) => sum + document.balancePaise, 0);
+      setEntrySelectedDocumentIds(entryDraftDocumentIds);
+      setEntryAmount((selectedDuePaise / 100).toFixed(2));
+    }
+    invoicePickerRef.current?.close();
+    setEntryInvoicePickerOpen(false);
+    invoicePickerTriggerRef.current?.focus();
+  }
+
   async function saveEntry(): Promise<void> {
-    if (!businessId || !deviceId || !entryDirection) return;
+    if (!businessId || !deviceId || !entryDirection || entryInvoicePickerOpen) return;
     const amountPaise = Math.round(Number(entryAmount) * 100);
     const document = openDocuments.find((d) => d.id === entryDocumentId);
     const account = accounts.find((a) => a.id === entryAccountId);
@@ -126,7 +186,12 @@ export default function PaymentsPage() {
     );
     if (!entryPartyId) return setEntryError('Select a party.');
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) return setEntryError('Amount must be positive.');
-    if (document && amountPaise > document.balancePaise) {
+    if (entryDirection === 'in' && selectedDocuments.length > 0 && amountPaise > selectedDocumentsDuePaise) {
+      return setEntryError(
+        `Amount cannot exceed the selected invoices total of ₹${(selectedDocumentsDuePaise / 100).toFixed(2)}.`,
+      );
+    }
+    if (entryDirection === 'out' && document && amountPaise > document.balancePaise) {
       return setEntryError(
         `Amount cannot exceed the selected document balance of ₹${(document.balancePaise / 100).toFixed(2)}.`,
       );
@@ -146,13 +211,21 @@ export default function PaymentsPage() {
     setEntryError(null);
     try {
       let remainingPaise = amountPaise;
-      const allocations = document
-        ? [
-            entryDirection === 'in'
-              ? { invoice_id: document.id, amount_paise: amountPaise }
-              : { bill_id: document.id, amount_paise: amountPaise },
-          ]
-        : [{ as_advance: true, amount_paise: remainingPaise }];
+      const allocations = entryDirection === 'in' && selectedDocuments.length > 0
+        ? selectedDocuments.flatMap((selected) => {
+            const allocationPaise = Math.min(selected.balancePaise, remainingPaise);
+            remainingPaise -= allocationPaise;
+            return allocationPaise > 0
+              ? [{ invoice_id: selected.id, amount_paise: allocationPaise }]
+              : [];
+          })
+        : document
+          ? [
+              entryDirection === 'in'
+                ? { invoice_id: document.id, amount_paise: amountPaise }
+                : { bill_id: document.id, amount_paise: amountPaise },
+            ]
+          : [{ as_advance: true, amount_paise: remainingPaise }];
 
       await new PaymentService(db).createPayment({
         business_id: businessId,
@@ -170,16 +243,22 @@ export default function PaymentsPage() {
         reference: entryReference.trim() || undefined,
         notes: entryNotes.trim() || undefined,
         allocations,
-        advance_number: document ? undefined : `ADV-${ulid().slice(-10)}`,
-      });
+        advance_number: allocations.some((allocation) => 'as_advance' in allocation && allocation.as_advance)
+          ? `ADV-${ulid().slice(-10)}`
+          : undefined,
+        });
       setEntryDirection(null);
       setReloadKey((value) => value + 1);
-      const [invs, bills] = await Promise.all([
+      const [invs, bills, advs, returns] = await Promise.all([
         db.invoices.where('business_id').equals(businessId).toArray(),
         db.purchases.where('business_id').equals(businessId).toArray(),
+        db.advances.where('business_id').equals(businessId).toArray(),
+        db.sales_returns.where('business_id').equals(businessId).toArray(),
       ]);
       setInvoices(invs);
       setPurchases(bills);
+      setAdvances(advs);
+      setSalesReturns(returns);
     } catch (error) {
       setEntryError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -382,18 +461,45 @@ export default function PaymentsPage() {
             <div className="grid gap-3 p-4 text-sm sm:grid-cols-2">
               <label className="flex flex-col gap-1">
                 <span>Party</span>
-                <select value={entryPartyId} onChange={(e) => { setEntryPartyId(e.target.value); setEntryDocumentId(''); }} className="rounded border px-2 py-1.5">
+                <select value={entryPartyId} onChange={(e) => { setEntryPartyId(e.target.value); setEntryDocumentId(''); setEntrySelectedDocumentIds([]); setEntryAmount(''); }} className="rounded border px-2 py-1.5">
                   <option value="">Select {entryDirection === 'in' ? 'customer' : 'supplier'}</option>
                   {entryParties.map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}
                 </select>
               </label>
-              <label className="flex flex-col gap-1">
-                <span>{entryDirection === 'in' ? 'Invoice' : 'Bill'}</span>
-                <select value={entryDocumentId} onChange={(e) => setEntryDocumentId(e.target.value)} className="rounded border px-2 py-1.5" disabled={!entryPartyId}>
-                  <option value="">Select open {entryDirection === 'in' ? 'invoice' : 'bill'}</option>
-                  {openDocuments.map((document) => <option key={document.id} value={document.id}>{document.number} — ₹{(document.balancePaise / 100).toFixed(2)} due</option>)}
-                </select>
-              </label>
+              {entryDirection === 'in' ? (
+                <div className="flex flex-col gap-1 sm:col-span-2">
+                  <span id="payment-invoices-label">Invoices</span>
+                  <button
+                    type="button"
+                    ref={invoicePickerTriggerRef}
+                    disabled={!entryPartyId}
+                    className="rounded border px-2 py-1.5 text-left text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
+                    onClick={() => {
+                      setEntryDraftDocumentIds(entrySelectedDocumentIds);
+                      setEntryInvoicePickerOpen(true);
+                    }}
+                  >
+                    {entrySelectedDocumentIds.length > 0
+                      ? `${entrySelectedDocumentIds.length} invoice(s) selected`
+                      : 'Select open invoices'}
+                  </button>
+                  {entryPartyId && (
+                    <div className="flex flex-wrap justify-between gap-2 rounded bg-slate-50 px-2 py-1.5 text-xs">
+                      <span>Customer total due: <strong><Money paise={customerTotalDuePaise} /></strong></span>
+                      <span>Selected invoices due: <strong><Money paise={selectedDocumentsDuePaise} /></strong></span>
+                      <span>Amount to be paid: <strong><Money paise={Math.max(0, Math.round(Number(entryAmount || '0') * 100))} /></strong></span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <label className="flex flex-col gap-1">
+                  <span>Bill</span>
+                  <select value={entryDocumentId} onChange={(e) => setEntryDocumentId(e.target.value)} className="rounded border px-2 py-1.5" disabled={!entryPartyId}>
+                    <option value="">Select open bill</option>
+                    {openDocuments.map((openDocument) => <option key={openDocument.id} value={openDocument.id}>{openDocument.number} — ₹{(openDocument.balancePaise / 100).toFixed(2)} due</option>)}
+                  </select>
+                </label>
+              )}
               <label className="flex flex-col gap-1"><span>Amount ₹</span><input type="number" min="0.01" step="0.01" value={entryAmount} onChange={(e) => setEntryAmount(e.target.value)} className="rounded border px-2 py-1.5" /></label>
               <label className="flex flex-col gap-1"><span>Date</span><input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} className="rounded border px-2 py-1.5" /></label>
               <label className="flex flex-col gap-1"><span>Payment method</span><select value={entryMethod} onChange={(e) => { setEntryMethod(e.target.value as PaymentMethod); setEntryBank(''); setEntryOtherBankName(''); }} className="rounded border px-2 py-1.5">{METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</select></label>
@@ -406,9 +512,65 @@ export default function PaymentsPage() {
             </div>
             <div className="flex justify-end gap-2 border-t px-4 py-3">
               <button type="button" onClick={() => setEntryDirection(null)} className="action-cancel text-sm">Cancel</button>
-              <button type="button" onClick={() => void saveEntry()} disabled={entrySaving} className="rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{entrySaving ? 'Saving...' : 'Save payment'}</button>
+              {!entryInvoicePickerOpen && <button type="button" onClick={() => void saveEntry()} disabled={entrySaving} className="rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{entrySaving ? 'Saving...' : 'Save payment'}</button>}
             </div>
           </div>
+          {entryInvoicePickerOpen && (
+              <dialog
+                ref={invoicePickerRef}
+                aria-labelledby="invoice-picker-title"
+                onCancel={(event) => {
+                  event.preventDefault();
+                  closeInvoicePicker(false);
+                }}
+                className="m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg flex-col rounded-lg border-0 bg-white p-0 shadow-2xl backdrop:bg-slate-950/40"
+              >
+                <div className="border-b px-5 py-4">
+                  <h3 id="invoice-picker-title" className="text-lg font-semibold">Select invoices</h3>
+                  <p className="mt-1 text-sm text-slate-600">Choose one or more invoices for this payment.</p>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  {openDocuments.length === 0 ? (
+                    <p className="p-2 text-sm text-slate-500">No open invoices for this customer.</p>
+                  ) : (
+                    openDocuments.map((document) => (
+                      <label key={document.id} className="flex cursor-pointer items-center gap-3 rounded px-2 py-3 hover:bg-slate-50">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select invoice ${document.number}`}
+                          checked={entryDraftDocumentIds.includes(document.id)}
+                          onChange={(event) => {
+                            setEntryDraftDocumentIds((selectedIds) => event.target.checked
+                              ? [...selectedIds, document.id]
+                              : selectedIds.filter((id) => id !== document.id));
+                          }}
+                        />
+                        <span className="flex flex-1 justify-between gap-3">
+                          <span>{document.number}</span>
+                          <span className="text-slate-600">₹{(document.balancePaise / 100).toFixed(2)} due</span>
+                        </span>
+                      </label>
+                    ))
+                  )}
+                </div>
+                <div className="flex justify-end gap-2 border-t px-5 py-3">
+                  <button
+                    type="button"
+                    className="rounded px-3 py-2 text-slate-700 hover:bg-slate-100"
+                    onClick={() => closeInvoicePicker(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded bg-indigo-600 px-3 py-2 font-medium text-white hover:bg-indigo-700"
+                    onClick={() => closeInvoicePicker(true)}
+                  >
+                    Done
+                  </button>
+                </div>
+              </dialog>
+          )}
         </div>
       )}
     </div>

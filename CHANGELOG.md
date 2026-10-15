@@ -4,6 +4,13 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.1.4 — 2026-10-15
+
+### Added
+
+- Payments In now selects multiple invoices in a dedicated popup. **Done** applies the selection, **Cancel** discards draft changes, and Save payment is hidden while the picker is open.
+- Customers list now shows sortable **Total Due**, calculated as Receivable minus Advance; a net customer credit is displayed as a negative amount.
+
 ## 1.1.3 — 2026-10-13
 
 ### Fixed
