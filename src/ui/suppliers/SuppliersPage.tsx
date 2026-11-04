@@ -97,6 +97,9 @@ export default function SuppliersPage() {
       return next;
   }, [businessId], new Map<string, SupplierRollup>());
   const currentRollups = rollups ?? new Map<string, SupplierRollup>();
+  const netDue = (supplier: Supplier) =>
+    (currentRollups.get(supplier.id)?.payable_paise ?? Math.max(0, supplier.opening_balance_paise)) -
+    (currentRollups.get(supplier.id)?.advance_paise ?? Math.max(0, -supplier.opening_balance_paise));
 
   function pairFromForm(): GstinStatePair {
     return {
@@ -177,13 +180,20 @@ export default function SuppliersPage() {
       key: 'payable',
       header: 'Payable',
       className: 'text-right',
-      render: (r) => <Money paise={currentRollups.get(r.id)?.payable_paise ?? r.opening_balance_paise} />,
+      render: (r) => <Money paise={currentRollups.get(r.id)?.payable_paise ?? Math.max(0, r.opening_balance_paise)} />,
     },
     {
       key: 'advance',
       header: 'Advance',
       className: 'text-right',
-      render: (r) => <Money paise={currentRollups.get(r.id)?.advance_paise ?? 0} />,
+      render: (r) => <Money paise={currentRollups.get(r.id)?.advance_paise ?? Math.max(0, -r.opening_balance_paise)} />,
+    },
+    {
+      key: 'net_due',
+      header: 'Net Due',
+      className: 'text-right font-semibold',
+      sortValue: netDue,
+      render: (r) => <Money paise={netDue(r)} />,
     },
     {
       key: 'opening_balance',
@@ -312,6 +322,9 @@ export default function SuppliersPage() {
         { header: 'Address', get: (r: Supplier) => r.address },
         { header: 'State', get: (r: Supplier) => r.state },
         { header: 'State Code', get: (r: Supplier) => r.state_code },
+        { header: 'Payable', get: (r: Supplier) => paiseToRupees(currentRollups.get(r.id)?.payable_paise ?? Math.max(0, r.opening_balance_paise)) },
+        { header: 'Advance', get: (r: Supplier) => paiseToRupees(currentRollups.get(r.id)?.advance_paise ?? Math.max(0, -r.opening_balance_paise)) },
+        { header: 'Net Due', get: (r: Supplier) => paiseToRupees(netDue(r)) },
         { header: 'Opening Balance', get: (r: Supplier) => paiseToRupees(r.opening_balance_paise) },
         { header: 'Notes', get: (r: Supplier) => r.notes },
         { header: 'Active', get: (r: Supplier) => (r.active ? '1' : '0') },

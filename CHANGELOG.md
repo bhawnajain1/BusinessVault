@@ -4,6 +4,12 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.1.6 - 2026-11-04
+
+### Added
+
+- Suppliers now shows sortable Net Due calculated as Payable minus Advance, including negative supplier credit balances. Supplier CSV exports include Payable, Advance and Net Due, and the list updates as balances change.
+
 ## 1.1.5 - 2026-11-04
 
 ### Fixed
