@@ -4,6 +4,13 @@ All notable changes to BusinessVault are recorded here. This file is kept in
 sync with `package.json` on every PR — see feedback_1_to_7.md §19 and the
 per-PR-version-bump policy.
 
+## 1.1.5 - 2026-11-04
+
+### Fixed
+
+- Customer and supplier ledgers no longer count a payment and its linked advance twice. Existing records and CSV ledger exports use the corrected calculation without a data migration.
+- Standalone advance receipts retain their original ledger credit after partial or full application. Cancelled legacy sales-return credits remain excluded.
+
 ## 1.1.4 — 2026-10-15
 
 ### Added
