@@ -18,8 +18,8 @@ import { isActivePurchase } from '../../domain/partyLedger';
 
 // A single running-balance ledger row for one party (customer or supplier).
 // For a customer we build receivables: invoices increase balance owed BY them,
-// payments/credit-notes/applied-advances decrease it, unapplied-advance remainder
-// is shown as a credit balance line (party owes negative).
+// payments/credit-notes/standalone advance receipts decrease it. An advance
+// created by a payment is already included in that payment's full amount.
 // For a supplier the sign is flipped semantically (invoices → we owe THEM),
 // but the running arithmetic is symmetric — we just relabel the header.
 interface LedgerRow {
@@ -396,6 +396,9 @@ export function buildCustomerRows(
   // Opening balance is seeded from cust.opening_balance_paise directly into
   // the running-balance computation — don't push a synthetic dated row here.
   const out: LedgerRow[] = [];
+  const paymentJournalIds = new Set(
+    pays.filter((pay) => !pay.deleted_at && pay.journal_entry_id).map((pay) => pay.journal_entry_id),
+  );
 
   for (const inv of invs) {
     if (
@@ -452,8 +455,13 @@ export function buildCustomerRows(
   }
 
   for (const adv of advs) {
-    if (adv.deleted_at || adv.remaining_paise <= 0) continue;
+    if (adv.deleted_at || adv.amount_paise <= 0) continue;
+    // Payment-linked advances represent the same money, not a second receipt.
+    if (paymentJournalIds.has(adv.journal_entry_id)) continue;
     const isReturnCredit = adv.reference?.startsWith('sales_return:') ?? false;
+    // Legacy return credits are zeroed on cancellation, unlike cash receipts.
+    const creditPaise = isReturnCredit ? adv.remaining_paise : adv.amount_paise;
+    if (creditPaise <= 0) continue;
     out.push({
       date: adv.advance_date,
       ref: adv.advance_number,
@@ -462,7 +470,7 @@ export function buildCustomerRows(
         ? `Sales return credit${adv.reference ? ` · ${adv.reference}` : ''}`
         : `Advance received (${adv.method})${adv.reference ? ` · ${adv.reference}` : ''}`,
       debit_paise: 0,
-      credit_paise: adv.remaining_paise,
+      credit_paise: creditPaise,
     });
     // Advance applications don't move the combined AR+advance balance — the
     // invoice's own debit already nets against this credit. Emitting an
@@ -472,7 +480,7 @@ export function buildCustomerRows(
   return out;
 }
 
-function buildSupplierRows(
+export function buildSupplierRows(
   _sup: Supplier | null,
   bills: Purchase[],
   pays: Payment[],
@@ -481,6 +489,9 @@ function buildSupplierRows(
   // Opening balance is seeded from sup.opening_balance_paise directly into
   // the running-balance computation — don't push a synthetic dated row here.
   const out: LedgerRow[] = [];
+  const paymentJournalIds = new Set(
+    pays.filter((pay) => !pay.deleted_at && pay.journal_entry_id).map((pay) => pay.journal_entry_id),
+  );
 
   for (const bill of bills) {
     if (!isActivePurchase(bill)) continue;
@@ -519,14 +530,16 @@ function buildSupplierRows(
   }
 
   for (const adv of advs) {
-    if (adv.deleted_at || adv.remaining_paise <= 0) continue;
+    if (adv.deleted_at || adv.amount_paise <= 0) continue;
+    // Payment-linked advances represent the same money, not a second payout.
+    if (paymentJournalIds.has(adv.journal_entry_id)) continue;
     out.push({
       date: adv.advance_date,
       ref: adv.advance_number,
       kind: 'advance',
       description: `Advance paid (${adv.method})${adv.reference ? ` · ${adv.reference}` : ''}`,
       debit_paise: 0,
-      credit_paise: adv.remaining_paise,
+      credit_paise: adv.amount_paise,
     });
     // Advance applications don't move the combined AP+advance balance — the
     // bill's own debit already nets against this credit. Emitting an "applied"

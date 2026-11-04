@@ -105,7 +105,9 @@ export function buildStatement(
   advances: Advance[],
 ): StatementRow[] {
   const out: StatementRow[] = [];
-  const paymentJournalIds = new Set(payments.map((pay) => pay.journal_entry_id));
+  const paymentJournalIds = new Set(
+    payments.filter((pay) => !pay.deleted_at && pay.journal_entry_id).map((pay) => pay.journal_entry_id),
+  );
   for (const inv of invoices) {
     if (
       inv.status === 'draft' ||
@@ -147,16 +149,21 @@ export function buildStatement(
     });
   }
   for (const adv of advances) {
-    if (adv.deleted_at || adv.remaining_paise <= 0) continue;
+    if (adv.deleted_at || adv.amount_paise <= 0) continue;
     // Payments already show the receipt/payment amount. Their matching
     // advance is the accounting destination for that same money, not another
     // customer-statement credit row.
     if (paymentJournalIds.has(adv.journal_entry_id)) continue;
+    // Legacy return credits are zeroed on cancellation, unlike cash receipts.
+    const creditPaise = adv.reference?.startsWith('sales_return:')
+      ? adv.remaining_paise
+      : adv.amount_paise;
+    if (creditPaise <= 0) continue;
     out.push({
       date: adv.advance_date,
       transaction: `Advance ${adv.advance_number}`,
       debit_paise: 0,
-      credit_paise: adv.remaining_paise,
+      credit_paise: creditPaise,
     });
     // Advance applications don't move the combined AR+advance balance — they
     // convert prepayment (a credit already booked at adv.advance_date) into
